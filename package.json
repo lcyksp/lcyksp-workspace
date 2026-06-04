@@ -1,0 +1,15 @@
+{
+  "name": "lcyksp-workspace",
+  "private": true,
+  "description": "lcyksp.xyz 全栈项目根工作区 — npm run dev 一键双端启动",
+  "scripts": {
+    "dev": "concurrently -n \"Backend,Front\" -c \"yellow,cyan\" \"npm run dev:backend\" \"npm run dev:front\"",
+    "dev:backend": "cd lcyksp-backend && npm start",
+    "dev:front": "cd lcyksp-front && npm run dev",
+    "install:all": "cd lcyksp-backend && npm install && cd ../lcyksp-front && npm install",
+    "build": "cd lcyksp-front && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

@@ -1,0 +1,15 @@
+# lcyksp-backend/.dockerignore
+# 构建上下文中排除不必要的文件，减小镜像体积
+
+node_modules
+npm-debug.log
+.git
+.gitignore
+*.md
+.env
+.env.*
+logs/
+data/uploads/*
+!data/uploads/.gitkeep
+data/db/*
+!data/db/.gitkeep
