@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+lcyksp-backend/data/db/database.db
+lcyksp-backend/data/uploads/
+*.log
+.DS_Store
+Thumbs.db
