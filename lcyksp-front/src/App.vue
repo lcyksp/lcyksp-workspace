@@ -140,15 +140,16 @@ const activeMenu = computed(() => route.path)
           <span>格式转换</span>
         </el-menu-item>
         <el-menu-item index="/recipe">
-          <el-icon><MagicStick /></el-icon>
-          <span>🍳 赛博菜谱</span>
+          <el-icon><KnifeFork /></el-icon>
+          <span>赛博菜谱</span>
         </el-menu-item>
         <el-menu-item index="/gallery">
           <el-icon><Picture /></el-icon>
           <span>家庭共享相册</span>
         </el-menu-item>
         <el-menu-item v-if="isAdmin" index="/admin">
-          <span>🛡️ 管理后台</span>
+          <el-icon><Setting /></el-icon>
+          <span>管理后台</span>
         </el-menu-item>
       </el-menu>
 
