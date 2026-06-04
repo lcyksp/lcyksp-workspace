@@ -1,0 +1,25 @@
+{
+  "name": "lcyksp-backend",
+  "version": "1.0.0",
+  "description": "lcyksp.xyz 全栈工具箱后端服务",
+  "type": "module",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js",
+    "deploy:pm2": "pm2 start ecosystem.config.cjs",
+    "deploy:pm2:stop": "pm2 stop lcyksp-backend",
+    "deploy:pm2:logs": "pm2 logs lcyksp-backend",
+    "deploy:docker:build": "docker build -t lcyksp-backend .",
+    "deploy:docker:run": "docker run -d --restart unless-stopped -p 3000:3000 -v $(pwd)/data/db:/app/data/db -v $(pwd)/data/uploads:/app/data/uploads lcyksp-backend"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.15.0",
+    "sharp": "^0.33.5",
+    "sqlite3": "^5.1.7"
+  }
+}

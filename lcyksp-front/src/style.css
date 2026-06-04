@@ -1,0 +1,29 @@
+/* lcyksp.xyz V3.0 — 纯黑极简全局样式 */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background-color: #0d0d1a;
+  color: #c0c0d0;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  width: 100%;
+}
+
+/* 暗黑模式覆盖 Element Plus 白色背景 */
+html.dark .el-drawer {
+  --el-drawer-bg-color: #0a0a14;
+}
+html.dark .el-menu {
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: #888;
+  --el-menu-hover-bg-color: #1a1a30;
+  --el-menu-active-color: #409eff;
+}
