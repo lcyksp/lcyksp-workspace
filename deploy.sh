@@ -17,6 +17,8 @@ scp -r ./lcyksp-front/dist admin@47.106.101.81:/home/admin/lcyksp-base/lcyksp-ba
 echo "📡 [4/4] 同步更新后端核心路由与配置文件..."
 scp ./lcyksp-backend/src/routes/recipe.js admin@47.106.101.81:/home/admin/lcyksp-base/lcyksp-backend/src/routes/recipe.js
 scp ./lcyksp-backend/src/config/db.js admin@47.106.101.81:/home/admin/lcyksp-base/lcyksp-backend/src/config/db.js
+scp ./lcyksp-backend/src/routes/admin.js admin@47.106.101.81:/home/admin/lcyksp-base/lcyksp-backend/src/routes/admin.js
+scp ./lcyksp-backend/src/utils/crypto.js admin@47.106.101.81:/home/admin/lcyksp-base/lcyksp-backend/src/utils/crypto.js
 if [ -f "./lcyksp-backend/src/utils/crypto.js" ]; then
     scp ./lcyksp-backend/src/utils/crypto.js admin@47.106.101.81:/home/admin/lcyksp-base/lcyksp-backend/src/utils/crypto.js
 fi
