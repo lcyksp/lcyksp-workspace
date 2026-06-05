@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { getDb } from '../config/db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
+import { encrypt } from '../utils/crypto.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -417,6 +418,94 @@ router.delete('/users/:id', async (req, res, next) => {
     });
 
     res.json({ message: '用户已删除', userId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ===================================================================
+//  三、大模型配置管理（加密存储）
+// ===================================================================
+
+// ---------- POST /api/admin/config/llm — 更新大模型配置 ----------
+router.post('/config/llm', async (req, res, next) => {
+  try {
+    var apiKey = req.body.apiKey;
+    var apiUrl = req.body.apiUrl;
+    var model = req.body.model;
+
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 1) {
+      return res.status(400).json({ error: 'API Key 不能为空' });
+    }
+
+    var encrypted = encrypt(apiKey.trim());
+
+    var safeApiUrl = (typeof apiUrl === 'string' && apiUrl.trim().length > 0)
+      ? apiUrl.trim()
+      : 'https://api.deepseek.com/chat/completions';
+
+    var safeModel = (typeof model === 'string' && model.trim().length > 0)
+      ? model.trim()
+      : 'deepseek-chat';
+
+    var db = getDb();
+
+    var existing = await new Promise((resolve, reject) => {
+      db.get('SELECT id FROM llm_config WHERE id = 1', (err, row) =>
+        err ? reject(err) : resolve(row),
+      );
+    });
+
+    if (existing) {
+      await new Promise((resolve, reject) => {
+        db.run(
+          "UPDATE llm_config SET encrypted_key = ?, iv = ?, auth_tag = ?, api_url = ?, model = ?, updated_at = datetime('now') WHERE id = 1",
+          [encrypted.encrypted, encrypted.iv, encrypted.authTag, safeApiUrl, safeModel],
+          (err) => (err ? reject(err) : resolve()),
+        );
+      });
+    } else {
+      await new Promise((resolve, reject) => {
+        db.run(
+          'INSERT INTO llm_config (encrypted_key, iv, auth_tag, api_url, model) VALUES (?, ?, ?, ?, ?)',
+          [encrypted.encrypted, encrypted.iv, encrypted.authTag, safeApiUrl, safeModel],
+          (err) => (err ? reject(err) : resolve()),
+        );
+      });
+    }
+
+    res.json({ message: '大模型配置已加密存储', apiUrl: safeApiUrl, model: safeModel });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------- GET /api/admin/config/llm — 读取大模型配置（不返回 Key 明文）----------
+router.get('/config/llm', async (req, res, next) => {
+  try {
+    var db = getDb();
+    var row = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT api_url, model, updated_at FROM llm_config WHERE id = 1',
+        (err, row) => (err ? reject(err) : resolve(row)),
+      );
+    });
+
+    if (!row) {
+      return res.json({
+        configured: false,
+        apiUrl: 'https://api.deepseek.com/chat/completions',
+        model: 'deepseek-chat',
+      });
+    }
+
+    res.json({
+      configured: true,
+      apiUrl: row.api_url,
+      model: row.model,
+      updatedAt: row.updated_at,
+      keyHint: '已配置（加密存储，不返回明文）',
+    });
   } catch (err) {
     next(err);
   }
