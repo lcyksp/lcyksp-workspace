@@ -73,14 +73,9 @@ export async function initDb() {
       );
 
       db.run(
-        'CREATE TABLE IF NOT EXISTS llm_config (' +
-        '  id            INTEGER PRIMARY KEY AUTOINCREMENT,' +
-        '  encrypted_key TEXT NOT NULL DEFAULT \'\',' +
-        '  iv            TEXT NOT NULL DEFAULT \'\',' +
-        '  auth_tag      TEXT NOT NULL DEFAULT \'\',' +
-        '  api_url       TEXT NOT NULL DEFAULT \'https://api.deepseek.com/chat/completions\',' +
-        '  model         TEXT NOT NULL DEFAULT \'deepseek-chat\',' +
-        '  updated_at    TEXT NOT NULL DEFAULT (datetime(\'now\'))' +
+        'CREATE TABLE IF NOT EXISTS system_config (' +
+        '  key   TEXT PRIMARY KEY,' +
+        '  value TEXT NOT NULL' +
         ');',
       );
 
