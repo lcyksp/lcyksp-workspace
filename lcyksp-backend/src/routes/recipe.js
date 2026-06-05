@@ -10,21 +10,19 @@ function loadDecryptedApiKey() {
   return new Promise(function (resolve) {
     try {
       var db = getDb();
-      db.get(
-        'SELECT encrypted_key, iv, auth_tag FROM llm_config WHERE id = 1',
-        function (err, row) {
-          if (err || !row || !row.encrypted_key) {
-            resolve(null);
-            return;
-          }
-          try {
-            var key = decrypt(row.encrypted_key, row.iv, row.auth_tag);
-            resolve(key || null);
-          } catch (e) {
-            resolve(null);
-          }
-        },
-      );
+      db.get('SELECT value FROM system_config WHERE key = ?', ['llm_key'], function (err, row) {
+        if (err || !row || !row.value) {
+          resolve(null);
+          return;
+        }
+        try {
+          var parsed = JSON.parse(row.value);
+          var key = decrypt(parsed.encrypted, parsed.iv, parsed.authTag);
+          resolve(key || null);
+        } catch (e) {
+          resolve(null);
+        }
+      });
     } catch (e) {
       resolve(null);
     }
@@ -35,19 +33,18 @@ function loadLlmEndpoint() {
   return new Promise(function (resolve) {
     try {
       var db = getDb();
-      db.get(
-        'SELECT api_url, model FROM llm_config WHERE id = 1',
-        function (err, row) {
-          if (err || !row) {
-            resolve({ apiUrl: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' });
-            return;
-          }
-          resolve({
-            apiUrl: row.api_url || 'https://api.deepseek.com/chat/completions',
-            model: row.model || 'deepseek-chat',
-          });
-        },
-      );
+      db.all('SELECT key, value FROM system_config WHERE key IN (\'llm_url\', \'llm_model\')', function (err, rows) {
+        if (err || !rows || rows.length === 0) {
+          resolve({ apiUrl: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' });
+          return;
+        }
+        var result = { apiUrl: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' };
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].key === 'llm_url') result.apiUrl = rows[i].value;
+          if (rows[i].key === 'llm_model') result.model = rows[i].value;
+        }
+        resolve(result);
+      });
     } catch (e) {
       resolve({ apiUrl: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' });
     }
@@ -56,9 +53,6 @@ function loadLlmEndpoint() {
 
 async function streamRecipeSteps(recipe, res, signal) {
   var apiKey = await loadDecryptedApiKey();
-  if (!apiKey) {
-    apiKey = process.env.DEEPSEEK_API_KEY || '';
-  }
   if (!apiKey) {
     res.write('data: ' + JSON.stringify({ error: '未配置 AI API Key' }) + '\n\n');
     res.write('data: [DONE]\n\n');

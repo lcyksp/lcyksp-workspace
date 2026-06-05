@@ -241,6 +241,7 @@ const llmConfig = reactive({
 })
 const llmLoading = ref(false)
 const llmSaving = ref(false)
+const llmTesting = ref(false)
 
 async function loadLlmConfig() {
   llmLoading.value = true
@@ -254,6 +255,31 @@ async function loadLlmConfig() {
     console.error('加载大模型配置失败:', err)
   } finally {
     llmLoading.value = false
+  }
+}
+
+async function testLlmConfig() {
+  if (!llmConfig.apiKey || llmConfig.apiKey.trim().length < 1) {
+    ElMessage.warning('请先输入 API Key 再测试')
+    return
+  }
+
+  llmTesting.value = true
+  try {
+    const res = await axios.post('/api/admin/config/llm/test', {
+      apiKey: llmConfig.apiKey.trim(),
+      apiUrl: llmConfig.apiUrl.trim() || 'https://api.deepseek.com/chat/completions',
+      model: llmConfig.model.trim() || 'deepseek-chat',
+    })
+    if (res.data.success) {
+      ElMessage.success('连接成功')
+    } else {
+      ElMessage.error('连接失败: ' + (res.data.error || '未知错误'))
+    }
+  } catch (err) {
+    ElMessage.error('连接测试请求失败')
+  } finally {
+    llmTesting.value = false
   }
 }
 
@@ -472,14 +498,25 @@ onMounted(() => {
             </el-form-item>
 
             <el-form-item>
-              <el-button
-                type="primary"
-                size="large"
-                :loading="llmSaving"
-                @click="saveLlmConfig"
-              >
-                {{ llmSaving ? '加密保存中…' : '保存配置' }}
-              </el-button>
+              <div style="display: flex; gap: 10px; width: 100%;">
+                <el-button
+                  type="primary"
+                  size="large"
+                  :loading="llmSaving"
+                  style="flex: 1;"
+                  @click="saveLlmConfig"
+                >
+                  {{ llmSaving ? '加密保存中…' : '保存配置' }}
+                </el-button>
+                <el-button
+                  size="large"
+                  :loading="llmTesting"
+                  style="flex: 1;"
+                  @click="testLlmConfig"
+                >
+                  {{ llmTesting ? '测试中…' : '测试连接' }}
+                </el-button>
+              </div>
             </el-form-item>
           </el-form>
         </div>
@@ -698,10 +735,6 @@ onMounted(() => {
 
 .llm-form-wrap .el-form-item:last-child {
   margin-bottom: 0;
-}
-
-.llm-form-wrap .el-form-item:last-child .el-button {
-  width: 100%;
 }
 
 @media (max-width: 640px) {
