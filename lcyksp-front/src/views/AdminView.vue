@@ -2,9 +2,10 @@
 /**
  * AdminView.vue — 管理员后台看板
  *
- * 两个标签页：
+ * 三个标签页：
  *   1. 文件管理 — 查看所有上传文件 + 删除
  *   2. 用户管理 — 查看/新增/修改/删除用户
+ *   3. 大模型配置 — 加密存储 API Key / URL / Model
  *
  * 需要当前用户 role === 'admin'，路由层 meta.requiresAdmin 做前置守卫
  */
@@ -230,6 +231,55 @@ async function loadUsers() {
   }
 }
 
+// ===================================================================
+//  大模型配置
+// ===================================================================
+const llmConfig = reactive({
+  apiUrl: 'https://api.deepseek.com/chat/completions',
+  apiKey: '',
+  model: 'deepseek-chat',
+})
+const llmLoading = ref(false)
+const llmSaving = ref(false)
+
+async function loadLlmConfig() {
+  llmLoading.value = true
+  try {
+    const res = await axios.get('/api/admin/config/llm')
+    if (res.data.configured) {
+      llmConfig.apiUrl = res.data.apiUrl || 'https://api.deepseek.com/chat/completions'
+      llmConfig.model = res.data.model || 'deepseek-chat'
+    }
+  } catch (err) {
+    console.error('加载大模型配置失败:', err)
+  } finally {
+    llmLoading.value = false
+  }
+}
+
+async function saveLlmConfig() {
+  if (!llmConfig.apiKey || llmConfig.apiKey.trim().length < 1) {
+    ElMessage.warning('API Key 不能为空')
+    return
+  }
+
+  llmSaving.value = true
+  try {
+    await axios.post('/api/admin/config/llm', {
+      apiKey: llmConfig.apiKey.trim(),
+      apiUrl: llmConfig.apiUrl.trim() || 'https://api.deepseek.com/chat/completions',
+      model: llmConfig.model.trim() || 'deepseek-chat',
+    })
+    ElMessage.success('大模型配置已加密保存')
+    llmConfig.apiKey = ''
+    loadLlmConfig()
+  } catch (err) {
+    // 拦截器已处理提示
+  } finally {
+    llmSaving.value = false
+  }
+}
+
 // ---------- 工具函数 ----------
 function formatTime(iso) {
   if (!iso) return '-'
@@ -246,6 +296,7 @@ function isExpired(iso) {
 onMounted(() => {
   loadFiles()
   loadUsers()
+  loadLlmConfig()
 })
 </script>
 
@@ -375,6 +426,63 @@ onMounted(() => {
             </template>
           </el-table-column>
         </el-table>
+      </el-tab-pane>
+
+      <!-- ============================================================ -->
+      <!--  标签三：大模型配置 -->
+      <!-- ============================================================ -->
+      <el-tab-pane label="🤖 大模型配置">
+        <div class="tab-header">
+          <span class="tab-count">加密存储 · 仅在内存中解密使用</span>
+          <el-button size="small" @click="loadLlmConfig" :loading="llmLoading">
+            <el-icon><Refresh /></el-icon> 刷新
+          </el-button>
+        </div>
+
+        <div class="llm-form-wrap">
+          <el-form
+            label-position="top"
+            size="large"
+            @keyup.enter="saveLlmConfig"
+          >
+            <el-form-item label="API URL">
+              <el-input
+                v-model="llmConfig.apiUrl"
+                placeholder="https://api.deepseek.com/chat/completions"
+                clearable
+              />
+            </el-form-item>
+
+            <el-form-item label="API Key">
+              <el-input
+                v-model="llmConfig.apiKey"
+                type="password"
+                show-password
+                placeholder="输入新的 API Key（留空则不更新）"
+                clearable
+              />
+            </el-form-item>
+
+            <el-form-item label="模型型号">
+              <el-input
+                v-model="llmConfig.model"
+                placeholder="deepseek-chat"
+                clearable
+              />
+            </el-form-item>
+
+            <el-form-item>
+              <el-button
+                type="primary"
+                size="large"
+                :loading="llmSaving"
+                @click="saveLlmConfig"
+              >
+                {{ llmSaving ? '加密保存中…' : '保存配置' }}
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </div>
       </el-tab-pane>
     </el-tabs>
 
@@ -581,6 +689,19 @@ onMounted(() => {
 .form-hint {
   color: #888;
   font-size: 0.8rem;
+}
+
+.llm-form-wrap {
+  max-width: 560px;
+  padding: 8px 0;
+}
+
+.llm-form-wrap .el-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.llm-form-wrap .el-form-item:last-child .el-button {
+  width: 100%;
 }
 
 @media (max-width: 640px) {
