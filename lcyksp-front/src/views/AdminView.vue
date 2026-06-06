@@ -232,7 +232,7 @@ async function loadUsers() {
 }
 
 // ===================================================================
-//  大模型配置
+//  大模型配置（含 AutoComplete 历史记录）
 // ===================================================================
 const llmConfig = reactive({
   apiUrl: 'https://api.deepseek.com/chat/completions',
@@ -243,6 +243,113 @@ const llmLoading = ref(false)
 const llmSaving = ref(false)
 const llmTesting = ref(false)
 
+// ----- localStorage 历史记录辅助函数 -----
+const MAX_HISTORY = 5
+const HISTORY_KEYS = {
+  url: 'llmUrlHistory',
+  key: 'llmKeyHistory',
+  model: 'llmModelHistory',
+}
+
+function loadHistory(storageKey) {
+  try {
+    const raw = localStorage.getItem(storageKey)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function saveHistoryItem(storageKey, value) {
+  if (!value || typeof value !== 'string' || value.trim().length < 1) return
+  const trimmed = value.trim()
+  let list = loadHistory(storageKey)
+  // 去重：移除已存在的相同项
+  list = list.filter(function (item) { return item !== trimmed })
+  // 插入到最前面
+  list.unshift(trimmed)
+  // 截断
+  if (list.length > MAX_HISTORY) list = list.slice(0, MAX_HISTORY)
+  localStorage.setItem(storageKey, JSON.stringify(list))
+}
+
+// ----- AutoComplete 查询方法（合并后端历史 + localStorage） -----
+async function queryUrlHistory(queryString, cb) {
+  var localList = loadHistory(HISTORY_KEYS.url)
+  var backendList = []
+  try {
+    var res = await axios.get('/api/admin/config/llm/history', { params: { type: 'apiUrl' } })
+    if (res.data && res.data.history) {
+      backendList = res.data.history.map(function (h) { return h.value })
+    }
+  } catch (err) {
+    console.error('加载 URL 历史失败:', err)
+  }
+  // 合并：后端在前，localStorage 在后，去重
+  var merged = []
+  var seen = {}
+  backendList.concat(localList).forEach(function (item) {
+    if (!seen[item]) {
+      seen[item] = true
+      merged.push(item)
+    }
+  })
+  var results = queryString
+    ? merged.filter(function (item) { return item.toLowerCase().indexOf(queryString.toLowerCase()) !== -1 })
+    : merged
+  cb(results.map(function (item) { return { value: item } }))
+}
+
+async function queryKeyHistory(queryString, cb) {
+  var localList = loadHistory(HISTORY_KEYS.key)
+  var backendList = []
+  try {
+    var res = await axios.get('/api/admin/config/llm/history', { params: { type: 'apiKey' } })
+    if (res.data && res.data.history) {
+      backendList = res.data.history.map(function (h) { return h.value })
+    }
+  } catch (err) {
+    console.error('加载 Key 历史失败:', err)
+  }
+  var merged = []
+  var seen = {}
+  backendList.concat(localList).forEach(function (item) {
+    if (!seen[item]) {
+      seen[item] = true
+      merged.push(item)
+    }
+  })
+  var results = queryString
+    ? merged.filter(function (item) { return item.toLowerCase().indexOf(queryString.toLowerCase()) !== -1 })
+    : merged
+  cb(results.map(function (item) { return { value: item } }))
+}
+
+async function queryModelHistory(queryString, cb) {
+  var localList = loadHistory(HISTORY_KEYS.model)
+  var backendList = []
+  try {
+    var res = await axios.get('/api/admin/config/llm/history', { params: { type: 'model' } })
+    if (res.data && res.data.history) {
+      backendList = res.data.history.map(function (h) { return h.value })
+    }
+  } catch (err) {
+    console.error('加载 Model 历史失败:', err)
+  }
+  var merged = []
+  var seen = {}
+  backendList.concat(localList).forEach(function (item) {
+    if (!seen[item]) {
+      seen[item] = true
+      merged.push(item)
+    }
+  })
+  var results = queryString
+    ? merged.filter(function (item) { return item.toLowerCase().indexOf(queryString.toLowerCase()) !== -1 })
+    : merged
+  cb(results.map(function (item) { return { value: item } }))
+}
+
 async function loadLlmConfig() {
   llmLoading.value = true
   try {
@@ -250,6 +357,9 @@ async function loadLlmConfig() {
     if (res.data.configured) {
       llmConfig.apiUrl = res.data.apiUrl || 'https://api.deepseek.com/chat/completions'
       llmConfig.model = res.data.model || 'deepseek-chat'
+      if (res.data.apiKey) {
+        llmConfig.apiKey = res.data.apiKey
+      }
     }
   } catch (err) {
     console.error('加载大模型配置失败:', err)
@@ -296,6 +406,11 @@ async function saveLlmConfig() {
       apiUrl: llmConfig.apiUrl.trim() || 'https://api.deepseek.com/chat/completions',
       model: llmConfig.model.trim() || 'deepseek-chat',
     })
+    // 接口内部已自动保存历史记录到 llm_config_history 表
+    // 同时写入 localStorage 作为离线缓存
+    saveHistoryItem(HISTORY_KEYS.url, llmConfig.apiUrl)
+    saveHistoryItem(HISTORY_KEYS.key, llmConfig.apiKey)
+    saveHistoryItem(HISTORY_KEYS.model, llmConfig.model)
     ElMessage.success('大模型配置已加密保存')
     llmConfig.apiKey = ''
     loadLlmConfig()
@@ -472,28 +587,37 @@ onMounted(() => {
             @keyup.enter="saveLlmConfig"
           >
             <el-form-item label="API URL">
-              <el-input
+              <el-autocomplete
                 v-model="llmConfig.apiUrl"
+                :fetch-suggestions="queryUrlHistory"
                 placeholder="https://api.deepseek.com/chat/completions"
                 clearable
+                :trigger-on-focus="true"
+                class="llm-autocomplete"
               />
             </el-form-item>
 
             <el-form-item label="API Key">
-              <el-input
+              <el-autocomplete
                 v-model="llmConfig.apiKey"
+                :fetch-suggestions="queryKeyHistory"
                 type="password"
                 show-password
                 placeholder="输入新的 API Key（留空则不更新）"
                 clearable
+                :trigger-on-focus="true"
+                class="llm-autocomplete"
               />
             </el-form-item>
 
             <el-form-item label="模型型号">
-              <el-input
+              <el-autocomplete
                 v-model="llmConfig.model"
+                :fetch-suggestions="queryModelHistory"
                 placeholder="deepseek-chat"
                 clearable
+                :trigger-on-focus="true"
+                class="llm-autocomplete"
               />
             </el-form-item>
 
@@ -735,6 +859,36 @@ onMounted(() => {
 
 .llm-form-wrap .el-form-item:last-child {
   margin-bottom: 0;
+}
+
+.llm-autocomplete {
+  width: 100%;
+}
+
+:deep(.llm-autocomplete .el-input__wrapper) {
+  background: #0d0d1a;
+  box-shadow: 0 0 0 1px #222244 inset;
+}
+:deep(.llm-autocomplete .el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #333366 inset;
+}
+:deep(.llm-autocomplete .el-input__inner) {
+  color: #c0c0e0;
+}
+:deep(.el-autocomplete-suggestion__wrap) {
+  background: #16162a;
+  border: 1px solid #222244;
+  border-radius: 8px;
+}
+:deep(.el-autocomplete-suggestion__list li) {
+  color: #c0c0e0;
+  background: transparent;
+  padding: 8px 14px;
+  font-size: 0.88rem;
+}
+:deep(.el-autocomplete-suggestion__list li:hover) {
+  background: #1e1e40;
+  color: #409eff;
 }
 
 @media (max-width: 640px) {
