@@ -3,10 +3,28 @@
  * RecipeView.vue — 赛博菜谱（AI Kitchen & Recipe Bank）
  *
  * 功能：搜索栏 + 瀑布流卡片 + AI 流式续写做法弹窗 + 自创菜式
+ * Markdown 渲染：消除 ** 符号，呈现自然排版
  */
 import { ref, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
+
+// ---------- 轻量 Markdown → HTML 转换 ----------
+function renderMarkdown(text) {
+  if (!text) return ''
+  let html = text
+    // 转义 HTML 实体
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    // **粗体**
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    // *斜体*
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    // 换行 → <br>
+    .replace(/\n/g, '<br>')
+  return html
+}
 
 // ---------- 搜索 ----------
 const searchQuery = ref('')
@@ -275,10 +293,10 @@ async function submitAdd() {
           <span>AI 正在为你编写做法…</span>
         </div>
 
-        <!-- 流式内容（打字机效果） -->
+        <!-- 流式内容（打字机效果 + Markdown 渲染） -->
         <div v-if="aiContent" class="dialog-content">
           <div class="dialog-content-label">📝 AI 做法步骤</div>
-          <div class="dialog-typewriter">{{ aiContent }}</div>
+          <div class="dialog-typewriter" v-html="renderMarkdown(aiContent)" />
         </div>
 
         <!-- 已完成标记 -->
@@ -546,8 +564,23 @@ async function submitAdd() {
   color: #c0c0e0;
   font-size: 0.95rem;
   line-height: 1.8;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.dialog-typewriter :deep(strong) {
+  color: #f0c040;
+  font-weight: 600;
+}
+
+.dialog-typewriter :deep(em) {
+  color: #7ccd3a;
+  font-style: italic;
+}
+
+.dialog-typewriter :deep(br) {
+  content: '';
+  display: block;
+  margin: 4px 0;
 }
 
 .dialog-complete {
