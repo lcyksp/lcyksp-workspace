@@ -285,7 +285,94 @@ router.delete('/users/:id', async function (req, res, next) {
 });
 
 // ===================================================================
-//  大模型配置管理
+//  LLM 配置历史记录
+// ===================================================================
+
+// GET /api/admin/config/llm/history?type=url|key|model
+// 返回指定类型的历史记录（最多 5 条，按时间倒序）
+router.get('/config/llm/history', async function (req, res, next) {
+  try {
+    var type = req.query.type;
+    if (!type || !['apiUrl', 'apiKey', 'model'].includes(type)) {
+      return res.status(400).json({ error: '无效的类型，可用值: apiUrl, apiKey, model' });
+    }
+
+    // 将前端类型名映射为数据库 type 值（保持与前端一致更好，不过这里直接用）
+    // 前端类型: apiUrl, apiKey, model → 对应存储的前缀
+    var db = getDb();
+    var rows = await new Promise(function (resolve, reject) {
+      db.all(
+        'SELECT value, created_at FROM llm_config_history WHERE type = ? ORDER BY created_at DESC LIMIT 5',
+        [type],
+        function (err, rows) {
+          if (err) return reject(err);
+          resolve(rows);
+        },
+      );
+    });
+
+    var history = rows.map(function (r) { return { value: r.value, createdAt: r.created_at } });
+    res.json({ history: history });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/config/llm/history
+// 保存一组历史记录
+router.post('/config/llm/history', async function (req, res, next) {
+  try {
+    var items = req.body.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'items 必须是非空数组' });
+    }
+
+    var db = getDb();
+
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item.type || !['apiUrl', 'apiKey', 'model'].includes(item.type)) continue;
+      if (!item.value || typeof item.value !== 'string' || item.value.trim().length < 1) continue;
+
+      var trimmed = item.value.trim();
+
+      // 去重：如果已存在相同 type+value 的记录，先删旧的
+      await new Promise(function (resolve, reject) {
+        db.run('DELETE FROM llm_config_history WHERE type = ? AND value = ?', [item.type, trimmed], function (err) {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+
+      // 插入新记录（当前时间）
+      await new Promise(function (resolve, reject) {
+        db.run('INSERT INTO llm_config_history (type, value) VALUES (?, ?)', [item.type, trimmed], function (err) {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+
+      // 超出 5 条时删除最旧的
+      await new Promise(function (resolve, reject) {
+        db.run(
+          'DELETE FROM llm_config_history WHERE type = ? AND id NOT IN (SELECT id FROM llm_config_history WHERE type = ? ORDER BY created_at DESC LIMIT 5)',
+          [item.type, item.type],
+          function (err) {
+            if (err) return reject(err);
+            resolve();
+          },
+        );
+      });
+    }
+
+    res.json({ message: '历史记录已保存' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ===================================================================
+//  大模型配置管理（当前活跃配置）
 // ===================================================================
 
 router.get('/config/llm', async function (req, res, next) {
@@ -345,7 +432,104 @@ router.post('/config/llm', async function (req, res, next) {
     db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['llm_url', safeUrl]);
     db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['llm_model', safeModel]);
 
+    // 同步保存到历史记录表（去重 + 最多 5 条）
+    var historyItems = [
+      { type: 'apiUrl', value: safeUrl },
+      { type: 'apiKey', value: apiKey.trim() },
+      { type: 'model', value: safeModel },
+    ];
+    for (var h = 0; h < historyItems.length; h++) {
+      var hItem = historyItems[h];
+      await new Promise(function (resolve, reject) {
+        db.run('DELETE FROM llm_config_history WHERE type = ? AND value = ?', [hItem.type, hItem.value], function (err) {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+      await new Promise(function (resolve, reject) {
+        db.run('INSERT INTO llm_config_history (type, value) VALUES (?, ?)', [hItem.type, hItem.value], function (err) {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+      // 限制每个类型最多 5 条
+      await new Promise(function (resolve, reject) {
+        db.run(
+          'DELETE FROM llm_config_history WHERE type = ? AND id NOT IN (SELECT id FROM llm_config_history WHERE type = ? ORDER BY created_at DESC LIMIT 5)',
+          [hItem.type, hItem.type],
+          function (err) {
+            if (err) return reject(err);
+            resolve();
+          },
+        );
+      });
+    }
+
     res.json({ message: '配置已保存' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/config/llm/test
+// 不保存数据库，测试大模型连接
+router.post('/config/llm/test', async function (req, res, next) {
+  try {
+    var apiKey = req.body.apiKey;
+    var apiUrl = req.body.apiUrl;
+    var model = req.body.model;
+
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 1) {
+      return res.json({ success: false, error: 'API Key 未提供' });
+    }
+
+    // 自动补全 /chat/completions
+    function normalizeEndpoint(url) {
+      if (!url || typeof url !== 'string') return 'https://api.deepseek.com/chat/completions';
+      var trimmed = url.trim();
+      if (trimmed.slice(-18) === '/chat/completions') return trimmed;
+      if (trimmed.slice(-1) === '/') return trimmed + 'chat/completions';
+      return trimmed + '/chat/completions';
+    }
+
+    var targetUrl = normalizeEndpoint(apiUrl);
+    var targetModel = (typeof model === 'string' && model.trim().length > 0) ? model.trim() : 'deepseek-chat';
+
+    var abortController = new AbortController();
+    var timeoutTimer = setTimeout(function () { abortController.abort(); }, 10000);
+
+    try {
+      var response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + apiKey.trim(),
+        },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            { role: 'user', content: 'ping' },
+          ],
+        }),
+        signal: abortController.signal,
+      });
+
+      clearTimeout(timeoutTimer);
+
+      if (!response.ok) {
+        var errText = '';
+        try { errText = await response.text(); } catch (e) { errText = '无法读取错误详情'; }
+        return res.json({ success: false, error: 'HTTP ' + response.status + ': ' + errText });
+      }
+
+      return res.json({ success: true, model: targetModel, message: '连接测试成功' });
+    } catch (fetchErr) {
+      clearTimeout(timeoutTimer);
+      if (fetchErr.name === 'AbortError') {
+        return res.json({ success: false, error: '连接超时（10秒）' });
+      }
+      return res.json({ success: false, error: fetchErr.message || '请求失败' });
+    }
   } catch (err) {
     next(err);
   }

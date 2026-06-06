@@ -80,6 +80,16 @@ export async function initDb() {
       );
 
       db.run(
+        'CREATE TABLE IF NOT EXISTS llm_config_history (' +
+        '  id         INTEGER PRIMARY KEY AUTOINCREMENT,' +
+        '  type       TEXT NOT NULL,' +
+        '  value      TEXT NOT NULL,' +
+        '  created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),' +
+        '  UNIQUE(type, value)' +
+        ');',
+      );
+
+      db.run(
         'CREATE TABLE IF NOT EXISTS transfers (' +
         '  id            VARCHAR(32) PRIMARY KEY,' +
         '  file_name     TEXT    NOT NULL,' +
@@ -104,6 +114,7 @@ export async function initDb() {
       db.run('CREATE INDEX IF NOT EXISTS idx_recipes_tags ON recipes(tags)', function () {});
       db.run('CREATE INDEX IF NOT EXISTS idx_transfers_expire ON transfers(expire_time)', function () {});
       db.run('CREATE INDEX IF NOT EXISTS idx_gallery_photos_group ON gallery_photos(family_group_id)', function () {});
+      db.run('CREATE INDEX IF NOT EXISTS idx_llm_history_type ON llm_config_history(type)', function () {});
 
       db.run(
         "UPDATE users SET role = 'admin' WHERE id = 1 AND role != 'admin'",
