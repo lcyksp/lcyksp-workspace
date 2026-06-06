@@ -2,10 +2,10 @@
 /**
  * RecipeView.vue — 赛博菜谱（AI Kitchen & Recipe Bank）
  *
- * 功能：搜索栏 + 瀑布流卡片 + AI 流式续写做法 + 自创菜式
+ * 功能：搜索栏 + 瀑布流卡片 + AI 流式续写做法弹窗 + 自创菜式
  */
-import { ref, computed, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ref, nextTick } from 'vue'
+import { ElMessage } from 'element-plus'
 import axios from 'axios'
 
 // ---------- 搜索 ----------
@@ -36,35 +36,50 @@ function onSearchInput() {
   searchTimer = setTimeout(doSearch, 300)
 }
 
-// ---------- SSE 流式续写 ----------
-const streamingId = ref(null)      // 当前正在流式加载的 recipe id
-const streamContents = ref({})     // { [recipeId]: '已接收的文本' }
-const streamErrors = ref({})       // { [recipeId]: '错误信息' }
+// ---------- AI 流式续写弹窗 ----------
+const aiDialogVisible = ref(false)
+const aiDialogRecipe = ref(null)
+const aiContent = ref('')
+const aiStreaming = ref(false)
+const aiError = ref('')
 
-async function startStream(recipe) {
-  // 如果已有内容，重置
-  streamContents.value[recipe.id] = ''
-  streamErrors.value[recipe.id] = ''
-  streamingId.value = recipe.id
+function openAiDialog(recipe) {
+  aiDialogRecipe.value = recipe
+  aiContent.value = ''
+  aiError.value = ''
+  aiDialogVisible.value = true
+  // 自动开始流式请求
+  nextTick(() => startAiStream(recipe))
+}
+
+let aiReader = null
+let aiAbortController = null
+
+async function startAiStream(recipe) {
+  aiContent.value = ''
+  aiError.value = ''
+  aiStreaming.value = true
+  aiAbortController = new AbortController()
 
   try {
     const res = await fetch(`/api/recipe/${recipe.id}/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: aiAbortController.signal,
     })
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({ error: '请求失败' }))
-      streamErrors.value[recipe.id] = errData.error || `请求失败 (${res.status})`
+      aiError.value = errData.error || `请求失败 (${res.status})`
       return
     }
 
-    const reader = res.body.getReader()
+    aiReader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
 
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await aiReader.read()
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })
@@ -79,35 +94,37 @@ async function startStream(recipe) {
 
         try {
           const parsed = JSON.parse(data)
-          if (parsed.meta) {
-            // 元信息，忽略
-          } else if (parsed.content) {
-            streamContents.value[recipe.id] = (streamContents.value[recipe.id] || '') + parsed.content
-          } else if (parsed.error) {
-            streamErrors.value[recipe.id] = parsed.error
-          }
-        } catch { /* skip */ }
-      }
-    }
-
-    // 消费剩余 buffer
-    if (buffer.trim().startsWith('data: ')) {
-      const data = buffer.trim().slice(6)
-      if (data !== '[DONE]') {
-        try {
-          const parsed = JSON.parse(data)
           if (parsed.content) {
-            streamContents.value[recipe.id] = (streamContents.value[recipe.id] || '') + parsed.content
+            aiContent.value += parsed.content
+          } else if (parsed.error) {
+            aiError.value = parsed.error
           }
         } catch { /* skip */ }
       }
     }
   } catch (err) {
-    streamErrors.value[recipe.id] = '网络连接失败: ' + err.message
+    if (err.name === 'AbortError') return
+    aiError.value = '网络连接失败: ' + err.message
   } finally {
-    if (streamingId.value === recipe.id) {
-      streamingId.value = null
-    }
+    aiStreaming.value = false
+    aiReader = null
+  }
+}
+
+function closeAiDialog() {
+  if (aiAbortController) {
+    aiAbortController.abort()
+  }
+  aiDialogVisible.value = false
+  aiContent.value = ''
+  aiError.value = ''
+  aiStreaming.value = false
+  aiDialogRecipe.value = null
+}
+
+function retryAiStream() {
+  if (aiDialogRecipe.value) {
+    startAiStream(aiDialogRecipe.value)
   }
 }
 
@@ -138,7 +155,6 @@ async function submitAdd() {
     })
     ElMessage.success(`「${name}」已加入私房菜资产库！`)
     addDialogVisible.value = false
-    // 如果当前有搜索词，重新搜索
     if (searchQuery.value.trim()) {
       doSearch()
     }
@@ -148,11 +164,6 @@ async function submitAdd() {
     adding.value = false
   }
 }
-
-// ---------- 工具 ----------
-const hasStreamContent = (id) => streamContents.value[id] && streamContents.value[id].length > 0
-const isStreaming = (id) => streamingId.value === id
-const getStreamError = (id) => streamErrors.value[id] || ''
 </script>
 
 <template>
@@ -206,7 +217,6 @@ const getStreamError = (id) => streamErrors.value[id] || ''
         :key="recipe.id"
         class="recipe-card"
       >
-        <!-- 卡片头部 -->
         <div class="card-header">
           <h3 class="card-title">{{ recipe.name }}</h3>
           <div v-if="recipe.tags.length > 0" class="card-tags">
@@ -222,58 +232,84 @@ const getStreamError = (id) => streamErrors.value[id] || ''
           </div>
         </div>
 
-        <!-- 原料 -->
         <div v-if="recipe.ingredients" class="card-section">
           <span class="section-label">🥘 原料：</span>
           <span class="section-text">{{ recipe.ingredients }}</span>
         </div>
 
-        <!-- AI 续写做法区域 -->
+        <!-- AI 按钮 — 打开弹窗 -->
         <div class="card-ai-section">
           <el-button
-            v-if="!isStreaming(recipe.id) && !hasStreamContent(recipe.id)"
             class="ai-btn"
             size="small"
-            @click="startStream(recipe)"
+            @click="openAiDialog(recipe)"
           >
             <el-icon :size="14"><MagicStick /></el-icon>
             我不会做 — AI 教我
           </el-button>
-
-          <!-- 加载中动画 -->
-          <div v-if="isStreaming(recipe.id)" class="stream-loading">
-            <el-icon class="is-loading" :size="16"><Loading /></el-icon>
-            <span>AI 正在编写做法…</span>
-          </div>
-
-          <!-- 打字机效果 -->
-          <div
-            v-if="hasStreamContent(recipe.id)"
-            class="stream-content"
-          >
-            <div class="section-label">📝 AI 做法：</div>
-            <div class="typewriter-text">{{ streamContents[recipe.id] }}</div>
-          </div>
-
-          <!-- 错误提示 -->
-          <div v-if="getStreamError(recipe.id)" class="stream-error">
-            <el-icon :size="14"><WarningFilled /></el-icon>
-            {{ getStreamError(recipe.id) }}
-          </div>
-
-          <!-- 重新生成 -->
-          <el-button
-            v-if="hasStreamContent(recipe.id) && !isStreaming(recipe.id)"
-            text
-            size="small"
-            class="retry-btn"
-            @click="startStream(recipe)"
-          >
-            <el-icon><Refresh /></el-icon> 重新生成
-          </el-button>
         </div>
       </div>
     </div>
+
+    <!-- ====== AI 流式续写弹窗 ====== -->
+    <el-dialog
+      v-model="aiDialogVisible"
+      :title="aiDialogRecipe ? '🍳 ' + aiDialogRecipe.name : 'AI 续写做法'"
+      width="600px"
+      :close-on-click-modal="false"
+      :before-close="closeAiDialog"
+      top="5vh"
+      class="ai-dialog"
+      destroy-on-close
+    >
+      <div class="ai-dialog-body">
+        <!-- 原料信息 -->
+        <div v-if="aiDialogRecipe && aiDialogRecipe.ingredients" class="dialog-ingredients">
+          <span class="dialog-ingredients-label">🥘 原料：</span>
+          <span class="dialog-ingredients-text">{{ aiDialogRecipe.ingredients }}</span>
+        </div>
+
+        <!-- 加载中 -->
+        <div v-if="aiStreaming && !aiContent" class="dialog-loading">
+          <el-icon class="is-loading" :size="28"><Loading /></el-icon>
+          <span>AI 正在为你编写做法…</span>
+        </div>
+
+        <!-- 流式内容（打字机效果） -->
+        <div v-if="aiContent" class="dialog-content">
+          <div class="dialog-content-label">📝 AI 做法步骤</div>
+          <div class="dialog-typewriter">{{ aiContent }}</div>
+        </div>
+
+        <!-- 已完成标记 -->
+        <div v-if="!aiStreaming && aiContent && !aiError" class="dialog-complete">
+          做法已生成完毕
+        </div>
+
+        <!-- 错误提示 -->
+        <div v-if="aiError" class="dialog-error">
+          <el-icon :size="16"><WarningFilled /></el-icon>
+          <span>{{ aiError }}</span>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="closeAiDialog">关闭</el-button>
+          <el-button
+            v-if="!aiStreaming"
+            type="warning"
+            :icon="'Refresh'"
+            @click="retryAiStream"
+          >
+            重新生成
+          </el-button>
+          <span v-if="aiStreaming" class="dialog-streaming-hint">
+            <el-icon class="is-loading"><Loading /></el-icon> 正在生成…
+          </span>
+        </div>
+      </template>
+    </el-dialog>
 
     <!-- ====== 添加菜式弹窗 ====== -->
     <el-dialog
@@ -418,7 +454,7 @@ const getStreamError = (id) => streamErrors.value[id] || ''
   color: #aaa;
 }
 
-/* AI 区域 */
+/* AI 按钮 */
 .card-ai-section {
   margin-top: 12px;
   padding-top: 12px;
@@ -435,43 +471,117 @@ const getStreamError = (id) => streamErrors.value[id] || ''
   color: #1a1a2e;
 }
 
-.stream-loading {
+/* ===== AI 流式弹窗 ===== */
+:deep(.ai-dialog .el-dialog__header) {
+  padding: 20px 24px 0;
+}
+:deep(.ai-dialog .el-dialog__title) {
+  color: #e0e0e0;
+  font-size: 1.15rem;
+  font-weight: 500;
+}
+:deep(.ai-dialog .el-dialog__body) {
+  padding: 16px 24px 8px;
+  background: transparent;
+}
+:deep(.ai-dialog .el-dialog__footer) {
+  padding: 8px 24px 20px;
+  border-top: 1px solid #1a1a30;
+}
+:deep(.ai-dialog .el-dialog) {
+  background: #0d0d1a;
+  border: 1px solid #222244;
+  border-radius: 14px;
+}
+:deep(.ai-dialog .el-dialog__headerbtn) {
+  top: 18px;
+  right: 20px;
+}
+
+.ai-dialog-body {
+  min-height: 120px;
+}
+
+.dialog-ingredients {
+  background: #16162a;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+.dialog-ingredients-label {
+  color: #888;
+  font-weight: 500;
+}
+.dialog-ingredients-text {
+  color: #aaa;
+}
+
+.dialog-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 40px 0;
+  color: #f0c040;
+  font-size: 0.95rem;
+}
+
+.dialog-content {
+  background: #16162a;
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+
+.dialog-content-label {
+  color: #f0c040;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 10px;
+  letter-spacing: 1px;
+}
+
+.dialog-typewriter {
+  color: #c0c0e0;
+  font-size: 0.95rem;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dialog-complete {
+  text-align: center;
+  color: #67c23a;
+  font-size: 0.85rem;
+  padding: 12px 0 4px;
+}
+
+.dialog-error {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #f0c040;
-  font-size: 0.85rem;
-}
-
-.stream-content {
-  background: #0d0d1a;
-  border-radius: 8px;
+  color: #e74c3c;
+  font-size: 0.88rem;
   padding: 12px 16px;
+  background: #1a0a0a;
+  border-radius: 8px;
+  margin-top: 8px;
 }
 
-.typewriter-text {
-  color: #c0c0e0;
-  font-size: 0.9rem;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin-top: 6px;
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.stream-error {
+.dialog-streaming-hint {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #e74c3c;
+  color: #f0c040;
   font-size: 0.85rem;
-  padding: 8px 12px;
-  background: #1a0a0a;
-  border-radius: 6px;
-}
-
-.retry-btn {
-  margin-top: 8px;
-  color: #888;
+  margin-left: auto;
 }
 
 @media (max-width: 480px) {

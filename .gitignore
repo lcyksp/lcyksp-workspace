@@ -7,3 +7,6 @@ lcyksp-backend/data/uploads/
 *.log
 .DS_Store
 Thumbs.db
+.codegraph/
+.reasonix/
+AGENTS.md

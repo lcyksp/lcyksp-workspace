@@ -4,7 +4,7 @@ import { decrypt } from '../utils/crypto.js';
 
 var router = Router();
 
-var AI_TIMEOUT_MS = 30_000;
+var AI_TIMEOUT_MS = 60_000;
 
 function loadDecryptedApiKey() {
   return new Promise(function (resolve) {
@@ -16,8 +16,8 @@ function loadDecryptedApiKey() {
           return;
         }
         try {
-          var parsed = JSON.parse(row.value);
-          var key = decrypt(parsed.encrypted, parsed.iv, parsed.authTag);
+          // 新版：AES-256-CBC，llm_key 存储为 hex 字符串
+          var key = decrypt(row.value);
           resolve(key || null);
         } catch (e) {
           resolve(null);
@@ -51,6 +51,14 @@ function loadLlmEndpoint() {
   });
 }
 
+function normalizeEndpoint(url) {
+  if (!url || typeof url !== 'string') return 'https://api.deepseek.com/chat/completions';
+  var trimmed = url.trim();
+  if (trimmed.slice(-18) === '/chat/completions') return trimmed;
+  if (trimmed.slice(-1) === '/') return trimmed + 'chat/completions';
+  return trimmed + '/chat/completions';
+}
+
 async function streamRecipeSteps(recipe, res, signal) {
   var apiKey = await loadDecryptedApiKey();
   if (!apiKey) {
@@ -61,9 +69,14 @@ async function streamRecipeSteps(recipe, res, signal) {
   }
 
   var endpoint = await loadLlmEndpoint();
+  var targetUrl = normalizeEndpoint(endpoint.apiUrl);
+
+  console.log('[AI] Key prefix:', (apiKey || '').slice(0, 4) + '****');
+  console.log('[AI] Request URL:', targetUrl);
+  console.log('[AI] Model:', endpoint.model);
 
   try {
-    var response = await fetch(endpoint.apiUrl, {
+    var response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -175,7 +188,7 @@ router.get('/search', async function (req, res, next) {
     }
 
     var db = getDb();
-    var like = q + '%';
+    var like = '%' + q + '%';
 
     var rows = await new Promise(function (resolve, reject) {
       db.all(
