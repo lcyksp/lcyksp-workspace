@@ -80,7 +80,7 @@ onUnmounted(() => { imageResults.value.forEach(i => URL.revokeObjectURL(i.url)) 
 <template>
   <div class="pdf-to-img-view">
     <div class="page-header">
-      <div><h2 class="page-title">PDF 转图片</h2><p class="page-desc">支持 1x / 2x / 3x 清晰度，PNG / JPG 输出</p></div>
+      <div><h2 class="page-title"><span class="title-icon">📸</span> PDF 转图片</h2><p class="page-desc">支持 1x / 2x / 3x 清晰度，PNG / JPG 输出</p></div>
     </div>
     <el-row :gutter="20">
       <el-col :xs="24" :md="12">

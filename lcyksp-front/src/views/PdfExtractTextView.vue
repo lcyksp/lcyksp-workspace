@@ -69,7 +69,7 @@ onUnmounted(() => { extractedPages.value = [] })
 
 <template>
   <div class="pdf-extract-text-view">
-    <div class="page-header"><div><h2 class="page-title">PDF 提取文本</h2><p class="page-desc">逐页提取纯文本 · 复制 · 导出 TXT</p></div></div>
+    <div class="page-header"><div><h2 class="page-title"><span class="title-icon">📝</span> PDF 提取文本</h2><p class="page-desc">逐页提取纯文本 · 复制 · 导出 TXT</p></div></div>
     <el-row :gutter="20">
       <el-col :xs="24" :md="12"><div class="col-wrap">
         <el-upload drag :auto-upload="false" :show-file-list="false" :on-change="handleFileChange" accept="application/pdf" class="upload-area">
@@ -115,6 +115,7 @@ onUnmounted(() => { extractedPages.value = [] })
 <style scoped>
 .pdf-extract-text-view { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
 .page-header { margin-bottom: 20px; }
+.title-icon { margin-right: 8px; }
 .page-title { font-size: 1.4rem; font-weight: 400; color: var(--text-heading); margin: 0 0 4px; letter-spacing: 1px; }
 .page-desc { color: var(--text-muted); font-size: 0.85rem; margin: 0; }
 .col-wrap { display: flex; flex-direction: column; gap: 14px; }

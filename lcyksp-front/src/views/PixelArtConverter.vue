@@ -333,7 +333,7 @@ function setPresetSize(size) {
 <style scoped>
 .pixel-art-view { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
 .page-header { margin-bottom: 24px; }
-.page-title { font-size: 1.4rem; font-weight: 400; color: #e0e0e0; margin: 0 0 4px; letter-spacing: 1px; }
+.page-title { font-size: 1.4rem; font-weight: 400; color: var(--text-heading); margin: 0 0 4px; letter-spacing: 1px; }
 .title-icon { margin-right: 8px; }
 .page-desc { color: #666; font-size: 0.85rem; margin: 0; }
 
