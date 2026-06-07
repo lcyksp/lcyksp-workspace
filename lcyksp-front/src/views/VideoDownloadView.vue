@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
-import { Loading, VideoCamera } from '@element-plus/icons-vue'
+import { Loading, VideoCamera, Headset } from '@element-plus/icons-vue'
 
 const videoUrl = ref('')
 const videoInfo = ref(null)
@@ -18,14 +18,39 @@ const selectedFormatMeta = computed(() => {
   return videoInfo.value?.formats?.find((item) => item.formatId === selectedFormat.value) || null
 })
 const isImagePreview = computed(() => previewType.value === 'image')
-const imageFormats = computed(() => {
-  return videoInfo.value?.formats?.filter((item) => item.mediaType === 'image') || []
-})
+const isAudioSelection = computed(() => selectedFormatMeta.value?.mediaType === 'audio')
+const imageFormats = computed(() => videoInfo.value?.formats?.filter((item) => item.mediaType === 'image') || [])
+const audioFormats = computed(() => videoInfo.value?.formats?.filter((item) => item.mediaType === 'audio') || [])
 const isAlbum = computed(() => imageFormats.value.length > 1)
+
+function pickInitialFormat(formats = []) {
+  return formats.find((item) => item.mediaType === 'video')
+    || formats.find((item) => item.mediaType === 'image')
+    || formats[0]
+    || null
+}
+
+function updatePreviewByFormat(format) {
+  if (!format) {
+    previewSrc.value = ''
+    previewType.value = ''
+    return
+  }
+
+  if (format.mediaType === 'audio') {
+    const fallback = pickInitialFormat(videoInfo.value?.formats || [])
+    previewSrc.value = fallback?.directUrl || videoInfo.value?.directPreviewUrl || ''
+    previewType.value = fallback?.mediaType || 'audio'
+    return
+  }
+
+  previewSrc.value = format.directUrl || videoInfo.value?.directPreviewUrl || ''
+  previewType.value = format.mediaType || videoInfo.value?.directPreviewType || 'video'
+}
 
 async function handleAnalyzeLink() {
   if (!videoUrl.value.trim()) {
-    ElMessage.warning('请先输入视频分享链接')
+    ElMessage.warning('请先输入分享链接')
     return
   }
 
@@ -47,9 +72,9 @@ async function handleAnalyzeLink() {
     }
 
     videoInfo.value = res.data.data
-    selectedFormat.value = videoInfo.value.formats?.[0]?.formatId || ''
-    previewSrc.value = videoInfo.value.formats?.[0]?.directUrl || videoInfo.value.directPreviewUrl || ''
-    previewType.value = videoInfo.value.formats?.[0]?.mediaType || videoInfo.value.directPreviewType || 'video'
+    const initialFormat = pickInitialFormat(videoInfo.value.formats || [])
+    selectedFormat.value = initialFormat?.formatId || videoInfo.value.formats?.[0]?.formatId || ''
+    updatePreviewByFormat(initialFormat || videoInfo.value.formats?.[0] || null)
     ElMessage.success(res.data?.message || '解析成功')
   } catch (error) {
     const message = error.response?.data?.message || error.message || '解析失败'
@@ -78,63 +103,70 @@ function closePreview() {
 
 function handleFormatChange(value) {
   const match = videoInfo.value?.formats?.find((item) => item.formatId === value)
-  previewSrc.value = match?.directUrl || videoInfo.value?.directPreviewUrl || ''
-  previewType.value = match?.mediaType || videoInfo.value?.directPreviewType || 'video'
+  updatePreviewByFormat(match || null)
+}
+
+async function downloadByPayload(payload, fallbackName) {
+  const response = await axios({
+    method: 'post',
+    url: '/api/video/download',
+    data: payload,
+    responseType: 'blob',
+    validateStatus: () => true,
+  })
+
+  const contentType = response.headers['content-type'] || ''
+  if (response.status >= 400 || contentType.includes('application/json')) {
+    let message = '下载失败'
+    try {
+      const text = await response.data.text()
+      const parsed = JSON.parse(text)
+      message = parsed.error || parsed.message || message
+    } catch {
+      // ignore
+    }
+    throw new Error(message)
+  }
+
+  const blob = new Blob([response.data], { type: contentType || 'application/octet-stream' })
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = fallbackName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
 }
 
 async function handleDownloadVideo() {
-  if (!videoInfo.value || !selectedFormat.value) {
-    ElMessage.warning('请先解析并选择清晰度')
+  if (!videoInfo.value || !selectedFormat.value || !selectedFormatMeta.value) {
+    ElMessage.warning('请先解析并选择格式')
     return
   }
 
   downloading.value = true
   try {
-    const response = await axios({
-      method: 'post',
-      url: '/api/video/download',
-      data: {
-        url: videoUrl.value.trim(),
-        formatId: selectedFormat.value,
-        title: videoInfo.value.title || 'download',
-        browserDirectUrl: selectedFormatMeta.value?.directUrl || videoInfo.value.directPreviewUrl || '',
-        browserAudioUrl: selectedFormatMeta.value?.audioUrl || '',
-        source: videoInfo.value.source || 'yt-dlp',
-      },
-      responseType: 'blob',
-      validateStatus: () => true,
-    })
-
-    const contentType = response.headers['content-type'] || ''
-    if (response.status >= 400 || contentType.includes('application/json')) {
-      let message = '下载失败'
-      try {
-        const text = await response.data.text()
-        const parsed = JSON.parse(text)
-        message = parsed.error || parsed.message || message
-      } catch {
-        // ignore
-      }
-      ElMessage.error(message)
-      return
+    const meta = selectedFormatMeta.value
+    const payload = {
+      url: videoUrl.value.trim(),
+      formatId: selectedFormat.value,
+      title: videoInfo.value.title || 'download',
+      browserDirectUrl: meta.directUrl || videoInfo.value.directPreviewUrl || '',
+      browserAudioUrl: meta.audioUrl || '',
+      source: videoInfo.value.source || 'yt-dlp',
     }
+    const ext = meta.ext || (meta.mediaType === 'image' ? 'jpg' : meta.mediaType === 'audio' ? 'mp3' : 'mp4')
+    const suffix = meta.mediaType === 'image'
+      ? meta.quality
+      : meta.mediaType === 'audio'
+        ? '仅音频'
+        : meta.quality
 
-    const blob = new Blob([response.data], { type: contentType || 'application/octet-stream' })
-    const objectUrl = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = objectUrl
-    const ext = selectedFormatMeta.value?.ext || (contentType.includes('image/') ? 'jpg' : 'mp4')
-    const suffix = selectedFormatMeta.value?.mediaType === 'image'
-      ? selectedFormat.value.replace('browser-image-', 'image-')
-      : selectedFormat.value
-    link.download = `${videoInfo.value.title || 'download'}_${suffix}.${ext}`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
-    ElMessage.success('下载成功')
+    await downloadByPayload(payload, `${videoInfo.value.title || 'download'}_${suffix}.${ext}`)
+    ElMessage.success(meta.mediaType === 'audio' ? '音频下载成功' : meta.mediaType === 'image' ? '图片下载成功' : '视频下载成功')
   } catch (error) {
-    ElMessage.error(error.response?.data?.error || error.message || '下载失败')
+    ElMessage.error(error.message || '下载失败')
   } finally {
     downloading.value = false
   }
@@ -149,55 +181,25 @@ async function handleDownloadAllImages() {
   downloading.value = true
   try {
     for (const item of imageFormats.value) {
-      const response = await axios({
-        method: 'post',
-        url: '/api/video/download',
-        data: {
+      await downloadByPayload(
+        {
           url: videoUrl.value.trim(),
           formatId: item.formatId,
           title: `${videoInfo.value.title || 'download'}_${item.quality}`,
           browserDirectUrl: item.directUrl || '',
           source: videoInfo.value.source || 'yt-dlp',
         },
-        responseType: 'blob',
-        validateStatus: () => true,
-      })
-
-      const contentType = response.headers['content-type'] || ''
-      if (response.status >= 400 || contentType.includes('application/json')) {
-        let message = `${item.quality} 下载失败`
-        try {
-          const text = await response.data.text()
-          const parsed = JSON.parse(text)
-          message = parsed.error || parsed.message || message
-        } catch {
-          // ignore
-        }
-        ElMessage.error(message)
-        continue
-      }
-
-      const blob = new Blob([response.data], { type: contentType || 'application/octet-stream' })
-      const objectUrl = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      const ext = item.ext || (contentType.includes('image/') ? 'jpg' : 'bin')
-      link.href = objectUrl
-      link.download = `${videoInfo.value.title || 'download'}_${item.quality}.${ext}`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+        `${videoInfo.value.title || 'download'}_${item.quality}.${item.ext || 'jpg'}`,
+      )
       await new Promise((resolve) => setTimeout(resolve, 180))
     }
-
     ElMessage.success('图集下载任务已开始')
   } catch (error) {
-    ElMessage.error(error.response?.data?.error || error.message || '批量下载失败')
+    ElMessage.error(error.message || '批量下载失败')
   } finally {
     downloading.value = false
   }
 }
-
 
 onUnmounted(() => {
   clearResult()
@@ -208,8 +210,8 @@ onUnmounted(() => {
   <div class="video-download-view">
     <div class="page-header">
       <div>
-        <h2 class="page-title"><span class="title-icon">Video</span> 短视频解析下载</h2>
-        <p class="page-desc">当前支持抖音和 Bilibili，YouTube 入口已暂时关闭。</p>
+        <h2 class="page-title"><span class="title-icon">Video</span> 视频解析下载</h2>
+        <p class="page-desc">支持抖音视频、抖音图文和 Bilibili 视频；视频类可选下载视频本体或仅音频。</p>
       </div>
     </div>
 
@@ -218,7 +220,7 @@ onUnmounted(() => {
         <div class="col-wrap col-stretch">
           <div class="config-card">
             <div class="config-field">
-              <label class="config-label">视频分享链接</label>
+              <label class="config-label">分享链接</label>
               <el-input
                 v-model="videoUrl"
                 size="large"
@@ -236,7 +238,7 @@ onUnmounted(() => {
               class="action-btn"
               @click="handleAnalyzeLink"
             >
-              {{ loading ? '解析中...' : '解析视频' }}
+              {{ loading ? '解析中...' : '开始解析' }}
             </el-button>
           </div>
 
@@ -253,7 +255,7 @@ onUnmounted(() => {
 
             <div v-if="videoInfo.source" class="info-row">
               <span class="info-label">解析方式</span>
-              <span class="info-value">{{ videoInfo.source === 'browser-automation' ? '浏览器自动化原型' : 'yt-dlp' }}</span>
+              <span class="info-value">{{ videoInfo.source }}</span>
             </div>
 
             <div v-if="videoInfo.thumbnail" class="thumb-wrap">
@@ -266,12 +268,12 @@ onUnmounted(() => {
             </div>
 
             <div class="config-field">
-              <label class="config-label">清晰度 / 格式</label>
+              <label class="config-label">下载格式</label>
               <el-select v-model="selectedFormat" size="large" class="format-select" @change="handleFormatChange">
                 <el-option
                   v-for="fmt in videoInfo.formats"
                   :key="fmt.formatId"
-                  :label="`${fmt.quality} | ${fmt.ext} | ${fmt.filesize}${fmt.mediaType === 'image' ? ' | 图片' : fmt.hasAudio ? '' : ' | 需合并音频'}`"
+                  :label="`${fmt.quality} | ${fmt.ext} | ${fmt.filesize}${fmt.mediaType === 'image' ? ' | 图片' : fmt.mediaType === 'audio' ? ' | 音频' : fmt.hasAudio ? '' : ' | 需合并音频'}`"
                   :value="fmt.formatId"
                 />
               </el-select>
@@ -286,7 +288,7 @@ onUnmounted(() => {
                 class="action-btn"
                 @click="handleDownloadVideo"
               >
-                {{ downloading ? '下载中...' : selectedFormatMeta?.mediaType === 'image' ? '下载当前图片' : '下载视频' }}
+                {{ downloading ? '下载中...' : selectedFormatMeta?.mediaType === 'image' ? '下载当前图片' : selectedFormatMeta?.mediaType === 'audio' ? '下载仅音频' : '下载视频' }}
               </el-button>
 
               <el-button
@@ -307,11 +309,16 @@ onUnmounted(() => {
                 class="secondary-btn"
                 @click="openPreview"
               >
-                预览直链
+                预览
               </el-button>
             </div>
 
             <el-button size="small" text type="warning" @click="clearResult">清空结果</el-button>
+
+            <div v-if="audioFormats.length" class="audio-tip">
+              <el-icon><Headset /></el-icon>
+              <span>当前资源包含可单独下载的音轨，可在上方切换到“仅音频”。</span>
+            </div>
 
             <div v-if="imageFormats.length" class="album-grid">
               <button
@@ -339,7 +346,7 @@ onUnmounted(() => {
         <div class="col-wrap col-stretch">
           <div class="preview-card">
             <div class="section-title-row">
-              <h3 class="section-title">{{ isImagePreview ? '图片预览' : '视频预览' }}</h3>
+              <h3 class="section-title">{{ isImagePreview ? '图片预览' : '资源预览' }}</h3>
               <el-button v-if="hasPreview" size="small" text type="warning" @click="closePreview">
                 关闭弹窗
               </el-button>
@@ -348,11 +355,15 @@ onUnmounted(() => {
             <div class="preview-box">
               <div v-if="previewSrc" class="video-wrap">
                 <img v-if="isImagePreview" :src="previewSrc" class="image-preview" alt="图片预览" />
+                <div v-else-if="isAudioSelection" class="audio-preview">
+                  <el-icon :size="40"><Headset /></el-icon>
+                  <span>当前选择的是仅音频下载，预览区域保留原始封面或视频画面。</span>
+                </div>
                 <video v-else :src="previewSrc" controls class="video-player" />
               </div>
               <div v-else class="preview-empty">
                 <el-icon :size="36"><VideoCamera /></el-icon>
-                <span>部分平台不提供直链预览，但不影响解析和下载。</span>
+                <span>当前平台没有可直接预览的地址，但不影响解析和下载。</span>
               </div>
             </div>
           </div>
@@ -370,10 +381,14 @@ onUnmounted(() => {
       destroy-on-close
     >
       <template #header>
-        <span class="preview-title">{{ isImagePreview ? '图片预览' : '视频预览' }} | {{ videoInfo?.title || '' }}</span>
+        <span class="preview-title">{{ isImagePreview ? '图片预览' : '资源预览' }} | {{ videoInfo?.title || '' }}</span>
       </template>
       <div class="mobile-video-body">
         <img v-if="previewSrc && isImagePreview" :src="previewSrc" class="mobile-image-preview" alt="图片预览" />
+        <div v-else-if="isAudioSelection" class="audio-preview">
+          <el-icon :size="40"><Headset /></el-icon>
+          <span>当前选择的是仅音频下载。</span>
+        </div>
         <video v-else-if="previewSrc" :src="previewSrc" controls class="mobile-video-player" autoplay />
       </div>
     </el-dialog>
@@ -399,6 +414,7 @@ onUnmounted(() => {
 :deep(.url-input .el-input__inner) { color: var(--text-primary); }
 .action-btn, .secondary-btn { width: 100%; }
 .action-group { display: flex; flex-direction: column; gap: 10px; }
+.audio-tip { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 0.82rem; }
 .album-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 10px; }
 .album-thumb { background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; color: var(--text-primary); }
 .album-thumb.active { border-color: var(--accent-blue); box-shadow: 0 0 0 1px var(--accent-blue) inset; }
@@ -416,6 +432,7 @@ onUnmounted(() => {
 .preview-box { width: 100%; overflow: hidden; background: var(--bg-canvas); border-radius: 8px; min-height: 220px; flex: 1; display: flex; justify-content: center; align-items: center; }
 .video-wrap { width: 100%; height: 100%; display: flex; }
 .video-player { width: 100%; height: 100%; min-height: 220px; border-radius: 8px; }
+.audio-preview { width: 100%; min-height: 220px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; color: var(--text-secondary); text-align: center; padding: 24px; }
 .image-preview { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
 .preview-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 20px; color: var(--text-muted); font-size: 0.85rem; text-align: center; }
 .preview-title { color: var(--text-primary); font-size: 0.95rem; letter-spacing: 0.4px; }

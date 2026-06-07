@@ -199,21 +199,22 @@ function result_encrypt(long_str, num = null) {
             long_int = get_long_int(lound, long_str);
         }
         let key = i % 4;
+        let temp_int;
         switch (key) {
             case 0:
-                let temp_int = (long_int & constant["0"]) >> 18;
+                temp_int = (long_int & constant["0"]) >> 18;
                 result += constant["str"].charAt(temp_int);
                 break;
             case 1:
-                let temp_int = (long_int & constant["1"]) >> 12;
+                temp_int = (long_int & constant["1"]) >> 12;
                 result += constant["str"].charAt(temp_int);
                 break;
             case 2:
-                let temp_int = (long_int & constant["2"]) >> 6;
+                temp_int = (long_int & constant["2"]) >> 6;
                 result += constant["str"].charAt(temp_int);
                 break;
             case 3:
-                let temp_int = long_int & 63;
+                temp_int = long_int & 63;
                 result += constant["str"].charAt(temp_int);
                 break;
             default:
