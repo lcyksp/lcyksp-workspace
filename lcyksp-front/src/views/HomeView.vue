@@ -157,7 +157,7 @@ onUnmounted(() => {
 .slogan {
   font-size: 1.8rem;
   font-weight: 300;
-  color: #e0e0e0;
+  color: var(--text-heading);
   margin: 0 0 32px;
   letter-spacing: 2px;
   line-height: 1.6;
@@ -179,20 +179,20 @@ onUnmounted(() => {
   font-size: 3.2rem;
   font-weight: 200;
   font-family: 'Courier New', 'Consolas', monospace;
-  color: #c0c0e0;
+  color: var(--text-primary);
   letter-spacing: 6px;
   line-height: 1.2;
 }
 
 .clock-date {
   font-size: 0.9rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 4px;
 }
 
 .clock-greeting {
   font-size: 0.85rem;
-  color: #555;
+  color: var(--text-dim);
   margin-top: 6px;
 }
 
@@ -222,7 +222,7 @@ onUnmounted(() => {
 
 .server-widget.connecting {
   background: rgba(100, 100, 100, 0.08);
-  color: #888;
+  color: var(--text-secondary);
   border: 1px solid rgba(100, 100, 100, 0.2);
 }
 
@@ -244,7 +244,7 @@ onUnmounted(() => {
 }
 
 .server-widget.connecting .status-dot {
-  background: #888;
+  background: var(--text-secondary);
   animation: pulse-gray 1s infinite;
 }
 
@@ -262,7 +262,7 @@ onUnmounted(() => {
 
 /* ---------- 引导 ---------- */
 .hint {
-  color: #555;
+  color: var(--text-dim);
   font-size: 0.85rem;
   margin: 0;
   opacity: 0.5;
