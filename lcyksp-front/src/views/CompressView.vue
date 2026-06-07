@@ -21,21 +21,22 @@ import ImageCompress from '../components/ImageCompress.vue'
 .page-title {
   font-size: 1.4rem;
   font-weight: 400;
-  color: #e0e0e0;
+  color: var(--text-heading);
   margin: 0 0 6px;
   letter-spacing: 1px;
 }
 .title-icon { margin-right: 8px; }
 .page-desc {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   margin: 0 0 24px;
 }
 .page-content {
-  background: #16162a;
+  background: var(--bg-card);
   border-radius: 12px;
   padding: 24px;
-  border: 1px solid #222244;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 18px 40px color-mix(in srgb, var(--accent-blue) 8%, transparent);
 }
 
 @media (max-width: 480px) {
