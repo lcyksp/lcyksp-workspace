@@ -214,8 +214,8 @@ onUnmounted(() => {
     </div>
 
     <el-row :gutter="20">
-      <el-col :xs="24" :md="12">
-        <div class="col-wrap">
+      <el-col :xs="24" :md="12" class="panel-col">
+        <div class="col-wrap col-stretch">
           <div class="config-card">
             <div class="config-field">
               <label class="config-label">视频分享链接</label>
@@ -335,8 +335,8 @@ onUnmounted(() => {
         </div>
       </el-col>
 
-      <el-col :xs="24" :md="12">
-        <div class="col-wrap">
+      <el-col :xs="24" :md="12" class="panel-col">
+        <div class="col-wrap col-stretch">
           <div class="preview-card">
             <div class="section-title-row">
               <h3 class="section-title">{{ isImagePreview ? '图片预览' : '视频预览' }}</h3>

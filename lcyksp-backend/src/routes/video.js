@@ -36,6 +36,9 @@ const DOUYIN_IMAGE_HOST_ALLOWLIST = ['byteimg.com', 'douyinpic.com', 'tos-cn', '
 const DOUYIN_IMAGE_URL_BLOCKLIST = [
   'douyinstatic.com',
   '/media/logo',
+  'emblem.png',
+  'verifycenter',
+  'captcha',
   'nav_dark',
   'nav_light',
   'sprite',
@@ -389,6 +392,11 @@ function isAllowedDouyinImageUrl(url) {
   if (!value) return false
   if (DOUYIN_IMAGE_URL_BLOCKLIST.some((item) => value.includes(item))) return false
   return DOUYIN_IMAGE_HOST_ALLOWLIST.some((item) => value.includes(item))
+}
+
+function hasUsableDouyinMedia(result) {
+  if (result?.video?.url) return true
+  return Array.isArray(result?.images) && result.images.some((item) => isAllowedDouyinImageUrl(item?.url))
 }
 
 function dedupeMediaItems(items) {
@@ -1154,47 +1162,58 @@ async function analyzeViaBrowserAutomation(url) {
   }
 
   douyinAnalyzeInFlight = (async () => {
-    const extracted = await extractDouyinMediaWithBrowser(url)
-    if (!extracted.video?.url && !extracted.images.length) {
-      throw new Error('浏览器自动化已启动，但暂未抓到可下载的媒体地址')
+    let lastError = null
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const extracted = await extractDouyinMediaWithBrowser(url)
+        if (!hasUsableDouyinMedia(extracted)) {
+          throw new Error('browser automation did not capture usable media')
+        }
+
+        const imageFormats = dedupeMediaItems(extracted.images).map((item, index) => ({
+          formatId: `browser-image-${index + 1}`,
+          quality: `?? ${index + 1}`,
+          ext: getExtensionFromContentType(item.contentType).replace(/^./, '') || 'jpg',
+          filesize: '????',
+          hasAudio: false,
+          directUrl: item.url,
+          mediaType: 'image',
+        }))
+
+        const result = {
+          title: extracted.title || '????',
+          thumbnail: extracted.images[0]?.url || '',
+          directPreviewUrl: extracted.video?.url || extracted.images[0]?.url || '',
+          directPreviewType: extracted.video?.url ? 'video' : extracted.images.length ? 'image' : '',
+          webpageUrl: url,
+          platform,
+          source: 'browser-automation',
+          formats: extracted.video?.url
+            ? [
+                {
+                  formatId: 'browser-video',
+                  quality: '????????',
+                  ext: 'mp4',
+                  filesize: '????',
+                  hasAudio: true,
+                  directUrl: extracted.video.url,
+                  audioUrl: extracted.audio?.url || '',
+                  mediaType: 'video',
+                },
+              ]
+            : imageFormats,
+        }
+
+        setDouyinCache(url, result)
+        return result
+      } catch (error) {
+        lastError = error
+        await new Promise((resolve) => setTimeout(resolve, 1200 * (attempt + 1)))
+      }
     }
 
-    const imageFormats = dedupeMediaItems(extracted.images).map((item, index) => ({
-      formatId: `browser-image-${index + 1}`,
-      quality: `图片 ${index + 1}`,
-      ext: getExtensionFromContentType(item.contentType).replace(/^\./, '') || 'jpg',
-      filesize: '大小未知',
-      hasAudio: false,
-      directUrl: item.url,
-      mediaType: 'image',
-    }))
-
-    const result = {
-      title: extracted.title || '抖音媒体',
-      thumbnail: extracted.images[0]?.url || '',
-      directPreviewUrl: extracted.video?.url || extracted.images[0]?.url || '',
-      directPreviewType: extracted.video?.url ? 'video' : extracted.images.length ? 'image' : '',
-      webpageUrl: url,
-      platform,
-      source: 'browser-automation',
-      formats: extracted.video?.url
-          ? [
-              {
-                formatId: 'browser-video',
-                quality: '浏览器自动化抓取',
-                ext: 'mp4',
-                filesize: '大小未知',
-                hasAudio: true,
-                directUrl: extracted.video.url,
-                audioUrl: extracted.audio?.url || '',
-                mediaType: 'video',
-              },
-            ]
-          : imageFormats,
-    }
-
-    setDouyinCache(url, result)
-    return result
+    throw lastError || new Error('browser automation failed')
   })()
 
   try {
