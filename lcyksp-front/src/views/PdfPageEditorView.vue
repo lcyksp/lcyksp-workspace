@@ -52,7 +52,7 @@ onUnmounted(() => clearPageCards())
 
 <template>
   <div class="pdf-page-editor-view">
-    <div class="page-header"><div><h2 class="page-title">PDF 页面编辑器</h2><p class="page-desc">旋转 · 删除 · 排序 · 重组导出</p></div></div>
+    <div class="page-header"><div><h2 class="page-title"><span class="title-icon">✏️</span> PDF 页面编辑器</h2><p class="page-desc">旋转 · 删除 · 排序 · 重组导出</p></div></div>
     <el-row :gutter="20">
       <el-col :xs="24" :md="12"><div class="col-wrap">
         <el-upload drag :auto-upload="false" :show-file-list="false" :on-change="handleFileChange" accept="application/pdf" class="upload-area">
@@ -90,6 +90,7 @@ onUnmounted(() => clearPageCards())
 <style scoped>
 .pdf-page-editor-view { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
 .page-header { margin-bottom: 20px; }
+.title-icon { margin-right: 8px; }
 .page-title { font-size: 1.4rem; font-weight: 400; color: var(--text-heading); margin: 0 0 4px; letter-spacing: 1px; }
 .page-desc { color: var(--text-muted); font-size: 0.85rem; margin: 0; line-height: 1.5; }
 .col-wrap { display: flex; flex-direction: column; gap: 14px; }

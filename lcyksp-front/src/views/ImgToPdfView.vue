@@ -76,7 +76,7 @@ onUnmounted(() => {
 <template>
   <div class="img-to-pdf-view">
     <div class="page-header">
-      <div><h2 class="page-title">图片转 PDF</h2><p class="page-desc">纯前端多张图片合成 PDF</p></div>
+      <div><h2 class="page-title"><span class="title-icon">🖼️</span> 图片转 PDF</h2><p class="page-desc">纯前端多张图片合成 PDF</p></div>
     </div>
     <el-row :gutter="20">
       <el-col :xs="24" :md="12">
@@ -123,6 +123,7 @@ onUnmounted(() => {
 <style scoped>
 .img-to-pdf-view { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
 .page-header { margin-bottom: 20px; }
+.title-icon { margin-right: 8px; }
 .page-title { font-size: 1.4rem; color: var(--text-heading); }
 .page-desc { color: var(--text-muted); font-size: 0.85rem; }
 .col-wrap { display: flex; flex-direction: column; gap: 14px; }
