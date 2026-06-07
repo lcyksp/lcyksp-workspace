@@ -71,6 +71,11 @@ function applyTheme(theme) {
 }
 
 function initializeTheme() {
+  const html = document.documentElement
+
+  // 移除默认的 dark 类，由代码控制
+  html.classList.remove('dark')
+
   const savedTheme = localStorage.getItem(THEME_KEY)
   if (savedTheme === 'light' || savedTheme === 'dark') {
     applyTheme(savedTheme)

@@ -5,7 +5,7 @@ import ImageCompress from '../components/ImageCompress.vue'
 <template>
   <div class="page-view">
     <h2 class="page-title"><span class="title-icon">📦</span> 图片压缩</h2>
-    <p class="page-desc">精准压制图片到指定大小，一键下载</p>
+    <p class="page-desc">精准压缩图片到指定大小，一键下载</p>
     <div class="page-content">
       <ImageCompress />
     </div>
