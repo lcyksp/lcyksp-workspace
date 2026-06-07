@@ -29,6 +29,9 @@ const IMAGE_CONTENT_TYPES = {
   '.png': 'image/png',
   '.webp': 'image/webp',
 }
+const DOUYIN_DEBUG_DIR = path.join(DATA_DIR, 'debug')
+const DOUYIN_BROWSER_PROFILE_DIR = path.join(DATA_DIR, 'browser-profiles', 'douyin')
+const DOUYIN_ANALYZE_CACHE_TTL_MS = 10 * 60 * 1000
 const DOUYIN_IMAGE_HOST_ALLOWLIST = ['byteimg.com', 'douyinpic.com', 'tos-cn', 'p3-pc-sign', 'p6-sign']
 const DOUYIN_IMAGE_URL_BLOCKLIST = [
   'douyinstatic.com',
@@ -45,6 +48,8 @@ const DOUYIN_IMAGE_URL_BLOCKLIST = [
   'blackbg',
   'a795fb49bcbcf8cb1c762a69d57aee48',
 ]
+const douyinAnalyzeCache = new Map()
+let douyinAnalyzeInFlight = null
 
 function pickUrlFromText(input) {
   if (!input || typeof input !== 'string') return ''
@@ -61,9 +66,12 @@ function detectPlatform(url) {
 }
 
 function parseCookieLine(line) {
-  const parts = line.split('\t')
+  const rawLine = String(line || '')
+  const isHttpOnly = rawLine.startsWith('#HttpOnly_')
+  const normalizedLine = isHttpOnly ? rawLine.slice(10) : rawLine
+  const parts = normalizedLine.split('\t')
   if (parts.length < 7) {
-    return { valid: false, reason: '字段数不足', raw: line }
+    return { valid: false, reason: 'Invalid cookie column count', raw: line }
   }
 
   const [domain, includeSubdomains, cookiePath, secure, expires, name, ...rest] = parts
@@ -72,28 +80,29 @@ function parseCookieLine(line) {
   const subdomainFlag = String(includeSubdomains).toUpperCase()
   const secureFlag = String(secure).toUpperCase()
 
-  if (!domain) return { valid: false, reason: '域名为空', raw: line }
-  if (!cookiePath) return { valid: false, reason: 'Path 为空', raw: line }
-  if (!name) return { valid: false, reason: 'Cookie 名为空', raw: line }
+  if (!domain) return { valid: false, reason: 'Empty cookie domain', raw: line }
+  if (!cookiePath) return { valid: false, reason: 'Empty cookie path', raw: line }
+  if (!name) return { valid: false, reason: 'Empty cookie name', raw: line }
   if (!['TRUE', 'FALSE'].includes(subdomainFlag)) {
-    return { valid: false, reason: '第2列必须为 TRUE/FALSE', raw: line }
+    return { valid: false, reason: 'Invalid subdomain flag', raw: line }
   }
   if (!['TRUE', 'FALSE'].includes(secureFlag)) {
-    return { valid: false, reason: '第4列必须为 TRUE/FALSE', raw: line }
+    return { valid: false, reason: 'Invalid secure flag', raw: line }
   }
   if (!/^\d+$/.test(String(expires))) {
-    return { valid: false, reason: '过期时间不是整数', raw: line }
+    return { valid: false, reason: 'Invalid expires value', raw: line }
   }
   if (initialDot && subdomainFlag !== 'TRUE') {
-    return { valid: false, reason: '域名以 . 开头时第2列必须为 TRUE', raw: line }
+    return { valid: false, reason: 'Leading-dot domain must use TRUE', raw: line }
   }
   if (!initialDot && subdomainFlag !== 'FALSE') {
-    return { valid: false, reason: '域名不以 . 开头时第2列必须为 FALSE', raw: line }
+    return { valid: false, reason: 'Non-leading-dot domain must use FALSE', raw: line }
   }
 
   return {
     valid: true,
     normalized: [domain, subdomainFlag, cookiePath, secureFlag, String(expires), name, value].join('\t'),
+    httpOnly: isHttpOnly,
   }
 }
 
@@ -120,14 +129,14 @@ function sanitizeCookieFile(filePath) {
   for (const line of lines) {
     const trimmed = line.trim()
     if (!trimmed) continue
-    if (trimmed.startsWith('#')) {
+    if (trimmed.startsWith('#') && !trimmed.startsWith('#HttpOnly_')) {
       comments.push(line)
       continue
     }
 
     const parsed = parseCookieLine(line)
     if (parsed.valid) {
-      validLines.push(parsed.normalized)
+      validLines.push(parsed.httpOnly ? `#HttpOnly_${parsed.normalized}` : parsed.normalized)
     } else {
       invalidReasons.push(parsed.reason)
     }
@@ -391,6 +400,91 @@ function dedupeMediaItems(items) {
   })
 }
 
+function getDouyinCache(url) {
+  const cached = douyinAnalyzeCache.get(url)
+  if (!cached) return null
+  if (Date.now() - cached.createdAt > DOUYIN_ANALYZE_CACHE_TTL_MS) {
+    douyinAnalyzeCache.delete(url)
+    return null
+  }
+  return cached.data
+}
+
+function setDouyinCache(url, data) {
+  douyinAnalyzeCache.set(url, {
+    createdAt: Date.now(),
+    data,
+  })
+}
+
+function createLightweightChromiumArgs() {
+  return [
+    '--disable-blink-features=AutomationControlled',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-software-rasterizer',
+    '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-extensions',
+    '--mute-audio',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-default-apps',
+    '--disable-sync',
+    '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter',
+  ]
+}
+
+function isDouyinRiskPage(pageData = {}) {
+  const joined = [
+    pageData.pageUrl,
+    pageData.title,
+    pageData.htmlSnippet,
+    ...(pageData.requestCandidates || []).map((item) => item.url),
+    ...(pageData.responseImageCandidates || []).map((item) => item.url),
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase()
+
+  return /captcha|verify|verification|sec_did|验证|校验|风控|bytecaptcha|p3-catpcha|emblem\.png/.test(joined)
+}
+
+function isLikelyDouyinVideoStream(url) {
+  const value = String(url || '').toLowerCase()
+  return value.includes('douyinvod.com') && (value.includes('media-video') || value.includes('/tos-cn-vd-'))
+}
+
+function isLikelyDouyinAudioStream(url) {
+  const value = String(url || '').toLowerCase()
+  return value.includes('douyinvod.com') && (value.includes('media-audio') || value.includes('/tos-cn-ve-15/'))
+}
+
+function pickDouyinBrowserStreams(mediaItems) {
+  const candidates = dedupeMediaItems(mediaItems || [])
+  return {
+    video: candidates.find((item) => isLikelyDouyinVideoStream(item.url)) || null,
+    audio: candidates.find((item) => isLikelyDouyinAudioStream(item.url)) || null,
+  }
+}
+
+function ensureDebugDir() {
+  if (!fs.existsSync(DOUYIN_DEBUG_DIR)) {
+    fs.mkdirSync(DOUYIN_DEBUG_DIR, { recursive: true })
+  }
+}
+
+function writeDouyinDebugFile(name, content) {
+  if (process.env.DOUYIN_DEBUG !== '1') return
+  try {
+    ensureDebugDir()
+    fs.writeFileSync(path.join(DOUYIN_DEBUG_DIR, name), String(content || ''), 'utf-8')
+  } catch {
+    // ignore debug persistence failures
+  }
+}
+
 function decodeEscapedUrl(input) {
   return String(input || '')
     .replace(/\\u002F/g, '/')
@@ -417,6 +511,146 @@ function getMarkedSlices(text, markers, radius = 5000) {
     }
   }
   return slices
+}
+
+function extractBalancedJsonObject(source, anchor) {
+  const text = String(source || '')
+  const anchorIndex = text.indexOf(anchor)
+  if (anchorIndex === -1) return ''
+
+  const objectStart = text.indexOf('{', anchorIndex + anchor.length)
+  if (objectStart === -1) return ''
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = objectStart; index < text.length; index += 1) {
+    const char = text[index]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+      continue
+    }
+
+    if (char === '{') {
+      depth += 1
+      continue
+    }
+
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return text.slice(objectStart, index + 1)
+      }
+    }
+  }
+
+  return ''
+}
+
+function pickPreferredDouyinImageUrl(image) {
+  if (!image || typeof image !== 'object') return ''
+
+  const candidates = [
+    ...(Array.isArray(image.urlList) ? image.urlList : []),
+    ...(Array.isArray(image.downloadUrlList) ? image.downloadUrlList : []),
+  ]
+
+  const allowed = candidates
+    .map((item) => String(item || ''))
+    .filter((item) => item && isAllowedDouyinImageUrl(item))
+    .filter((item) => !/sticker_comment|aweme_comment|avatar|aweme_music|pcweb_cover|sodaicon/i.test(item))
+
+  if (!allowed.length) return ''
+
+  return (
+    allowed.find((item) => /biz_tag=aweme_images/i.test(item) && /\.jpe?g(\?|$)/i.test(item) && !/water-v2/i.test(item)) ||
+    allowed.find((item) => /biz_tag=aweme_images/i.test(item) && !/water-v2/i.test(item)) ||
+    allowed.find((item) => /\.jpe?g(\?|$)/i.test(item)) ||
+    allowed[0]
+  )
+}
+
+function extractDouyinMediaFromDetail(detail) {
+  if (!detail || typeof detail !== 'object') return { videos: [], images: [] }
+
+  const images = dedupeMediaItems(
+    (Array.isArray(detail.images) ? detail.images : [])
+      .map((image) => {
+        const url = pickPreferredDouyinImageUrl(image)
+        if (!url) return null
+        const lower = url.toLowerCase()
+        return {
+          url,
+          contentType: lower.includes('.png') ? 'image/png' : lower.includes('.webp') ? 'image/webp' : 'image/jpeg',
+        }
+      })
+      .filter(Boolean),
+  )
+
+  const videos = []
+  if (!images.length) {
+    const playAddrList = Array.isArray(detail.video?.playAddr) ? detail.video.playAddr : []
+    const bitRateList = Array.isArray(detail.video?.bitRateList) ? detail.video.bitRateList : []
+    const candidates = []
+
+    for (const item of playAddrList) {
+      if (item?.src) candidates.push(item.src)
+      if (Array.isArray(item?.urlList)) candidates.push(...item.urlList)
+    }
+
+    for (const item of bitRateList) {
+      if (item?.playAddr?.src) candidates.push(item.playAddr.src)
+      if (Array.isArray(item?.playAddr?.urlList)) candidates.push(...item.playAddr.urlList)
+    }
+
+    for (const item of candidates) {
+      const url = String(item || '')
+      const lower = url.toLowerCase()
+      if (!url) continue
+      if (/aweme_music|pcweb_cover|cover|big_thumbs|sticker_comment|aweme_comment|avatar|sodaicon/.test(lower)) continue
+      if (!/tos-cn-v|mime_type=video|playaddr|playwm|video_mp4|\/obj\/tos-cn-ve-/i.test(lower)) continue
+      videos.push({ url, contentType: 'video/mp4' })
+    }
+  }
+
+  return {
+    videos: dedupeMediaItems(videos),
+    images,
+  }
+}
+
+function parseDouyinDetailFromSerializedState(serializedText) {
+  const source = String(serializedText || '')
+  if (!source) return { videos: [], images: [] }
+
+  const detailObjectText =
+    extractBalancedJsonObject(source, '"detail":') ||
+    extractBalancedJsonObject(source, '"detail":{')
+
+  if (!detailObjectText) return { videos: [], images: [] }
+
+  writeDouyinDebugFile('douyin-detail-object.json', detailObjectText)
+
+  try {
+    const detail = JSON.parse(detailObjectText)
+    return extractDouyinMediaFromDetail(detail)
+  } catch (error) {
+    writeDouyinDebugFile('douyin-detail-parse-error.txt', error.message || String(error))
+    return { videos: [], images: [] }
+  }
 }
 
 function parseDouyinEmbeddedMedia(htmlText) {
@@ -454,6 +688,16 @@ function parseDouyinEmbeddedMedia(htmlText) {
   }
 }
 
+function pickDouyinPaceScriptText(scripts) {
+  const scriptTexts = (scripts || []).map((script) => script.textContent || '')
+  return (
+    scriptTexts.find((text) => text.includes('__pace_f') && text.includes('playAddr') && text.includes('"detail":')) ||
+    scriptTexts.find((text) => text.includes('__pace_f') && text.includes('bitRateList') && text.includes('"video":')) ||
+    scriptTexts.find((text) => text.includes('__pace_f') && text.includes('playAddr')) ||
+    ''
+  )
+}
+
 function parseDouyinPaceMediaFromScript(scriptText) {
   const source = String(scriptText || '')
   if (!source) return { videos: [], images: [] }
@@ -479,37 +723,47 @@ function parseDouyinPaceMediaFromScript(scriptText) {
 
   const combinedPayload = payloads.join('\n')
   const parseTarget = combinedPayload || source
-  const videos = []
-  const images = []
-  const videoSlices = getMarkedSlices(parseTarget, ['playAddr', 'bitRateList', 'videoModel'], 9000)
-  const imageSlices = getMarkedSlices(parseTarget, ['aweme_images', 'bigThumbs', 'originCoverUrlList'], 9000)
-
-  for (const slice of videoSlices) {
-    for (const url of extractEncodedUrls(slice)) {
-      const lower = url.toLowerCase()
-      if (/playaddr|playwm|mime_type=video|video_mp4|aweme\/v1\/play|tos-cn-v/.test(lower)) {
-        videos.push({ url, contentType: 'video/mp4' })
-      }
-    }
+  const commentMarkerIndex = parseTarget.indexOf('"comment":{"statusCode"')
+  const mainContentTarget = commentMarkerIndex >= 0 ? parseTarget.slice(0, commentMarkerIndex) : parseTarget
+  writeDouyinDebugFile('douyin-pace-script.txt', source)
+  writeDouyinDebugFile('douyin-pace-payload.txt', parseTarget)
+  writeDouyinDebugFile('douyin-main-content-payload.txt', mainContentTarget)
+  writeDouyinDebugFile(
+    'douyin-pace-meta.json',
+    JSON.stringify(
+      {
+        payloadCount: payloads.length,
+        sourceLength: source.length,
+        payloadLength: parseTarget.length,
+        commentMarkerIndex,
+        mainContentLength: mainContentTarget.length,
+      },
+      null,
+      2,
+    ),
+  )
+  const structuredMedia = parseDouyinDetailFromSerializedState(mainContentTarget)
+  if (structuredMedia.videos.length || structuredMedia.images.length) {
+    writeDouyinDebugFile(
+      'douyin-detail-media.json',
+      JSON.stringify(
+        {
+          videos: structuredMedia.videos,
+          images: structuredMedia.images,
+        },
+        null,
+        2,
+      ),
+    )
+    return structuredMedia
   }
 
-  for (const slice of imageSlices) {
-    for (const url of extractEncodedUrls(slice)) {
-      const lower = url.toLowerCase()
-      if (!isAllowedDouyinImageUrl(lower)) continue
-      if (/sticker_comment|aweme_comment|sc=thumb|aweme-avatar/.test(lower)) continue
-      if (/aweme_images|pcweb_cover|packsourceenum_aweme_detail|big_thumbs|tos-cn-i-dy|tos-cn-i-q5ssc2mrgp|tos-cn-o-0812/.test(lower)) {
-        images.push({
-          url,
-          contentType: lower.includes('.png') ? 'image/png' : lower.includes('.webp') ? 'image/webp' : 'image/jpeg',
-        })
-      }
-    }
-  }
-
+  const fallbackSlices = getMarkedSlices(mainContentTarget, ['"video":{', 'playAddr', 'aweme_images', 'bigThumbs'], 9000)
+  writeDouyinDebugFile('douyin-fallback-slices.txt', fallbackSlices.join('\n\n-----\n\n'))
+  const fallbackMedia = parseDouyinEmbeddedMedia(fallbackSlices.join('\n'))
   return {
-    videos: dedupeMediaItems(videos),
-    images: dedupeMediaItems(images),
+    videos: dedupeMediaItems(fallbackMedia.videos).filter((item) => !/aweme_music|pcweb_cover|cover/i.test(item.url)),
+    images: dedupeMediaItems(fallbackMedia.images).filter((item) => !/aweme_music|pcweb_cover|cover/i.test(item.url)),
   }
 }
 
@@ -568,19 +822,26 @@ function toPlaywrightCookies(cookieMeta) {
   return content
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'))
-    .map((line) => line.split('\t'))
-    .filter((parts) => parts.length >= 7)
-    .map(([domain, , cookiePath, secure, expires, name, ...rest]) => ({
-      name,
-      value: rest.join('\t'),
-      domain,
-      path: cookiePath || '/',
-      secure: String(secure).toUpperCase() === 'TRUE',
-      expires: Number(expires) > 0 ? Number(expires) : -1,
-      httpOnly: false,
-      sameSite: 'Lax',
+    .filter((line) => line && (!line.startsWith('#') || line.startsWith('#HttpOnly_')))
+    .map((line) => ({
+      parts: (line.startsWith('#HttpOnly_') ? line.slice(10) : line).split('\t'),
+      httpOnly: line.startsWith('#HttpOnly_'),
     }))
+    .filter(({ parts }) => parts.length >= 7)
+    .map(({ parts, httpOnly }) => {
+      const [domain, , cookiePath, secure, expires, name, ...rest] = parts
+      return {
+        name,
+        value: rest.join('\t'),
+        domain,
+        path: cookiePath || '/',
+        secure: String(secure).toUpperCase() === 'TRUE',
+        expires: Number(expires) > 0 ? Number(expires) : -1,
+        httpOnly,
+        sameSite: 'Lax',
+      }
+    })
+    .filter((cookie) => cookie.name && cookie.value)
     .map((cookie) => ({
       ...cookie,
       domain: cookie.domain.startsWith('.') ? cookie.domain.slice(1) : cookie.domain,
@@ -619,32 +880,63 @@ async function extractDouyinMediaWithBrowser(url) {
   }
 
   const cookiesMeta = getCookiesMeta('douyin')
-  const browser = await playwright.chromium.launch({
+  fs.mkdirSync(DOUYIN_BROWSER_PROFILE_DIR, { recursive: true })
+  const context = await playwright.chromium.launchPersistentContext(DOUYIN_BROWSER_PROFILE_DIR, {
     headless: true,
     executablePath: getChromiumExecutablePath(),
-    args: ['--disable-blink-features=AutomationControlled'],
+    args: createLightweightChromiumArgs(),
+    userAgent: DESKTOP_UA,
+    viewport: { width: 1440, height: 960 },
+    locale: 'zh-CN',
+    timezoneId: 'Asia/Shanghai',
+    deviceScaleFactor: 1,
+    isMobile: false,
+    colorScheme: 'dark',
+    extraHTTPHeaders: {
+      Referer: 'https://www.douyin.com/',
+      Origin: 'https://www.douyin.com',
+      Accept:
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      'Sec-CH-UA': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+      'Sec-CH-UA-Mobile': '?0',
+      'Sec-CH-UA-Platform': '"Windows"',
+      'Upgrade-Insecure-Requests': '1',
+    },
   })
 
   const mediaCandidates = new Map()
   const imageCandidates = new Map()
+  const requestCandidates = []
 
   try {
-    const context = await browser.newContext({
-      userAgent: DESKTOP_UA,
-      viewport: { width: 1440, height: 960 },
-      locale: 'zh-CN',
-      extraHTTPHeaders: {
-        Referer: 'https://www.douyin.com/',
-        Origin: 'https://www.douyin.com',
-      },
-    })
-
     const cookies = toPlaywrightCookies(cookiesMeta)
     if (cookies.length) {
       await context.addCookies(cookies)
     }
 
-    const page = await context.newPage()
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+      Object.defineProperty(navigator, 'platform', { get: () => 'Win32' })
+      Object.defineProperty(navigator, 'language', { get: () => 'zh-CN' })
+      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US', 'en'] })
+      Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 })
+      Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 })
+      Object.defineProperty(screen, 'colorDepth', { get: () => 24 })
+      Object.defineProperty(window, 'chrome', {
+        get: () => ({ runtime: {}, app: {}, csi: () => {}, loadTimes: () => ({}) }),
+      })
+    })
+
+    const pages = context.pages()
+    for (const extraPage of pages.slice(1)) {
+      await extraPage.close().catch(() => {})
+    }
+    const page = pages[0] || (await context.newPage())
+    await page.goto('https://www.douyin.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null)
+    await page.waitForTimeout(1200)
     page.on('response', async (response) => {
       const responseUrl = response.url()
       const headers = response.headers()
@@ -661,6 +953,21 @@ async function extractDouyinMediaWithBrowser(url) {
         imageCandidates.set(responseUrl, {
           url: responseUrl,
           contentType: headers['content-type'] || 'image/jpeg',
+        })
+      }
+    })
+
+    page.on('request', (request) => {
+      const requestUrl = request.url()
+      if (/playwm|play\?|video_mp4|mime_type=video|\/aweme\/v1\/play\/|\/obj\/tos-cn-ve-/i.test(requestUrl)) {
+        requestCandidates.push({
+          url: requestUrl,
+          method: request.method(),
+          resourceType: request.resourceType(),
+        })
+        mediaCandidates.set(requestUrl, {
+          url: requestUrl,
+          contentType: 'video/mp4',
         })
       }
     })
@@ -682,10 +989,27 @@ async function extractDouyinMediaWithBrowser(url) {
           },
           { timeout: 5000 },
         ),
-        page.waitForTimeout(2500),
+        page.waitForTimeout(1800),
       ])
     } catch {
-      await page.waitForTimeout(2500)
+      await page.waitForTimeout(1800)
+    }
+
+    try {
+      await page.waitForSelector('video', { timeout: 4000 })
+      await page.evaluate(async () => {
+        const video = document.querySelector('video')
+        if (!video) return
+        try {
+          video.muted = true
+          await video.play().catch(() => {})
+        } catch {
+          // ignore autoplay failures
+        }
+      })
+      await page.waitForTimeout(2200)
+    } catch {
+      // video element may not exist on note pages
     }
 
     const htmlContent = await page.content()
@@ -694,11 +1018,15 @@ async function extractDouyinMediaWithBrowser(url) {
       const scripts = Array.from(document.querySelectorAll('script'))
       const video = document.querySelector('video')
       const renderData = document.querySelector('#RENDER_DATA')?.textContent || ''
-      const paceMediaScript =
-        scripts.find((script) => {
-          const text = script.textContent || ''
-          return text.includes('__pace_f') && text.includes('aweme_images') && text.includes('playAddr')
-        })?.textContent || ''
+      const paceMediaScript = (() => {
+        const scriptTexts = scripts.map((script) => script.textContent || '')
+        return (
+          scriptTexts.find((text) => text.includes('__pace_f') && text.includes('playAddr') && text.includes('"detail":')) ||
+          scriptTexts.find((text) => text.includes('__pace_f') && text.includes('bitRateList') && text.includes('"video":')) ||
+          scriptTexts.find((text) => text.includes('__pace_f') && text.includes('playAddr')) ||
+          ''
+        )
+      })()
       const title =
         document.querySelector('title')?.textContent?.trim() ||
         document.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
@@ -710,33 +1038,70 @@ async function extractDouyinMediaWithBrowser(url) {
 
       return {
         title,
+        pageUrl: location.href,
+        hasVideoElement: Boolean(video),
         videoSrc: video?.currentSrc || video?.src || '',
         rawJson: rawJson || '',
         renderData,
         paceMediaScript,
+        htmlSnippet: document.documentElement?.outerHTML?.slice(0, 5000) || '',
       }
     })
+
+    writeDouyinDebugFile(
+      'douyin-browser-page.json',
+      JSON.stringify(
+        {
+          inputUrl: url,
+          pageUrl: pageData.pageUrl,
+          title: pageData.title,
+          hasVideoElement: pageData.hasVideoElement,
+          videoSrc: pageData.videoSrc,
+          paceMediaScriptLength: pageData.paceMediaScript?.length || 0,
+          rawJsonLength: pageData.rawJson?.length || 0,
+          renderDataLength: pageData.renderData?.length || 0,
+          htmlSnippet: pageData.htmlSnippet,
+          requestCandidates,
+          responseVideoCandidates: Array.from(mediaCandidates.values()),
+          responseImageCandidates: Array.from(imageCandidates.values()).slice(0, 20),
+        },
+        null,
+        2,
+      ),
+    )
 
     const parsedRenderMedia = parseRenderDataMedia(pageData)
     const parsedEmbeddedMedia = parseDouyinEmbeddedMedia(htmlContent)
     const parsedPaceMedia = parseDouyinPaceMediaFromScript(pageData.paceMediaScript)
-    for (const item of parsedRenderMedia.videos) {
-      mediaCandidates.set(item.url, item)
+
+    const browserStreams = pickDouyinBrowserStreams(Array.from(mediaCandidates.values()))
+
+    if (
+      isDouyinRiskPage({
+        ...pageData,
+        requestCandidates,
+        responseImageCandidates: Array.from(imageCandidates.values()).slice(0, 20),
+      }) &&
+      !browserStreams.video &&
+      !pageData.hasVideoElement
+    ) {
+      throw new Error('抖音视频页触发了风控校验，当前浏览器会话未拿到正文内容')
     }
-    for (const item of parsedRenderMedia.images) {
-      imageCandidates.set(item.url, item)
-    }
-    for (const item of parsedEmbeddedMedia.videos) {
-      mediaCandidates.set(item.url, item)
-    }
-    for (const item of parsedEmbeddedMedia.images) {
-      imageCandidates.set(item.url, item)
-    }
-    for (const item of parsedPaceMedia.videos) {
-      mediaCandidates.set(item.url, item)
-    }
-    for (const item of parsedPaceMedia.images) {
-      imageCandidates.set(item.url, item)
+
+    const preferredMedia =
+      parsedPaceMedia.videos.length || parsedPaceMedia.images.length
+        ? parsedPaceMedia
+        : parsedRenderMedia.videos.length || parsedRenderMedia.images.length
+          ? parsedRenderMedia
+          : parsedEmbeddedMedia
+
+    if (preferredMedia.images.length || preferredMedia.videos.length) {
+      return {
+        title: pageData.title || '抖音视频',
+        video: preferredMedia.videos[0] || null,
+        audio: null,
+        images: preferredMedia.images,
+      }
     }
 
     if (pageData.videoSrc) {
@@ -766,11 +1131,12 @@ async function extractDouyinMediaWithBrowser(url) {
 
     return {
       title: pageData.title || '抖音视频',
-      video: Array.from(mediaCandidates.values())[0] || null,
-      images: Array.from(imageCandidates.values()),
+      video: browserStreams.video,
+      audio: browserStreams.audio,
+      images: browserStreams.video ? [] : Array.from(imageCandidates.values()),
     }
   } finally {
-    await browser.close()
+    await context.close()
   }
 }
 
@@ -778,42 +1144,63 @@ async function analyzeViaBrowserAutomation(url) {
   const platform = detectPlatform(url)
   if (platform !== 'douyin') return null
 
-  const extracted = await extractDouyinMediaWithBrowser(url)
-  if (!extracted.video?.url && !extracted.images.length) {
-    throw new Error('浏览器自动化已启动，但暂未抓到可下载的媒体地址')
+  const cached = getDouyinCache(url)
+  if (cached) {
+    return cached
   }
 
-  const imageFormats = dedupeMediaItems(extracted.images).map((item, index) => ({
-    formatId: `browser-image-${index + 1}`,
-    quality: `图片 ${index + 1}`,
-    ext: getExtensionFromContentType(item.contentType).replace(/^\./, '') || 'jpg',
-    filesize: '大小未知',
-    hasAudio: false,
-    directUrl: item.url,
-    mediaType: 'image',
-  }))
+  if (douyinAnalyzeInFlight) {
+    return douyinAnalyzeInFlight
+  }
 
-  return {
-    title: extracted.title || '抖音媒体',
-    thumbnail: extracted.images[0]?.url || '',
-    directPreviewUrl: extracted.video?.url || extracted.images[0]?.url || '',
-    directPreviewType: extracted.video?.url ? 'video' : 'image',
-    webpageUrl: url,
-    platform,
-    source: 'browser-automation',
-    formats: extracted.video?.url
-      ? [
-          {
-            formatId: 'browser-video',
-            quality: '浏览器自动化抓取',
-            ext: 'mp4',
-            filesize: '大小未知',
-            hasAudio: true,
-            directUrl: extracted.video.url,
-            mediaType: 'video',
-          },
-        ]
-      : imageFormats,
+  douyinAnalyzeInFlight = (async () => {
+    const extracted = await extractDouyinMediaWithBrowser(url)
+    if (!extracted.video?.url && !extracted.images.length) {
+      throw new Error('浏览器自动化已启动，但暂未抓到可下载的媒体地址')
+    }
+
+    const imageFormats = dedupeMediaItems(extracted.images).map((item, index) => ({
+      formatId: `browser-image-${index + 1}`,
+      quality: `图片 ${index + 1}`,
+      ext: getExtensionFromContentType(item.contentType).replace(/^\./, '') || 'jpg',
+      filesize: '大小未知',
+      hasAudio: false,
+      directUrl: item.url,
+      mediaType: 'image',
+    }))
+
+    const result = {
+      title: extracted.title || '抖音媒体',
+      thumbnail: extracted.images[0]?.url || '',
+      directPreviewUrl: extracted.video?.url || extracted.images[0]?.url || '',
+      directPreviewType: extracted.video?.url ? 'video' : extracted.images.length ? 'image' : '',
+      webpageUrl: url,
+      platform,
+      source: 'browser-automation',
+      formats: extracted.video?.url
+          ? [
+              {
+                formatId: 'browser-video',
+                quality: '浏览器自动化抓取',
+                ext: 'mp4',
+                filesize: '大小未知',
+                hasAudio: true,
+                directUrl: extracted.video.url,
+                audioUrl: extracted.audio?.url || '',
+                mediaType: 'video',
+              },
+            ]
+          : imageFormats,
+    }
+
+    setDouyinCache(url, result)
+    return result
+  })()
+
+  try {
+    return await douyinAnalyzeInFlight
+  } finally {
+    douyinAnalyzeInFlight = null
   }
 }
 
@@ -838,6 +1225,96 @@ async function streamDirectMediaDownload({ mediaUrl, title, res }) {
   const buffer = Buffer.from(arrayBuffer)
   res.setHeader('Content-Length', buffer.length)
   res.end(buffer)
+}
+
+async function downloadUrlToFile(mediaUrl, filePath) {
+  const response = await fetch(mediaUrl, {
+    headers: {
+      'User-Agent': DESKTOP_UA,
+      Referer: 'https://www.douyin.com/',
+      Origin: 'https://www.douyin.com',
+    },
+  })
+
+  if (!response.ok || !response.body) {
+    throw new Error(`媒体直链下载失败（HTTP ${response.status}）`)
+  }
+
+  const arrayBuffer = await response.arrayBuffer()
+  fs.writeFileSync(filePath, Buffer.from(arrayBuffer))
+  return response.headers.get('content-type') || 'application/octet-stream'
+}
+
+function runFfmpeg(args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const { timeoutMs = 0, ...spawnOptions } = options
+    const proc = spawn('ffmpeg', args, spawnOptions)
+    let stderr = ''
+    let timer = null
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        proc.kill('SIGKILL')
+      }, timeoutMs)
+    }
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString()
+    })
+
+    proc.on('error', (error) => {
+      if (timer) clearTimeout(timer)
+      if (error.code === 'ENOENT') {
+        reject(new Error('服务器未安装 ffmpeg'))
+        return
+      }
+      reject(error)
+    })
+
+    proc.on('close', (code) => {
+      if (timer) clearTimeout(timer)
+      if (code === 0) {
+        resolve()
+      } else if (code === null && timeoutMs > 0) {
+        reject(new Error(`ffmpeg 执行超时（>${Math.round(timeoutMs / 1000)}s）`))
+      } else {
+        reject(new Error(stderr.trim().slice(0, 1600) || `ffmpeg 退出码 ${code}`))
+      }
+    })
+  })
+}
+
+async function mergeBrowserVideoAudioToResponse({ videoUrl, audioUrl, title, tempDir, res }) {
+  const videoFile = path.join(tempDir, 'video-track.mp4')
+  const audioFile = path.join(tempDir, 'audio-track.m4a')
+  const outputFile = path.join(tempDir, 'merged-output.mp4')
+
+  await downloadUrlToFile(videoUrl, videoFile)
+
+  if (audioUrl) {
+    await downloadUrlToFile(audioUrl, audioFile)
+    await runFfmpeg(
+      ['-y', '-i', videoFile, '-i', audioFile, '-c:v', 'copy', '-c:a', 'aac', '-shortest', outputFile],
+      { timeoutMs: 120000, cwd: tempDir },
+    )
+  } else {
+    fs.copyFileSync(videoFile, outputFile)
+  }
+
+  const safeTitle = sanitizeFilename(title || 'douyin-download')
+  res.setHeader('Content-Type', 'video/mp4')
+  res.setHeader('Content-Disposition', buildDownloadDisposition(safeTitle, '.mp4'))
+  res.setHeader('Content-Length', fs.statSync(outputFile).size)
+
+  const stream = fs.createReadStream(outputFile)
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.status(500).json({ error: '读取下载文件失败' })
+    } else if (!res.writableEnded) {
+      res.end()
+    }
+  })
+  stream.pipe(res)
 }
 
 function createTempDownloadDir() {
@@ -939,7 +1416,7 @@ router.post('/analyze', async (req, res) => {
 })
 
 router.post('/download', async (req, res) => {
-  let { url, formatId, title, browserDirectUrl, source } = req.body
+  let { url, formatId, title, browserDirectUrl, browserAudioUrl, source } = req.body
   url = pickUrlFromText(url || '')
 
   if (!url || !formatId) {
@@ -956,11 +1433,22 @@ router.post('/download', async (req, res) => {
     const finalUrl = await resolveShareUrl(url)
 
     if (detectPlatform(finalUrl) === 'douyin' && source === 'browser-automation' && browserDirectUrl) {
-      await streamDirectMediaDownload({
-        mediaUrl: browserDirectUrl,
-        title: title || 'douyin-download',
-        res,
-      })
+      tempDir = createTempDownloadDir()
+      if (formatId === 'browser-video') {
+        await mergeBrowserVideoAudioToResponse({
+          videoUrl: browserDirectUrl,
+          audioUrl: browserAudioUrl,
+          title: title || 'douyin-download',
+          tempDir,
+          res,
+        })
+      } else {
+        await streamDirectMediaDownload({
+          mediaUrl: browserDirectUrl,
+          title: title || 'douyin-download',
+          res,
+        })
+      }
       return
     }
 

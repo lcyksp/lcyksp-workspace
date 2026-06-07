@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { Loading, VideoCamera } from '@element-plus/icons-vue'
@@ -12,8 +12,6 @@ const previewType = ref('')
 const isPreviewActive = ref(false)
 const loading = ref(false)
 const downloading = ref(false)
-const statusLoading = ref(false)
-const serviceStatus = ref(null)
 
 const hasPreview = computed(() => Boolean(previewSrc.value))
 const selectedFormatMeta = computed(() => {
@@ -24,20 +22,6 @@ const imageFormats = computed(() => {
   return videoInfo.value?.formats?.filter((item) => item.mediaType === 'image') || []
 })
 const isAlbum = computed(() => imageFormats.value.length > 1)
-
-async function fetchServiceStatus() {
-  statusLoading.value = true
-  try {
-    const res = await axios.get('/api/video/status')
-    if (res.data?.success) {
-      serviceStatus.value = res.data.data
-    }
-  } catch {
-    serviceStatus.value = null
-  } finally {
-    statusLoading.value = false
-  }
-}
 
 async function handleAnalyzeLink() {
   if (!videoUrl.value.trim()) {
@@ -59,7 +43,6 @@ async function handleAnalyzeLink() {
 
     if (!res.data?.success) {
       ElMessage.error(res.data?.message || '解析失败')
-      await fetchServiceStatus()
       return
     }
 
@@ -71,7 +54,6 @@ async function handleAnalyzeLink() {
   } catch (error) {
     const message = error.response?.data?.message || error.message || '解析失败'
     ElMessage.error(message)
-    await fetchServiceStatus()
   } finally {
     loading.value = false
   }
@@ -116,6 +98,7 @@ async function handleDownloadVideo() {
         formatId: selectedFormat.value,
         title: videoInfo.value.title || 'download',
         browserDirectUrl: selectedFormatMeta.value?.directUrl || videoInfo.value.directPreviewUrl || '',
+        browserAudioUrl: selectedFormatMeta.value?.audioUrl || '',
         source: videoInfo.value.source || 'yt-dlp',
       },
       responseType: 'blob',
@@ -133,7 +116,6 @@ async function handleDownloadVideo() {
         // ignore
       }
       ElMessage.error(message)
-      await fetchServiceStatus()
       return
     }
 
@@ -153,7 +135,6 @@ async function handleDownloadVideo() {
     ElMessage.success('下载成功')
   } catch (error) {
     ElMessage.error(error.response?.data?.error || error.message || '下载失败')
-    await fetchServiceStatus()
   } finally {
     downloading.value = false
   }
@@ -217,16 +198,6 @@ async function handleDownloadAllImages() {
   }
 }
 
-function formatCookieStatus(meta) {
-  if (!meta) return '未检测到'
-  if (meta.usable) return `可用：${meta.path}`
-  if (meta.exists) return `存在但不可用：${meta.path}`
-  return `未找到：${meta.path}`
-}
-
-onMounted(() => {
-  fetchServiceStatus()
-})
 
 onUnmounted(() => {
   clearResult()
@@ -361,40 +332,6 @@ onUnmounted(() => {
             <el-icon class="is-loading"><Loading /></el-icon>
             <span>正在解析分享链接...</span>
           </div>
-
-          <div class="status-card">
-            <div class="status-head">
-              <h3 class="section-title">服务状态</h3>
-              <el-button text type="primary" :loading="statusLoading" @click="fetchServiceStatus">刷新</el-button>
-            </div>
-
-            <div v-if="serviceStatus" class="status-body">
-              <div class="info-row">
-                <span class="info-label">yt-dlp</span>
-                <span class="info-value">{{ serviceStatus.ytDlpCommand }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">抖音自动化</span>
-                <span class="info-value">{{ serviceStatus.browserAutomation?.douyinPrototype ? '已接入原型，需服务器安装 Playwright 才能启用' : '未接入' }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">B站 cookies</span>
-                <span class="info-value">{{ formatCookieStatus(serviceStatus.cookies?.bilibili) }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">抖音 cookies</span>
-                <span class="info-value">{{ formatCookieStatus(serviceStatus.cookies?.douyin) }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">默认 cookies</span>
-                <span class="info-value">{{ formatCookieStatus(serviceStatus.cookies?.default) }}</span>
-              </div>
-            </div>
-
-            <div v-else class="preview-empty compact-empty">
-              <span>暂时无法获取服务状态，请确认后端已部署并可访问。</span>
-            </div>
-          </div>
         </div>
       </el-col>
 
@@ -449,9 +386,12 @@ onUnmounted(() => {
 .page-title { font-size: 1.4rem; font-weight: 500; color: var(--text-heading); margin: 0 0 4px; letter-spacing: 0.4px; }
 .title-icon { margin-right: 8px; color: var(--accent-blue); }
 .page-desc { color: var(--text-secondary); font-size: 0.92rem; margin: 0; line-height: 1.5; }
+.panel-col { display: flex; }
 .col-wrap { display: flex; flex-direction: column; gap: 14px; }
-.config-card, .preview-card, .status-card { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border-color); padding: 16px; }
-.config-card, .status-card { display: flex; flex-direction: column; gap: 12px; }
+.col-stretch { width: 100%; }
+.config-card, .preview-card { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border-color); padding: 16px; }
+.config-card { display: flex; flex-direction: column; gap: 12px; }
+.preview-card { display: flex; flex-direction: column; flex: 1; min-height: 100%; }
 .config-field { display: flex; flex-direction: column; gap: 6px; }
 .config-label, .info-label { color: var(--text-secondary); font-size: 0.8rem; }
 .url-input { width: 100%; }
@@ -471,14 +411,13 @@ onUnmounted(() => {
 .thumb-img { max-width: 100%; max-height: 180px; border-radius: 8px; object-fit: contain; }
 .format-select { width: 100%; }
 .progress-bar { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: var(--bg-ctrl); border-radius: 8px; color: var(--accent-gold); font-size: 0.82rem; }
-.section-title-row, .status-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
+.section-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
 .section-title { color: var(--text-primary); font-size: 0.92rem; font-weight: 600; margin: 0; }
-.preview-box { max-height: 450px; width: 100%; overflow: hidden; background: var(--bg-canvas); border-radius: 8px; min-height: 220px; display: flex; justify-content: center; align-items: center; }
+.preview-box { width: 100%; overflow: hidden; background: var(--bg-canvas); border-radius: 8px; min-height: 220px; flex: 1; display: flex; justify-content: center; align-items: center; }
 .video-wrap { width: 100%; height: 100%; display: flex; }
-.video-player { width: 100%; max-height: 450px; border-radius: 8px; }
-.image-preview { max-width: 100%; max-height: 450px; object-fit: contain; border-radius: 8px; }
+.video-player { width: 100%; height: 100%; min-height: 220px; border-radius: 8px; }
+.image-preview { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
 .preview-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 20px; color: var(--text-muted); font-size: 0.85rem; text-align: center; }
-.compact-empty { padding: 18px 16px; }
 .preview-title { color: var(--text-primary); font-size: 0.95rem; letter-spacing: 0.4px; }
 :deep(.mobile-preview-dialog .el-dialog) { background: var(--bg-canvas); }
 :deep(.mobile-preview-dialog .el-dialog__body) { padding: 0; background: var(--bg-canvas); height: calc(100vh - 110px); display: flex; justify-content: center; align-items: center; }
@@ -489,6 +428,8 @@ onUnmounted(() => {
 .mobile-image-preview { max-width: 100%; max-height: 100%; object-fit: contain; }
 @media (max-width: 768px) {
   .video-download-view { padding: 12px 8px 30px; }
+  .panel-col { display: block; }
   .preview-box { min-height: 180px; }
+  .video-player { min-height: 180px; }
 }
 </style>
