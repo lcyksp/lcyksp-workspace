@@ -196,18 +196,18 @@ async function copyLink() {
 }
 
 .upload-text {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.95rem;
 }
 
 .upload-text em {
-  color: #409eff;
+  color: var(--accent-blue);
   font-style: normal;
   font-weight: 500;
 }
 
 .upload-tip {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   margin-top: 4px;
 }
@@ -218,7 +218,7 @@ async function copyLink() {
 }
 
 .form-hint {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   margin-left: 8px;
 }
@@ -235,7 +235,7 @@ async function copyLink() {
 }
 
 .result-label {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   margin-bottom: 6px;
 }
@@ -250,16 +250,44 @@ async function copyLink() {
 
 .result-url {
   font-size: 0.85rem;
-  color: #409eff;
+  color: var(--accent-blue);
   word-break: break-all;
   margin-bottom: 16px;
-  background: #1a1a2e;
+  background: var(--bg-ctrl);
   padding: 8px 12px;
   border-radius: 6px;
+  border: 1px solid var(--border-color);
 }
 
 .copy-btn {
   width: 100%;
   margin-top: 4px;
+}
+
+:deep(.el-upload-dragger) {
+  background: var(--bg-ctrl) !important;
+  border: 1px dashed var(--border-color) !important;
+  border-radius: 12px !important;
+}
+
+:deep(.el-upload-dragger:hover) {
+  border-color: var(--accent-blue) !important;
+}
+
+:deep(.el-collapse-item__header),
+:deep(.el-collapse-item__wrap),
+:deep(.el-collapse-item__content) {
+  background: var(--bg-ctrl) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+:deep(.el-form-item__label) {
+  color: var(--text-primary) !important;
+}
+
+:deep(.el-dialog__header),
+:deep(.el-dialog__body) {
+  background: var(--bg-card);
 }
 </style>

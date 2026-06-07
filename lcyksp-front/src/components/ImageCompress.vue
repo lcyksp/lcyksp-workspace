@@ -251,18 +251,18 @@ async function compressAndDownload(targetSize) {
 }
 
 .upload-text {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.95rem;
 }
 
 .upload-text em {
-  color: #409eff;
+  color: var(--accent-blue);
   font-style: normal;
   font-weight: 500;
 }
 
 .upload-tip {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   margin-top: 4px;
 }
@@ -294,10 +294,10 @@ async function compressAndDownload(targetSize) {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(13, 18, 35, 0.56);
   opacity: 0;
   transition: opacity 0.25s;
-  color: #ccc;
+  color: #eef3ff;
   font-size: 0.85rem;
   cursor: pointer;
 }
@@ -326,7 +326,7 @@ async function compressAndDownload(targetSize) {
   font-size: 1rem;
   border: 2px solid var(--tier-color);
   color: var(--tier-color);
-  background: transparent;
+  background: color-mix(in srgb, var(--bg-card) 92%, transparent);
   border-radius: 10px;
   transition: all 0.25s;
   letter-spacing: 1px;
@@ -344,15 +344,15 @@ async function compressAndDownload(targetSize) {
 
 .tier-btn:not(:disabled):hover {
   background: var(--tier-color);
-  color: #1a1a2e;
+  color: #08111f;
   transform: scale(1.02);
   box-shadow: 0 0 20px color-mix(in srgb, var(--tier-color) 50%, transparent);
 }
 
 .tier-btn:disabled {
   opacity: 0.4;
-  border-color: #444;
-  color: #666;
+  border-color: var(--border-color);
+  color: var(--text-muted);
 }
 
 .tier-icon {
@@ -362,5 +362,15 @@ async function compressAndDownload(targetSize) {
 
 .tier-label {
   font-weight: 600;
+}
+
+:deep(.el-upload-dragger) {
+  background: var(--bg-ctrl) !important;
+  border: 1px dashed var(--border-color) !important;
+  border-radius: 12px !important;
+}
+
+:deep(.el-upload-dragger:hover) {
+  border-color: var(--accent-blue) !important;
 }
 </style>

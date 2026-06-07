@@ -7,13 +7,15 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import axios from 'axios'
 import router from './router/index.js'
 import App from './App.vue'
+import './style.css'
 
-// ---------- Axios 全局配置 ----------
-// 生产环境：强制指向云端后端 3000 端口
+const THEME_KEY = 'lcyksp_theme'
+const THEME_LOCK_KEY = 'lcyksp_theme_locked'
+const THEME_MODE_KEY = 'lcyksp_theme_mode'
+
 axios.defaults.baseURL = 'http://47.106.101.81:3000'
-axios.defaults.timeout = 120000 // 大文件上传限 120s
+axios.defaults.timeout = 120000
 
-// 请求拦截器：自动注入 Authorization 头
 axios.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('lcyksp_token')
@@ -25,7 +27,6 @@ axios.interceptors.request.use(
   (error) => Promise.reject(error),
 )
 
-// 响应拦截器：统一错误提示 + 401/403 Token 失效处理
 axios.interceptors.response.use(
   (res) => res,
   (error) => {
@@ -34,7 +35,6 @@ axios.interceptors.response.use(
       const data = error.response.data
       const msg = data?.error || data?.message || `请求失败 (${status})`
 
-      // Token 失效 → 清除本地 Token
       if (status === 401 || status === 403) {
         const token = localStorage.getItem('lcyksp_token')
         if (token) {
@@ -53,18 +53,85 @@ axios.interceptors.response.use(
   },
 )
 
-// ---------- 挂载 ----------
+function getThemeFromTime() {
+  const hour = new Date().getHours()
+  return hour >= 18 || hour < 6 ? 'dark' : 'light'
+}
+
+function applyTheme(theme) {
+  const html = document.documentElement
+  if (theme === 'light') {
+    html.setAttribute('data-theme', 'light')
+    html.classList.remove('dark')
+  } else {
+    html.removeAttribute('data-theme')
+    html.classList.add('dark')
+  }
+  localStorage.setItem(THEME_KEY, theme)
+}
+
+function initializeTheme() {
+  const savedTheme = localStorage.getItem(THEME_KEY)
+  if (savedTheme === 'light' || savedTheme === 'dark') {
+    applyTheme(savedTheme)
+    return
+  }
+  applyTheme(getThemeFromTime())
+}
+
+initializeTheme()
+
+setInterval(() => {
+  const current = localStorage.getItem(THEME_KEY)
+  if (!localStorage.getItem(THEME_LOCK_KEY)) {
+    const autoTheme = getThemeFromTime()
+    if (autoTheme !== current) {
+      applyTheme(autoTheme)
+    }
+  }
+}, 3600000)
+
+export function toggleTheme() {
+  const html = document.documentElement
+  const isDark = !html.hasAttribute('data-theme')
+  const newTheme = isDark ? 'light' : 'dark'
+  applyTheme(newTheme)
+  localStorage.setItem(THEME_LOCK_KEY, 'true')
+  localStorage.setItem(THEME_MODE_KEY, newTheme)
+  return newTheme
+}
+
+export function setThemeMode(mode) {
+  const theme = mode === 'light' || mode === 'dark' ? mode : getThemeFromTime()
+  applyTheme(theme)
+
+  if (mode === 'light' || mode === 'dark') {
+    localStorage.setItem(THEME_LOCK_KEY, 'true')
+    localStorage.setItem(THEME_MODE_KEY, mode)
+  } else {
+    localStorage.removeItem(THEME_LOCK_KEY)
+    localStorage.setItem(THEME_MODE_KEY, 'auto')
+  }
+
+  return theme
+}
+
+export function resetThemeAuto() {
+  localStorage.removeItem(THEME_LOCK_KEY)
+  localStorage.setItem(THEME_MODE_KEY, 'auto')
+  return setThemeMode('auto')
+}
+
+export function getCurrentTheme() {
+  return document.documentElement.hasAttribute('data-theme') ? 'light' : 'dark'
+}
+
 const app = createApp(App)
 
-// 注册所有 Element Plus 图标（全局可用）
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }
 
 app.use(ElementPlus)
 app.use(router)
-
-// 启用 Element Plus 暗黑模式
-document.documentElement.classList.add('dark')
-
 app.mount('#app')
