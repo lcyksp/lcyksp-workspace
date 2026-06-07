@@ -447,106 +447,7 @@ async function analyzeDouyinViaSignedApi(url) {
   })
 }
 
-function buildCommonArgs(url) {
-  const platform = detectPlatform(url)
-  const cookiesMeta = getCookiesMeta(platform)
-  const args = [
-    '--user-agent',
-    DESKTOP_UA,
-    '--extractor-retries',
-    '5',
-    '--retries',
-    '5',
-    '--fragment-retries',
-    '5',
-    '--socket-timeout',
-    '15',
-    '--no-playlist',
-    '--encoding',
-    'utf-8',
-  ]
-
-  if (cookiesMeta.active?.usable) {
-    args.push('--cookies', cookiesMeta.active.path)
-  }
-
-  if (platform === 'bilibili') {
-    args.push('--add-header', 'Referer:https://www.bilibili.com')
-    args.push('--add-header', 'Origin:https://www.bilibili.com')
-  } else if (platform === 'douyin') {
-    args.push('--add-header', 'Referer:https://www.douyin.com')
-    args.push('--add-header', 'Origin:https://www.douyin.com')
-  } else if (platform === 'youtube') {
-    args.push('--add-header', 'Referer:https://www.youtube.com')
-    args.push('--add-header', 'Origin:https://www.youtube.com')
-  }
-
-  return {
-    args,
-    platform,
-    cookiesMeta,
-  }
-}
-
-function buildCookieHint(platform, cookiesMeta) {
-  const active = cookiesMeta?.active
-  const fallback = PLATFORM_COOKIE_FILES[platform] || DEFAULT_COOKIES_PATH
-
-  if (active?.usable && active.invalidCount > 0) {
-    return `已自动忽略 ${active.invalidCount} 行无效 cookies；如果仍失败，请重新导出 ${platform} 的最新 cookies 到 ${active.path}。`
-  }
-
-  if (active?.usable) {
-    return `当前正在使用 ${active.path}；如果仍失败，请重新导出 ${platform} 的最新 cookies。`
-  }
-
-  if (active?.invalidCount > 0) {
-    return `当前 cookies 文件格式不完整，已过滤无效行，但仍没有可用 cookies。请重新导出 ${platform} 的 Netscape 格式 cookies 到 ${fallback}。`
-  }
-
-  return `当前未检测到可用的 cookies 文件，请将 ${platform} 的 Netscape 格式 cookies 导出到 ${fallback}。`
-}
-
-function normalizeVideoError(errorMessage, url, cookiesMeta) {
-  const message = String(errorMessage || '')
-  const platform = detectPlatform(url)
-  const cookieHint = buildCookieHint(platform, cookiesMeta)
-
-  if (message.includes('服务器未安装 yt-dlp')) {
-    return '服务器未安装 yt-dlp。'
-  }
-
-  if (/invalid netscape format cookies file/i.test(message) || /http\.cookiejar bug/i.test(message)) {
-    return `cookies 文件格式不符合 Netscape 规范。${cookieHint}`
-  }
-
-  if (platform === 'bilibili' && (message.includes('HTTP Error 412') || message.includes('Precondition Failed'))) {
-    return `B站拒绝了当前抓取请求（HTTP 412）。通常需要新的 B站 cookies。${cookieHint}`
-  }
-
-  if (
-    platform === 'douyin' &&
-    (/fresh cookies/i.test(message) || /cookies/i.test(message) || /403|forbidden/i.test(message))
-  ) {
-    return `抖音当前要求使用新鲜 cookies 才能解析。${cookieHint}`
-  }
-
-  if (
-    platform === 'youtube' &&
-    (/sign in|confirm your age|bot|cookies|429|too many requests/i.test(message))
-  ) {
-    return `YouTube 当前请求受限，可能需要 cookies、代理或降低频率。${cookieHint}`
-  }
-
-  if (/unsupported url/i.test(message)) {
-    return '暂不支持这个分享链接，请先确认链接可直接在浏览器打开。'
-  }
-
-  return message || '未知错误'
-}
-
 router.post('/analyze', async (req, res) => {
-  const startedAt = Date.now()
   let { url } = req.body
   url = pickUrlFromText(url || '')
 
@@ -562,31 +463,11 @@ router.post('/analyze', async (req, res) => {
     return res.json({ success: false, message: '????????? B??YouTube ??????????' })
   }
 
-  console.error('[Video] analyze start:', { url, requestedPlatform })
-
   try {
     const finalUrl = await resolveShareUrl(url)
-    console.error('[Video] analyze resolved url:', {
-      url,
-      finalUrl,
-      elapsedMs: Date.now() - startedAt,
-    })
-
     const { args: commonArgs } = buildCommonArgs(finalUrl)
     const args = [...commonArgs, '--no-warnings', '--dump-single-json', finalUrl]
-    console.error('[Video] analyze yt-dlp start:', {
-      finalUrl,
-      timeoutMs: 8000,
-      elapsedMs: Date.now() - startedAt,
-    })
-
-    const { stdout } = await runYtDlp(args, { timeoutMs: 8000 })
-    console.error('[Video] analyze yt-dlp ok:', {
-      finalUrl,
-      stdoutLength: stdout?.length || 0,
-      elapsedMs: Date.now() - startedAt,
-    })
-
+    const { stdout } = await runYtDlp(args, { timeoutMs: 30000 })
     const rawData = JSON.parse(stdout)
     const formats = normalizeAnalyzeFormats(rawData.formats)
 
@@ -611,19 +492,17 @@ router.post('/analyze', async (req, res) => {
       finalUrl,
       requestedPlatform,
       finalPlatform: detectPlatform(finalUrl),
-      elapsedMs: Date.now() - startedAt,
       originalError: error?.message || String(error),
     })
 
     if (detectPlatform(finalUrl) === 'douyin') {
       try {
-        console.error('[Video] trying signed-api fallback:', { finalUrl, elapsedMs: Date.now() - startedAt })
+        console.error('[Video] trying signed-api fallback:', finalUrl)
         const signedApiData = await analyzeDouyinViaSignedApi(finalUrl)
         console.error('[Video] signed-api fallback ok:', {
           finalUrl,
           source: signedApiData?.source,
           formats: signedApiData?.formats?.length || 0,
-          elapsedMs: Date.now() - startedAt,
         })
         return res.json({
           success: true,
@@ -635,13 +514,12 @@ router.post('/analyze', async (req, res) => {
       }
 
       try {
-        console.error('[Video] trying request-extract fallback:', { finalUrl, elapsedMs: Date.now() - startedAt })
+        console.error('[Video] trying request-extract fallback:', finalUrl)
         const requestData = await analyzeDouyinViaRequest(finalUrl)
         console.error('[Video] request-extract fallback ok:', {
           finalUrl,
           source: requestData?.source,
           formats: requestData?.formats?.length || 0,
-          elapsedMs: Date.now() - startedAt,
         })
         return res.json({
           success: true,
@@ -653,13 +531,12 @@ router.post('/analyze', async (req, res) => {
       }
 
       try {
-        console.error('[Video] trying browser fallback:', { finalUrl, elapsedMs: Date.now() - startedAt })
+        console.error('[Video] trying browser fallback:', finalUrl)
         const fallbackData = await analyzeViaBrowserAutomation(finalUrl)
         console.error('[Video] browser fallback ok:', {
           finalUrl,
           source: fallbackData?.source,
           formats: fallbackData?.formats?.length || 0,
-          elapsedMs: Date.now() - startedAt,
         })
         return res.json({
           success: true,
@@ -672,17 +549,14 @@ router.post('/analyze', async (req, res) => {
     }
 
     const finalMessage = normalizeVideoError(error?.message, finalUrl, cookiesMeta)
-    console.error('[Video] analyze failed:', {
-      finalUrl,
-      finalMessage,
-      elapsedMs: Date.now() - startedAt,
-    })
+    console.error('[Video] analyze failed:', finalMessage)
     return res.json({
       success: false,
-      message: '?????' + finalMessage,
+      message: `?????${finalMessage}`,
     })
   }
 })
+
 router.post('/download', async (req, res) => {
   let { url, formatId, title, browserDirectUrl, browserAudioUrl, source } = req.body
   url = pickUrlFromText(url || '')
