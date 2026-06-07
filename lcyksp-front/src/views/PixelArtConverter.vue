@@ -335,20 +335,20 @@ function setPresetSize(size) {
 .page-header { margin-bottom: 24px; }
 .page-title { font-size: 1.4rem; font-weight: 400; color: var(--text-heading); margin: 0 0 4px; letter-spacing: 1px; }
 .title-icon { margin-right: 8px; }
-.page-desc { color: #666; font-size: 0.85rem; margin: 0; }
+.page-desc { color: var(--text-muted); font-size: 0.85rem; margin: 0; }
 
 .main-layout { display: flex; gap: 24px; flex-wrap: wrap; }
 .control-panel { width: 280px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
 .upload-area { width: 100%; }
-:deep(.el-upload-dragger) { background: #16162a; border: 2px dashed #222244; border-radius: 12px; padding: 20px; }
-:deep(.el-upload-dragger:hover) { border-color: #409eff; }
-.upload-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; color: #888; font-size: 0.85rem; }
-.upload-hint { color: #666; font-size: 0.75rem; }
+:deep(.el-upload-dragger) { background: var(--bg-card); border: 2px dashed var(--border-color); border-radius: 12px; padding: 20px; }
+:deep(.el-upload-dragger:hover) { border-color: var(--accent-blue); }
+.upload-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 0.85rem; }
+.upload-hint { color: var(--text-muted); font-size: 0.75rem; }
 .upload-preview { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .preview-img { max-width: 100%; max-height: 160px; border-radius: 8px; object-fit: contain; }
-.upload-change { color: #409eff; font-size: 0.8rem; }
-.control-section { background: #16162a; border-radius: 10px; padding: 14px 16px; border: 1px solid #222244; }
-.control-label { display: block; color: #999; font-size: 0.8rem; margin-bottom: 8px; font-weight: 500; }
+.upload-change { color: var(--accent-blue); font-size: 0.8rem; }
+.control-section { background: var(--bg-card); border-radius: 10px; padding: 14px 16px; border: 1px solid var(--border-color); }
+.control-label { display: block; color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 8px; font-weight: 500; }
 .preset-row { display: flex; gap: 6px; margin-bottom: 10px; }
 .size-slider { width: 100%; }
 
@@ -359,7 +359,7 @@ function setPresetSize(size) {
 .result-panel { flex: 1; min-width: 300px; display: flex; flex-direction: column; gap: 16px; }
 
 .canvas-outer { position: relative; display: inline-block; }
-.art-canvas { border-radius: 8px; background: #0a0a14; image-rendering: pixelated; max-width: 100%; height: auto; cursor: crosshair; }
+.art-canvas { border-radius: 8px; background: var(--bg-canvas); image-rendering: pixelated; max-width: 100%; height: auto; cursor: crosshair; }
 
 /* Tooltip 跟随鼠标右上角 */
 .hover-tooltip {
@@ -370,37 +370,37 @@ function setPresetSize(size) {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: #1a1a30;
-  border: 1px solid #333366;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 5px 12px;
-  color: #c0c0e0;
+  color: var(--text-primary);
   font-size: 0.78rem;
   white-space: nowrap;
   pointer-events: none;
   box-shadow: 0 4px 16px rgba(0,0,0,0.5);
 }
-.hover-color { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #444; flex-shrink: 0; }
-.hover-name { color: #f0c040; }
-.hover-hex { color: #666; font-family: monospace; font-size: 0.72rem; }
-.hover-sep { color: #444; }
+.hover-color { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--text-placeholder); flex-shrink: 0; }
+.hover-name { color: var(--accent-gold); }
+.hover-hex { color: var(--text-muted); font-family: monospace; font-size: 0.72rem; }
+.hover-sep { color: var(--text-placeholder); }
 
 .canvas-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-bottom: 6px; }
-.canvas-info { color: #666; font-size: 0.78rem; }
-.hover-status { color: #f0c040; }
+.canvas-info { color: var(--text-muted); font-size: 0.78rem; }
+.hover-status { color: var(--accent-gold); }
 
-.canvas-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 80px 20px; color: #555; font-size: 0.9rem; background: #16162a; border-radius: 12px; border: 1px solid #222244; }
+.canvas-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 80px 20px; color: var(--text-dim); font-size: 0.9rem; background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border-color); }
 
-.stats-panel { background: #16162a; border-radius: 10px; border: 1px solid #222244; padding: 16px; max-height: 400px; overflow-y: auto; }
-.stats-title { color: #e0e0e0; font-size: 0.95rem; margin: 0 0 12px; font-weight: 500; }
+.stats-panel { background: var(--bg-card); border-radius: 10px; border: 1px solid var(--border-color); padding: 16px; max-height: 400px; overflow-y: auto; }
+.stats-title { color: var(--text-heading); font-size: 0.95rem; margin: 0 0 12px; font-weight: 500; }
 .stats-list { display: flex; flex-direction: column; gap: 4px; }
 .stat-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; }
-.stat-item:hover { background: #1a1a30; }
-.stat-color { width: 20px; height: 20px; border-radius: 4px; border: 1px solid #333; flex-shrink: 0; }
-.stat-name { flex: 1; color: #aaa; font-size: 0.85rem; }
-.stat-count { color: #888; font-size: 0.8rem; font-family: monospace; }
+.stat-item:hover { background: var(--bg-hover); }
+.stat-color { width: 20px; height: 20px; border-radius: 4px; border: 1px solid var(--text-placeholder); flex-shrink: 0; }
+.stat-name { flex: 1; color: var(--text-muted); font-size: 0.85rem; }
+.stat-count { color: var(--text-secondary); font-size: 0.8rem; font-family: monospace; }
 .stats-panel::-webkit-scrollbar { width: 4px; }
-.stats-panel::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+.stats-panel::-webkit-scrollbar-thumb { background: var(--text-placeholder); border-radius: 2px; }
 
 @media (max-width: 768px) { .control-panel { width: 100%; } .main-layout { flex-direction: column; } }
 </style>
