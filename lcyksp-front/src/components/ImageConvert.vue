@@ -159,15 +159,15 @@ function onTypeChange() {
 
 /* 暗黑模式下 radio-button 样式覆盖 */
 :deep(.el-radio-button__inner) {
-  border-color: #3a3a5a;
-  color: #aaa;
-  background: #1e1e36;
+  border-color: var(--border-color);
+  color: var(--text-secondary);
+  background: var(--bg-ctrl);
 }
 
 :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: #409eff;
+  background: var(--accent-blue);
   color: #fff;
-  border-color: #409eff;
+  border-color: var(--accent-blue);
   box-shadow: none;
 }
 
@@ -176,18 +176,18 @@ function onTypeChange() {
 }
 
 .upload-text {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.95rem;
 }
 
 .upload-text em {
-  color: #409eff;
+  color: var(--accent-blue);
   font-style: normal;
   font-weight: 500;
 }
 
 .upload-tip {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   margin-top: 4px;
 }
@@ -196,5 +196,15 @@ function onTypeChange() {
   width: 100%;
   font-size: 1rem;
   letter-spacing: 1px;
+}
+
+:deep(.el-upload-dragger) {
+  background: var(--bg-ctrl) !important;
+  border: 1px dashed var(--border-color) !important;
+  border-radius: 12px !important;
+}
+
+:deep(.el-upload-dragger:hover) {
+  border-color: var(--accent-blue) !important;
 }
 </style>

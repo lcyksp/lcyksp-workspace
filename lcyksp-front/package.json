@@ -12,6 +12,8 @@
     "@element-plus/icons-vue": "^2.3.2",
     "axios": "^1.17.0",
     "element-plus": "^2.14.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.4.624",
     "vue": "^3.5.12",
     "vue-router": "^4.6.4"
   },
