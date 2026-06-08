@@ -674,39 +674,80 @@ onMounted(() => {
           </el-button>
         </div>
 
-        <el-table v-loading="filesLoading" :data="files" stripe size="small" empty-text="暂无上传文件">
-          <el-table-column prop="id" label="提取码" width="110" />
-          <el-table-column prop="fileName" label="文件名" min-width="200" show-overflow-tooltip />
-          <el-table-column label="文件大小" width="110">
-            <template #default="{ row }">{{ formatSize(row.fileSize) }}</template>
-          </el-table-column>
-          <el-table-column label="下载次数" width="110">
-            <template #default="{ row }">
-              <span :class="row.maxDownloads === -1 ? 'badge-unlimited' : 'badge-count'">
-                {{ row.maxDownloads === -1 ? '无限' : `${row.currentDownloads}/${row.maxDownloads}` }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="过期时间" width="180">
-            <template #default="{ row }">
-              <span :class="{ 'text-expired': isExpired(row.expireTime) }">
-                {{ !row.expireTime || String(row.expireTime).includes('2099') ? '永久有效' : formatTime(row.expireTime) }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="ownerName" label="上传者" width="120" />
-          <el-table-column label="创建时间" width="180">
-            <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="170" fixed="right">
-            <template #default="{ row }">
-              <div class="row-actions">
-                <el-button size="small" type="primary" plain @click="openEditFile(row)">编辑</el-button>
-                <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+        <div class="desktop-table-wrap">
+          <div class="table-shell">
+            <el-table v-loading="filesLoading" :data="files" stripe size="small" empty-text="暂无上传文件">
+              <el-table-column prop="id" label="提取码" width="110" />
+              <el-table-column prop="fileName" label="文件名" min-width="200" show-overflow-tooltip />
+              <el-table-column label="文件大小" width="110">
+                <template #default="{ row }">{{ formatSize(row.fileSize) }}</template>
+              </el-table-column>
+              <el-table-column label="下载次数" width="110">
+                <template #default="{ row }">
+                  <span :class="row.maxDownloads === -1 ? 'badge-unlimited' : 'badge-count'">
+                    {{ row.maxDownloads === -1 ? '无限' : `${row.currentDownloads}/${row.maxDownloads}` }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column label="过期时间" width="180">
+                <template #default="{ row }">
+                  <span :class="{ 'text-expired': isExpired(row.expireTime) }">
+                    {{ !row.expireTime || String(row.expireTime).includes('2099') ? '永久有效' : formatTime(row.expireTime) }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="ownerName" label="上传者" width="120" />
+              <el-table-column label="创建时间" width="180">
+                <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="170">
+                <template #default="{ row }">
+                  <div class="row-actions">
+                    <el-button size="small" type="primary" plain @click="openEditFile(row)">编辑</el-button>
+                    <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+
+        <div class="mobile-card-list">
+          <article v-for="row in files" :key="row.id" class="mobile-admin-card">
+            <div class="mobile-admin-head">
+              <h4>{{ row.fileName }}</h4>
+              <span class="mobile-admin-sub">{{ row.id }}</span>
+            </div>
+            <dl class="mobile-admin-meta">
+              <div>
+                <dt>大小</dt>
+                <dd>{{ formatSize(row.fileSize) }}</dd>
               </div>
-            </template>
-          </el-table-column>
-        </el-table>
+              <div>
+                <dt>下载</dt>
+                <dd>{{ row.maxDownloads === -1 ? '无限' : `${row.currentDownloads}/${row.maxDownloads}` }}</dd>
+              </div>
+              <div>
+                <dt>过期</dt>
+                <dd :class="{ 'text-expired': isExpired(row.expireTime) }">
+                  {{ !row.expireTime || String(row.expireTime).includes('2099') ? '永久有效' : formatTime(row.expireTime) }}
+                </dd>
+              </div>
+              <div>
+                <dt>上传者</dt>
+                <dd>{{ row.ownerName || '-' }}</dd>
+              </div>
+              <div>
+                <dt>创建时间</dt>
+                <dd>{{ formatTime(row.createdAt) }}</dd>
+              </div>
+            </dl>
+            <div class="mobile-card-actions">
+              <el-button size="small" type="primary" @click="openEditFile(row)">编辑</el-button>
+              <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+            </div>
+          </article>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="用户管理">
@@ -727,73 +768,137 @@ onMounted(() => {
           </div>
         </div>
 
-        <el-table v-loading="usersLoading" :data="users" stripe size="small" empty-text="暂无用户数据">
-          <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="username" label="用户名" min-width="160" />
-          <el-table-column label="角色" width="110">
-            <template #default="{ row }">
+        <div class="desktop-table-wrap">
+          <div class="table-shell">
+            <el-table v-loading="usersLoading" :data="users" stripe size="small" empty-text="暂无用户数据">
+              <el-table-column prop="id" label="ID" width="70" />
+              <el-table-column prop="username" label="用户名" min-width="160" />
+              <el-table-column label="角色" width="110">
+                <template #default="{ row }">
+                  <el-tag :type="roleTagType(row.role)" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="高级用户到期" width="180">
+                <template #default="{ row }">
+                  <span v-if="row.role === 'premium'">
+                    {{ !row.premium_expires_at || String(row.premium_expires_at).includes('2099') ? '永久' : formatTime(row.premium_expires_at) }}
+                  </span>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }">
+                  <el-tag :type="row.is_banned ? 'danger' : 'success'" effect="dark" size="small">
+                    {{ row.is_banned ? '已封禁' : '正常' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="封禁原因" min-width="180" show-overflow-tooltip>
+                <template #default="{ row }">
+                  {{ row.is_banned ? (row.banned_reason || '-') : '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="group_name" label="家庭组" width="130">
+                <template #default="{ row }">{{ row.group_name || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="注册时间" width="180">
+                <template #default="{ row }">{{ formatTime(row.created_at || row.createdAt) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="170">
+                <template #default="{ row }">
+                  <div class="row-actions">
+                    <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
+                    <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="快捷操作" width="220">
+                <template #default="{ row }">
+                  <div v-if="row.role === 'admin'" class="quick-action-placeholder">
+                    其他管理员不可在此修改
+                  </div>
+                  <div v-else class="quick-action-select-wrap">
+                    <el-select
+                      placeholder="选择操作"
+                      size="small"
+                      class="quick-action-select"
+                      :loading="quickActionLoadingId === row.id"
+                      @change="(value) => handleQuickActionChange(row, value)"
+                    >
+                      <el-option label="设为普通用户" value="normal" />
+                      <el-option label="高级用户 7 天" value="7d" />
+                      <el-option label="高级用户 30 天" value="30d" />
+                      <el-option label="高级用户 永久" value="permanent" />
+                      <el-option label="高级用户 自定义天数" value="custom" />
+                      <el-option v-if="row.is_banned" label="解除封禁" value="unban" />
+                      <el-option v-else label="封禁用户" value="ban" />
+                    </el-select>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+
+        <div class="mobile-card-list">
+          <article v-for="row in users" :key="row.id" class="mobile-admin-card">
+            <div class="mobile-admin-head">
+              <div class="mobile-admin-head-main">
+                <h4>{{ row.username }}</h4>
+                <span class="mobile-admin-sub">ID {{ row.id }}</span>
+              </div>
               <el-tag :type="roleTagType(row.role)" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="高级用户到期" width="180">
-            <template #default="{ row }">
-              <span v-if="row.role === 'premium'">
-                {{ !row.premium_expires_at || String(row.premium_expires_at).includes('2099') ? '永久' : formatTime(row.premium_expires_at) }}
-              </span>
-              <span v-else>-</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="110">
-            <template #default="{ row }">
-              <el-tag :type="row.is_banned ? 'danger' : 'success'" effect="dark" size="small">
-                {{ row.is_banned ? '已封禁' : '正常' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="封禁原因" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }">
-              {{ row.is_banned ? (row.banned_reason || '-') : '-' }}
-            </template>
-          </el-table-column>
-          <el-table-column prop="group_name" label="家庭组" width="130">
-            <template #default="{ row }">{{ row.group_name || '-' }}</template>
-          </el-table-column>
-          <el-table-column label="注册时间" width="180">
-            <template #default="{ row }">{{ formatTime(row.created_at || row.createdAt) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="170" fixed="right">
-            <template #default="{ row }">
-              <div class="row-actions">
-                <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
-                <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+            </div>
+            <dl class="mobile-admin-meta">
+              <div>
+                <dt>状态</dt>
+                <dd>{{ row.is_banned ? '已封禁' : '正常' }}</dd>
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="快捷操作" width="220" fixed="right">
-            <template #default="{ row }">
-              <div v-if="row.role === 'admin'" class="quick-action-placeholder">
-                其他管理员不可在此修改
+              <div>
+                <dt>高级用户到期</dt>
+                <dd>
+                  {{ row.role === 'premium' ? (!row.premium_expires_at || String(row.premium_expires_at).includes('2099') ? '永久' : formatTime(row.premium_expires_at)) : '-' }}
+                </dd>
               </div>
-              <div v-else class="quick-action-select-wrap">
-                <el-select
-                  placeholder="选择操作"
-                  size="small"
-                  class="quick-action-select"
-                  :loading="quickActionLoadingId === row.id"
-                  @change="(value) => handleQuickActionChange(row, value)"
-                >
-                  <el-option label="设为普通用户" value="normal" />
-                  <el-option label="高级用户 7 天" value="7d" />
-                  <el-option label="高级用户 30 天" value="30d" />
-                  <el-option label="高级用户 永久" value="permanent" />
-                  <el-option label="高级用户 自定义天数" value="custom" />
-                  <el-option v-if="row.is_banned" label="解除封禁" value="unban" />
-                  <el-option v-else label="封禁用户" value="ban" />
-                </el-select>
+              <div>
+                <dt>家庭组</dt>
+                <dd>{{ row.group_name || '-' }}</dd>
               </div>
-            </template>
-          </el-table-column>
-        </el-table>
+              <div>
+                <dt>注册时间</dt>
+                <dd>{{ formatTime(row.created_at || row.createdAt) }}</dd>
+              </div>
+              <div class="mobile-meta-wide">
+                <dt>封禁原因</dt>
+                <dd>{{ row.is_banned ? (row.banned_reason || '-') : '-' }}</dd>
+              </div>
+            </dl>
+            <div class="mobile-card-actions">
+              <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
+              <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+            </div>
+            <div v-if="row.role === 'admin'" class="mobile-quick-placeholder">
+              其他管理员不可在此修改
+            </div>
+            <div v-else class="mobile-quick-action">
+              <el-select
+                placeholder="选择快捷操作"
+                size="small"
+                class="quick-action-select"
+                :loading="quickActionLoadingId === row.id"
+                @change="(value) => handleQuickActionChange(row, value)"
+              >
+                <el-option label="设为普通用户" value="normal" />
+                <el-option label="高级用户 7 天" value="7d" />
+                <el-option label="高级用户 30 天" value="30d" />
+                <el-option label="高级用户 永久" value="permanent" />
+                <el-option label="高级用户 自定义天数" value="custom" />
+                <el-option v-if="row.is_banned" label="解除封禁" value="unban" />
+                <el-option v-else label="封禁用户" value="ban" />
+              </el-select>
+            </div>
+          </article>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="大模型配置">
@@ -1015,6 +1120,108 @@ onMounted(() => {
   width: 220px;
 }
 
+.desktop-table-wrap {
+  display: block;
+}
+
+.table-shell {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.mobile-card-list {
+  display: none;
+}
+
+.mobile-admin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+}
+
+.mobile-admin-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mobile-admin-head-main {
+  min-width: 0;
+}
+
+.mobile-admin-head h4 {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 0.98rem;
+  word-break: break-word;
+}
+
+.mobile-admin-sub {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.mobile-admin-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.mobile-admin-meta div {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-input) 86%, transparent);
+  border: 1px solid var(--border-color);
+}
+
+.mobile-admin-meta dt {
+  margin: 0 0 6px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+}
+
+.mobile-admin-meta dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.mobile-meta-wide {
+  grid-column: 1 / -1;
+}
+
+.mobile-card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mobile-card-actions :deep(.el-button) {
+  width: 100%;
+}
+
+.mobile-quick-action,
+.mobile-quick-placeholder {
+  width: 100%;
+}
+
+.mobile-quick-placeholder {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed var(--border-color);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
 .quick-action-select-wrap {
   width: 100%;
 }
@@ -1203,6 +1410,10 @@ onMounted(() => {
   --el-table-header-text-color: var(--text-secondary);
 }
 
+:deep(.el-table .cell) {
+  word-break: break-word;
+}
+
 :deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
   background: color-mix(in srgb, var(--bg-input) 72%, transparent);
 }
@@ -1244,6 +1455,37 @@ onMounted(() => {
     padding: 14px 10px 28px;
   }
 
+  .desktop-table-wrap {
+    display: none;
+  }
+
+  .mobile-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .tab-header,
+  .user-search-wrap {
+    align-items: stretch;
+  }
+
+  .tab-actions {
+    width: 100%;
+  }
+
+  .tab-actions :deep(.el-button) {
+    flex: 1;
+  }
+
+  :deep(.el-tabs__header) {
+    overflow-x: auto;
+  }
+
+  :deep(.el-tabs__nav) {
+    min-width: max-content;
+  }
+
   .feedback-meta {
     grid-template-columns: 1fr;
   }
@@ -1274,6 +1516,17 @@ onMounted(() => {
   .tab-actions :deep(.el-button),
   .llm-actions :deep(.el-button) {
     flex: 1;
+  }
+
+  .mobile-admin-head,
+  .feedback-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mobile-admin-meta,
+  .mobile-card-actions {
+    grid-template-columns: 1fr;
   }
 
   .single-panel {
