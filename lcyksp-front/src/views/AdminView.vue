@@ -1,20 +1,10 @@
 <script setup>
-/**
- * AdminView.vue — 管理员后台看板
- *
- * 三个标签页：
- *   1. 文件管理 — 查看所有上传文件 + 删除
- *   2. 用户管理 — 查看/新增/修改/删除用户
- *   3. 大模型配置 — 加密存储 API Key / URL / Model
- *
- * 需要当前用户 role === 'admin'，路由层 meta.requiresAdmin 做前置守卫
- */
-import { ref, onMounted, reactive } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Refresh } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { formatSize } from '../utils/format.js'
 
-// ---------- 当前用户 ----------
 const currentUser = (() => {
   try {
     const raw = localStorage.getItem('lcyksp_user')
@@ -24,41 +14,18 @@ const currentUser = (() => {
   }
 })()
 
-// ===================================================================
-//  文件管理
-// ===================================================================
 const files = ref([])
 const filesLoading = ref(false)
 
-async function loadFiles() {
-  filesLoading.value = true
-  try {
-    const res = await axios.get('/api/admin/files')
-    files.value = res.data.files
-  } catch (err) {
-    console.error('加载文件列表失败:', err)
-  } finally {
-    filesLoading.value = false
-  }
-}
+const users = ref([])
+const usersLoading = ref(false)
 
-async function deleteFile(code, fileName) {
-  try {
-    await ElMessageBox.confirm(
-      `确定要删除文件「${fileName}」(提取码: ${code}) 吗？\n此操作将同时删除服务器磁盘上的物理文件，不可撤销。`,
-      '删除文件',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' },
-    )
-    await axios.delete(`/api/admin/files/${code}`)
-    ElMessage.success('文件已删除')
-    loadFiles()
-  } catch (err) {
-    if (err !== 'cancel') ElMessage.error('删除失败')
-  }
-}
+const feedbackList = ref([])
+const feedbackLoading = ref(false)
+const feedbackDeletingId = ref(null)
 
-// ---------- 文件编辑 ----------
 const fileDialogVisible = ref(false)
+const fileFormLoading = ref(false)
 const fileForm = reactive({
   code: '',
   fileName: '',
@@ -66,174 +33,17 @@ const fileForm = reactive({
   isPermanent: false,
   maxDownloads: null,
 })
-const fileFormLoading = ref(false)
 
-function openEditFile(file) {
-  fileForm.code = file.id
-  fileForm.fileName = file.fileName
-  // 将过期时间转为 YYYY-MM-DDTHH:mm 格式用于 datetime-local input
-  if (file.expireTime && file.expireTime.includes('2099')) {
-    fileForm.expireTime = 'permanent'
-    fileForm.isPermanent = true
-  } else if (file.expireTime) {
-    const d = new Date(file.expireTime)
-    if (!isNaN(d.getTime())) {
-      const pad = (n) => String(n).padStart(2, '0')
-      fileForm.expireTime = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-    } else {
-      fileForm.expireTime = ''
-    }
-    fileForm.isPermanent = false
-  } else {
-    fileForm.expireTime = ''
-    fileForm.isPermanent = false
-  }
-  fileForm.maxDownloads = file.maxDownloads === -1 ? -1 : file.maxDownloads
-  fileDialogVisible.value = true
-}
-
-async function submitFileForm() {
-  const payload = {}
-
-  if (fileForm.isPermanent) {
-    payload.expireTime = 'permanent'
-  } else if (fileForm.expireTime) {
-    // 将本地 datetime-local 转为 ISO
-    const d = new Date(fileForm.expireTime)
-    if (!isNaN(d.getTime())) {
-      payload.expireTime = d.toISOString()
-    } else {
-      ElMessage.warning('请选择有效的过期时间')
-      return
-    }
-  }
-
-  if (fileForm.maxDownloads !== null && fileForm.maxDownloads !== undefined) {
-    payload.maxDownloads = fileForm.maxDownloads
-  }
-
-  if (Object.keys(payload).length === 0) {
-    ElMessage.warning('请至少修改一个属性')
-    return
-  }
-
-  fileFormLoading.value = true
-  try {
-    await axios.put(`/api/admin/files/${fileForm.code}`, payload)
-    ElMessage.success('文件属性已更新')
-    fileDialogVisible.value = false
-    loadFiles()
-  } catch (err) {
-    // 拦截器已处理提示
-  } finally {
-    fileFormLoading.value = false
-  }
-}
-
-// ===================================================================
-//  用户管理
-// ===================================================================
-const users = ref([])
-const usersLoading = ref(false)
-
-// 新增/修改用户弹窗
 const userDialogVisible = ref(false)
-const userDialogMode = ref('add') // 'add' | 'edit'
+const userDialogMode = ref('add')
+const userFormLoading = ref(false)
 const userForm = reactive({
   id: null,
   username: '',
   password: '',
   role: 'user',
 })
-const userFormLoading = ref(false)
 
-function openAddUser() {
-  userDialogMode.value = 'add'
-  userForm.id = null
-  userForm.username = ''
-  userForm.password = ''
-  userForm.role = 'user'
-  userDialogVisible.value = true
-}
-
-function openEditUser(user) {
-  userDialogMode.value = 'edit'
-  userForm.id = user.id
-  userForm.username = user.username
-  userForm.password = '' // 留空则不修改密码
-  userForm.role = user.role
-  userDialogVisible.value = true
-}
-
-async function submitUserForm() {
-  if (!userForm.username || userForm.username.length < 2) {
-    ElMessage.warning('用户名至少 2 个字符')
-    return
-  }
-  if (userDialogMode.value === 'add' && (!userForm.password || userForm.password.length < 6)) {
-    ElMessage.warning('密码至少 6 个字符')
-    return
-  }
-
-  userFormLoading.value = true
-  try {
-    if (userDialogMode.value === 'add') {
-      await axios.post('/api/admin/users', {
-        username: userForm.username,
-        password: userForm.password,
-        role: userForm.role,
-      })
-      ElMessage.success('用户创建成功')
-    } else {
-      const payload = { username: userForm.username }
-      if (userForm.password) payload.password = userForm.password
-      payload.role = userForm.role
-      await axios.put(`/api/admin/users/${userForm.id}`, payload)
-      ElMessage.success('用户信息已更新')
-    }
-    userDialogVisible.value = false
-    loadUsers()
-  } catch (err) {
-    // 拦截器已处理提示
-  } finally {
-    userFormLoading.value = false
-  }
-}
-
-async function deleteUser(user) {
-  if (user.id === currentUser?.id) {
-    ElMessage.warning('不能删除自己的账号')
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      `确定要删除用户「${user.username}」(ID: ${user.id}) 吗？\n该用户关联的文件传输记录将变为「游客」状态。`,
-      '删除用户',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' },
-    )
-    await axios.delete(`/api/admin/users/${user.id}`)
-    ElMessage.success('用户已删除')
-    loadUsers()
-  } catch (err) {
-    if (err !== 'cancel') ElMessage.error('删除失败')
-  }
-}
-
-async function loadUsers() {
-  usersLoading.value = true
-  try {
-    const res = await axios.get('/api/admin/users')
-    users.value = res.data.users
-  } catch (err) {
-    console.error('加载用户列表失败:', err)
-  } finally {
-    usersLoading.value = false
-  }
-}
-
-// ===================================================================
-//  大模型配置（含 AutoComplete 历史记录）
-// ===================================================================
 const llmConfig = reactive({
   apiUrl: 'https://api.deepseek.com/chat/completions',
   apiKey: '',
@@ -243,7 +53,6 @@ const llmLoading = ref(false)
 const llmSaving = ref(false)
 const llmTesting = ref(false)
 
-// ----- localStorage 历史记录辅助函数 -----
 const MAX_HISTORY = 5
 const HISTORY_KEYS = {
   url: 'llmUrlHistory',
@@ -261,115 +70,252 @@ function loadHistory(storageKey) {
 }
 
 function saveHistoryItem(storageKey, value) {
-  if (!value || typeof value !== 'string' || value.trim().length < 1) return
+  if (!value || typeof value !== 'string') return
   const trimmed = value.trim()
+  if (!trimmed) return
+
   let list = loadHistory(storageKey)
-  // 去重：移除已存在的相同项
-  list = list.filter(function (item) { return item !== trimmed })
-  // 插入到最前面
+  list = list.filter((item) => item !== trimmed)
   list.unshift(trimmed)
-  // 截断
   if (list.length > MAX_HISTORY) list = list.slice(0, MAX_HISTORY)
   localStorage.setItem(storageKey, JSON.stringify(list))
 }
 
-// ----- AutoComplete 查询方法（合并后端历史 + localStorage） -----
-async function queryUrlHistory(queryString, cb) {
-  var localList = loadHistory(HISTORY_KEYS.url)
-  var backendList = []
+async function buildHistorySuggestions(type, storageKey, queryString, cb) {
+  const localList = loadHistory(storageKey)
+  let backendList = []
+
   try {
-    var res = await axios.get('/api/admin/config/llm/history', { params: { type: 'apiUrl' } })
-    if (res.data && res.data.history) {
-      backendList = res.data.history.map(function (h) { return h.value })
-    }
-  } catch (err) {
-    console.error('加载 URL 历史失败:', err)
+    const res = await axios.get('/api/admin/config/llm/history', { params: { type } })
+    backendList = Array.isArray(res.data?.history) ? res.data.history.map((item) => item.value) : []
+  } catch (error) {
+    console.error('加载 LLM 历史记录失败:', error)
   }
-  // 合并：后端在前，localStorage 在后，去重
-  var merged = []
-  var seen = {}
-  backendList.concat(localList).forEach(function (item) {
-    if (!seen[item]) {
-      seen[item] = true
+
+  const merged = []
+  const seen = new Set()
+  backendList.concat(localList).forEach((item) => {
+    if (item && !seen.has(item)) {
+      seen.add(item)
       merged.push(item)
     }
   })
-  var results = queryString
-    ? merged.filter(function (item) { return item.toLowerCase().indexOf(queryString.toLowerCase()) !== -1 })
-    : merged
-  cb(results.map(function (item) { return { value: item } }))
+
+  const keyword = String(queryString || '').toLowerCase()
+  const results = keyword ? merged.filter((item) => item.toLowerCase().includes(keyword)) : merged
+  cb(results.map((item) => ({ value: item })))
 }
 
-async function queryKeyHistory(queryString, cb) {
-  var localList = loadHistory(HISTORY_KEYS.key)
-  var backendList = []
-  try {
-    var res = await axios.get('/api/admin/config/llm/history', { params: { type: 'apiKey' } })
-    if (res.data && res.data.history) {
-      backendList = res.data.history.map(function (h) { return h.value })
-    }
-  } catch (err) {
-    console.error('加载 Key 历史失败:', err)
-  }
-  var merged = []
-  var seen = {}
-  backendList.concat(localList).forEach(function (item) {
-    if (!seen[item]) {
-      seen[item] = true
-      merged.push(item)
-    }
-  })
-  var results = queryString
-    ? merged.filter(function (item) { return item.toLowerCase().indexOf(queryString.toLowerCase()) !== -1 })
-    : merged
-  cb(results.map(function (item) { return { value: item } }))
+function queryUrlHistory(queryString, cb) {
+  buildHistorySuggestions('apiUrl', HISTORY_KEYS.url, queryString, cb)
 }
 
-async function queryModelHistory(queryString, cb) {
-  var localList = loadHistory(HISTORY_KEYS.model)
-  var backendList = []
+function queryKeyHistory(queryString, cb) {
+  buildHistorySuggestions('apiKey', HISTORY_KEYS.key, queryString, cb)
+}
+
+function queryModelHistory(queryString, cb) {
+  buildHistorySuggestions('model', HISTORY_KEYS.model, queryString, cb)
+}
+
+async function loadFiles() {
+  filesLoading.value = true
   try {
-    var res = await axios.get('/api/admin/config/llm/history', { params: { type: 'model' } })
-    if (res.data && res.data.history) {
-      backendList = res.data.history.map(function (h) { return h.value })
-    }
-  } catch (err) {
-    console.error('加载 Model 历史失败:', err)
+    const res = await axios.get('/api/admin/files')
+    files.value = Array.isArray(res.data?.files) ? res.data.files : []
+  } catch (error) {
+    console.error('加载文件列表失败:', error)
+    ElMessage.error(error.response?.data?.error || '加载文件列表失败')
+  } finally {
+    filesLoading.value = false
   }
-  var merged = []
-  var seen = {}
-  backendList.concat(localList).forEach(function (item) {
-    if (!seen[item]) {
-      seen[item] = true
-      merged.push(item)
+}
+
+async function deleteFile(code, fileName) {
+  try {
+    await ElMessageBox.confirm(`确定要删除文件“${fileName}”（提取码 ${code}）吗？此操作不可撤销。`, '删除文件', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await axios.delete(`/api/admin/files/${code}`)
+    ElMessage.success('文件已删除')
+    loadFiles()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error.response?.data?.error || '删除文件失败')
     }
-  })
-  var results = queryString
-    ? merged.filter(function (item) { return item.toLowerCase().indexOf(queryString.toLowerCase()) !== -1 })
-    : merged
-  cb(results.map(function (item) { return { value: item } }))
+  }
+}
+
+function openEditFile(file) {
+  fileForm.code = file.id
+  fileForm.fileName = file.fileName
+  fileForm.maxDownloads = file.maxDownloads
+
+  if (!file.expireTime || String(file.expireTime).includes('2099')) {
+    fileForm.expireTime = 'permanent'
+    fileForm.isPermanent = true
+  } else {
+    const date = new Date(file.expireTime)
+    if (Number.isNaN(date.getTime())) {
+      fileForm.expireTime = ''
+      fileForm.isPermanent = false
+    } else {
+      const pad = (value) => String(value).padStart(2, '0')
+      fileForm.expireTime = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+      fileForm.isPermanent = false
+    }
+  }
+
+  fileDialogVisible.value = true
+}
+
+async function submitFileForm() {
+  const payload = {}
+
+  if (fileForm.isPermanent) {
+    payload.expireTime = 'permanent'
+  } else if (fileForm.expireTime) {
+    const date = new Date(fileForm.expireTime)
+    if (Number.isNaN(date.getTime())) {
+      ElMessage.warning('请选择有效的过期时间')
+      return
+    }
+    payload.expireTime = date.toISOString()
+  }
+
+  if (fileForm.maxDownloads !== null && fileForm.maxDownloads !== undefined) {
+    payload.maxDownloads = fileForm.maxDownloads
+  }
+
+  if (!Object.keys(payload).length) {
+    ElMessage.warning('请至少修改一个字段')
+    return
+  }
+
+  fileFormLoading.value = true
+  try {
+    await axios.put(`/api/admin/files/${fileForm.code}`, payload)
+    ElMessage.success('文件属性已更新')
+    fileDialogVisible.value = false
+    loadFiles()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '更新文件失败')
+  } finally {
+    fileFormLoading.value = false
+  }
+}
+
+async function loadUsers() {
+  usersLoading.value = true
+  try {
+    const res = await axios.get('/api/admin/users')
+    users.value = Array.isArray(res.data?.users) ? res.data.users : []
+  } catch (error) {
+    console.error('加载用户列表失败:', error)
+    ElMessage.error(error.response?.data?.error || '加载用户列表失败')
+  } finally {
+    usersLoading.value = false
+  }
+}
+
+function openAddUser() {
+  userDialogMode.value = 'add'
+  userForm.id = null
+  userForm.username = ''
+  userForm.password = ''
+  userForm.role = 'user'
+  userDialogVisible.value = true
+}
+
+function openEditUser(user) {
+  userDialogMode.value = 'edit'
+  userForm.id = user.id
+  userForm.username = user.username
+  userForm.password = ''
+  userForm.role = user.role || 'user'
+  userDialogVisible.value = true
+}
+
+async function submitUserForm() {
+  if (!userForm.username || userForm.username.trim().length < 2) {
+    ElMessage.warning('用户名至少 2 个字符')
+    return
+  }
+  if (userDialogMode.value === 'add' && (!userForm.password || userForm.password.length < 6)) {
+    ElMessage.warning('密码至少 6 个字符')
+    return
+  }
+
+  userFormLoading.value = true
+  try {
+    if (userDialogMode.value === 'add') {
+      await axios.post('/api/admin/users', {
+        username: userForm.username.trim(),
+        password: userForm.password,
+        role: userForm.role,
+      })
+      ElMessage.success('用户创建成功')
+    } else {
+      const payload = {
+        username: userForm.username.trim(),
+        role: userForm.role,
+      }
+      if (userForm.password) payload.password = userForm.password
+      await axios.put(`/api/admin/users/${userForm.id}`, payload)
+      ElMessage.success('用户信息已更新')
+    }
+    userDialogVisible.value = false
+    loadUsers()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存用户失败')
+  } finally {
+    userFormLoading.value = false
+  }
+}
+
+async function deleteUser(user) {
+  if (user.id === currentUser?.id) {
+    ElMessage.warning('不能删除当前登录的管理员账号')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(`确定要删除用户“${user.username}”吗？`, '删除用户', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await axios.delete(`/api/admin/users/${user.id}`)
+    ElMessage.success('用户已删除')
+    loadUsers()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error.response?.data?.error || '删除用户失败')
+    }
+  }
 }
 
 async function loadLlmConfig() {
   llmLoading.value = true
   try {
     const res = await axios.get('/api/admin/config/llm')
-    if (res.data.configured) {
+    if (res.data?.configured) {
       llmConfig.apiUrl = res.data.apiUrl || 'https://api.deepseek.com/chat/completions'
       llmConfig.model = res.data.model || 'deepseek-chat'
-      if (res.data.apiKey) {
-        llmConfig.apiKey = res.data.apiKey
-      }
+      llmConfig.apiKey = res.data.apiKey || ''
     }
-  } catch (err) {
-    console.error('加载大模型配置失败:', err)
+  } catch (error) {
+    console.error('加载大模型配置失败:', error)
+    ElMessage.error(error.response?.data?.error || '加载大模型配置失败')
   } finally {
     llmLoading.value = false
   }
 }
 
 async function testLlmConfig() {
-  if (!llmConfig.apiKey || llmConfig.apiKey.trim().length < 1) {
+  if (!llmConfig.apiKey.trim()) {
     ElMessage.warning('请先输入 API Key 再测试')
     return
   }
@@ -381,20 +327,20 @@ async function testLlmConfig() {
       apiUrl: llmConfig.apiUrl.trim() || 'https://api.deepseek.com/chat/completions',
       model: llmConfig.model.trim() || 'deepseek-chat',
     })
-    if (res.data.success) {
-      ElMessage.success('连接成功')
+    if (res.data?.success) {
+      ElMessage.success('连接测试成功')
     } else {
-      ElMessage.error('连接失败: ' + (res.data.error || '未知错误'))
+      ElMessage.error(res.data?.error || '连接测试失败')
     }
-  } catch (err) {
-    ElMessage.error('连接测试请求失败')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '连接测试失败')
   } finally {
     llmTesting.value = false
   }
 }
 
 async function saveLlmConfig() {
-  if (!llmConfig.apiKey || llmConfig.apiKey.trim().length < 1) {
+  if (!llmConfig.apiKey.trim()) {
     ElMessage.warning('API Key 不能为空')
     return
   }
@@ -406,186 +352,181 @@ async function saveLlmConfig() {
       apiUrl: llmConfig.apiUrl.trim() || 'https://api.deepseek.com/chat/completions',
       model: llmConfig.model.trim() || 'deepseek-chat',
     })
-    // 接口内部已自动保存历史记录到 llm_config_history 表
-    // 同时写入 localStorage 作为离线缓存
     saveHistoryItem(HISTORY_KEYS.url, llmConfig.apiUrl)
     saveHistoryItem(HISTORY_KEYS.key, llmConfig.apiKey)
     saveHistoryItem(HISTORY_KEYS.model, llmConfig.model)
     ElMessage.success('大模型配置已加密保存')
     llmConfig.apiKey = ''
     loadLlmConfig()
-  } catch (err) {
-    // 拦截器已处理提示
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存大模型配置失败')
   } finally {
     llmSaving.value = false
   }
 }
 
-// ---------- 工具函数 ----------
-function formatTime(iso) {
-  if (!iso) return '-'
-  const d = new Date(iso)
-  return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+async function loadFeedback() {
+  feedbackLoading.value = true
+  try {
+    const res = await axios.get('/api/admin/feedback')
+    feedbackList.value = Array.isArray(res.data?.feedback) ? res.data.feedback : []
+  } catch (error) {
+    console.error('加载问题反馈失败:', error)
+    ElMessage.error(error.response?.data?.error || '加载问题反馈失败')
+  } finally {
+    feedbackLoading.value = false
+  }
 }
 
-function isExpired(iso) {
-  if (!iso) return false
-  return new Date(iso) < new Date()
+async function deleteFeedback(id) {
+  try {
+    await ElMessageBox.confirm('确定要删除这条问题反馈吗？', '删除反馈', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    feedbackDeletingId.value = id
+    await axios.delete(`/api/admin/feedback/${id}`)
+    ElMessage.success('问题反馈已删除')
+    loadFeedback()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error.response?.data?.error || '删除问题反馈失败')
+    }
+  } finally {
+    feedbackDeletingId.value = null
+  }
 }
 
-// ---------- 挂载 ----------
+function formatTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function isExpired(value) {
+  if (!value) return false
+  const date = new Date(value)
+  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now()
+}
+
 onMounted(() => {
   loadFiles()
   loadUsers()
   loadLlmConfig()
+  loadFeedback()
 })
 </script>
 
 <template>
   <div class="admin-view">
-    <h2 class="page-title"><span class="title-icon">🛡️</span> 管理员后台</h2>
+    <h2 class="page-title">管理后台</h2>
 
     <el-tabs type="border-card" class="admin-tabs">
-      <!-- ============================================================ -->
-      <!--  标签一：文件管理 -->
-      <!-- ============================================================ -->
-      <el-tab-pane label="📁 文件管理">
+      <el-tab-pane label="文件管理">
         <div class="tab-header">
           <span class="tab-count">共 {{ files.length }} 条文件记录</span>
           <el-button size="small" @click="loadFiles" :loading="filesLoading">
-            <el-icon><Refresh /></el-icon> 刷新
+            <el-icon><Refresh /></el-icon>
+            刷新
           </el-button>
         </div>
 
-        <el-table
-          v-loading="filesLoading"
-          :data="files"
-          style="width: 100%"
-          stripe
-          empty-text="暂无上传文件"
-          size="small"
-        >
-          <el-table-column prop="id" label="提取码" width="100" />
-          <el-table-column prop="fileName" label="文件名" min-width="160" show-overflow-tooltip />
-          <el-table-column label="文件大小" width="100">
+        <el-table v-loading="filesLoading" :data="files" stripe size="small" empty-text="暂无上传文件">
+          <el-table-column prop="id" label="提取码" width="110" />
+          <el-table-column prop="fileName" label="文件名" min-width="200" show-overflow-tooltip />
+          <el-table-column label="文件大小" width="110">
             <template #default="{ row }">{{ formatSize(row.fileSize) }}</template>
           </el-table-column>
-          <el-table-column label="下载" width="90">
+          <el-table-column label="下载次数" width="110">
             <template #default="{ row }">
               <span :class="row.maxDownloads === -1 ? 'badge-unlimited' : 'badge-count'">
-                {{ row.maxDownloads === -1 ? '∞' : `${row.currentDownloads}/${row.maxDownloads}` }}
+                {{ row.maxDownloads === -1 ? '无限' : `${row.currentDownloads}/${row.maxDownloads}` }}
               </span>
             </template>
           </el-table-column>
-          <el-table-column label="过期时间" width="150">
+          <el-table-column label="过期时间" width="180">
             <template #default="{ row }">
-              <span :class="isExpired(row.expireTime) ? 'text-expired' : ''">
-                {{ formatTime(row.expireTime) }}
-                <span v-if="!row.expireTime || row.expireTime.includes('2099')" class="badge-permanent">永久</span>
+              <span :class="{ 'text-expired': isExpired(row.expireTime) }">
+                {{ !row.expireTime || String(row.expireTime).includes('2099') ? '永久有效' : formatTime(row.expireTime) }}
               </span>
             </template>
           </el-table-column>
           <el-table-column prop="ownerName" label="上传者" width="120" />
-          <el-table-column label="创建时间" width="150">
+          <el-table-column label="创建时间" width="180">
             <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="150" fixed="right">
+          <el-table-column label="操作" width="170" fixed="right">
             <template #default="{ row }">
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                @click="openEditFile(row)"
-              >
-                编辑
-              </el-button>
-              <el-button
-                type="danger"
-                size="small"
-                @click="deleteFile(row.id, row.fileName)"
-              >
-                删除
-              </el-button>
+              <div class="row-actions">
+                <el-button size="small" type="primary" plain @click="openEditFile(row)">编辑</el-button>
+                <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
       </el-tab-pane>
 
-      <!-- ============================================================ -->
-      <!--  标签二：用户管理 -->
-      <!-- ============================================================ -->
-      <el-tab-pane label="👥 用户管理">
+      <el-tab-pane label="用户管理">
         <div class="tab-header">
           <span class="tab-count">共 {{ users.length }} 个注册用户</span>
           <div class="tab-actions">
             <el-button size="small" @click="loadUsers" :loading="usersLoading">
-              <el-icon><Refresh /></el-icon> 刷新
+              <el-icon><Refresh /></el-icon>
+              刷新
             </el-button>
             <el-button type="primary" size="small" @click="openAddUser">
-              <el-icon><Plus /></el-icon> 新增用户
+              <el-icon><Plus /></el-icon>
+              新增用户
             </el-button>
           </div>
         </div>
 
-        <el-table
-          v-loading="usersLoading"
-          :data="users"
-          style="width: 100%"
-          stripe
-          empty-text="暂无用户数据"
-          size="small"
-        >
-          <el-table-column prop="id" label="ID" width="60" />
-          <el-table-column prop="username" label="用户名" min-width="140" />
-          <el-table-column prop="role" label="角色" width="80">
+        <el-table v-loading="usersLoading" :data="users" stripe size="small" empty-text="暂无用户数据">
+          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column prop="username" label="用户名" min-width="160" />
+          <el-table-column prop="role" label="角色" width="100">
             <template #default="{ row }">
-              <el-tag :type="row.role === 'admin' ? 'danger' : 'info'" size="small" effect="dark">
+              <el-tag :type="row.role === 'admin' ? 'danger' : 'info'" effect="dark" size="small">
                 {{ row.role === 'admin' ? '管理员' : '用户' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="groupName" label="家庭组" width="120">
+          <el-table-column prop="groupName" label="家庭组" width="130">
             <template #default="{ row }">{{ row.groupName || '-' }}</template>
           </el-table-column>
-          <el-table-column label="注册时间" width="150">
+          <el-table-column label="注册时间" width="180">
             <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="160" fixed="right">
+          <el-table-column label="操作" width="170" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" type="primary" plain @click="openEditUser(row)">
-                编辑
-              </el-button>
-              <el-button
-                size="small"
-                type="danger"
-                plain
-                :disabled="row.id === currentUser?.id"
-                @click="deleteUser(row)"
-              >
-                删除
-              </el-button>
+              <div class="row-actions">
+                <el-button size="small" type="primary" plain @click="openEditUser(row)">编辑</el-button>
+                <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
       </el-tab-pane>
 
-      <!-- ============================================================ -->
-      <!--  标签三：大模型配置 -->
-      <!-- ============================================================ -->
-      <el-tab-pane label="🤖 大模型配置">
+      <el-tab-pane label="大模型配置">
         <div class="tab-header">
-          <span class="tab-count">加密存储 · 仅在内存中解密使用</span>
+          <span class="tab-count">配置加密保存，仅在服务端运行时解密使用</span>
           <el-button size="small" @click="loadLlmConfig" :loading="llmLoading">
-            <el-icon><Refresh /></el-icon> 刷新
+            <el-icon><Refresh /></el-icon>
+            刷新
           </el-button>
         </div>
 
-        <div class="llm-form-wrap">
-          <el-form
-            label-position="top"
-            size="large"
-            @keyup.enter="saveLlmConfig"
-          >
+        <section class="single-panel">
+          <el-form label-position="top" size="large" @keyup.enter="saveLlmConfig">
             <el-form-item label="API URL">
               <el-autocomplete
                 v-model="llmConfig.apiUrl"
@@ -601,16 +542,14 @@ onMounted(() => {
               <el-autocomplete
                 v-model="llmConfig.apiKey"
                 :fetch-suggestions="queryKeyHistory"
-                type="password"
-                show-password
-                placeholder="输入新的 API Key（留空则不更新）"
+                placeholder="输入新的 API Key，留空则不覆盖"
                 clearable
                 :trigger-on-focus="true"
                 class="llm-autocomplete"
               />
             </el-form-item>
 
-            <el-form-item label="模型型号">
+            <el-form-item label="模型名称">
               <el-autocomplete
                 v-model="llmConfig.model"
                 :fetch-suggestions="queryModelHistory"
@@ -621,60 +560,74 @@ onMounted(() => {
               />
             </el-form-item>
 
-            <el-form-item>
-              <div style="display: flex; gap: 10px; width: 100%;">
-                <el-button
-                  type="primary"
-                  size="large"
-                  :loading="llmSaving"
-                  style="flex: 1;"
-                  @click="saveLlmConfig"
-                >
-                  {{ llmSaving ? '加密保存中…' : '保存配置' }}
+            <el-form-item class="llm-action-item">
+              <div class="llm-actions">
+                <el-button type="primary" :loading="llmSaving" @click="saveLlmConfig">
+                  {{ llmSaving ? '保存中...' : '保存配置' }}
                 </el-button>
-                <el-button
-                  size="large"
-                  :loading="llmTesting"
-                  style="flex: 1;"
-                  @click="testLlmConfig"
-                >
-                  {{ llmTesting ? '测试中…' : '测试连接' }}
+                <el-button :loading="llmTesting" @click="testLlmConfig">
+                  {{ llmTesting ? '测试中...' : '测试连接' }}
                 </el-button>
               </div>
             </el-form-item>
           </el-form>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="问题反馈">
+        <div class="tab-header">
+          <span class="tab-count">查看用户提交的问题、页面、功能与具体现象</span>
+          <el-button size="small" @click="loadFeedback" :loading="feedbackLoading">
+            <el-icon><Refresh /></el-icon>
+            刷新
+          </el-button>
         </div>
+
+        <section class="single-panel">
+          <div v-loading="feedbackLoading" class="feedback-list">
+            <div v-if="!feedbackList.length" class="feedback-empty">暂无问题反馈</div>
+
+            <article v-for="item in feedbackList" :key="item.id" class="feedback-card">
+              <div class="feedback-card-head">
+                <div>
+                  <h4>{{ item.problemSummary }}</h4>
+                  <span>{{ formatTime(item.createdAt) }}</span>
+                </div>
+                <el-button size="small" type="danger" plain :loading="feedbackDeletingId === item.id" @click="deleteFeedback(item.id)">
+                  删除
+                </el-button>
+              </div>
+
+              <dl class="feedback-meta">
+                <div>
+                  <dt>页面</dt>
+                  <dd>{{ item.pageName || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>功能</dt>
+                  <dd>{{ item.featureName || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>反馈人</dt>
+                  <dd>{{ item.reporterName || 'guest' }}</dd>
+                </div>
+              </dl>
+
+              <div class="feedback-details">{{ item.details || '-' }}</div>
+            </article>
+          </div>
+        </section>
       </el-tab-pane>
     </el-tabs>
 
-    <!-- ============================================================ -->
-    <!--  新增 / 修改用户弹窗 -->
-    <!-- ============================================================ -->
-    <el-dialog
-      v-model="userDialogVisible"
-      :title="userDialogMode === 'add' ? '👤 新增用户' : '✏️ 编辑用户'"
-      width="400px"
-      :close-on-click-modal="false"
-    >
-      <el-form label-position="top" size="large">
+    <el-dialog v-model="userDialogVisible" :title="userDialogMode === 'add' ? '新增用户' : '编辑用户'" width="420px" :close-on-click-modal="false">
+      <el-form label-position="top">
         <el-form-item label="用户名">
-          <el-input
-            v-model="userForm.username"
-            placeholder="2-32 个字符"
-            clearable
-          />
+          <el-input v-model="userForm.username" placeholder="2-32 个字符" clearable />
         </el-form-item>
-
         <el-form-item :label="userDialogMode === 'add' ? '密码' : '新密码（留空则不修改）'">
-          <el-input
-            v-model="userForm.password"
-            type="password"
-            show-password
-            :placeholder="userDialogMode === 'add' ? '至少 6 个字符' : '留空则不修改密码'"
-            clearable
-          />
+          <el-input v-model="userForm.password" type="password" show-password :placeholder="userDialogMode === 'add' ? '至少 6 个字符' : '留空则不修改密码'" clearable />
         </el-form-item>
-
         <el-form-item label="角色">
           <el-radio-group v-model="userForm.role">
             <el-radio value="user">普通用户</el-radio>
@@ -685,72 +638,38 @@ onMounted(() => {
 
       <template #footer>
         <el-button @click="userDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="userFormLoading"
-          @click="submitUserForm"
-        >
-          {{ userFormLoading ? '保存中…' : '保存' }}
+        <el-button type="primary" :loading="userFormLoading" @click="submitUserForm">
+          {{ userFormLoading ? '保存中...' : '保存' }}
         </el-button>
       </template>
     </el-dialog>
 
-    <!-- ============================================================ -->
-    <!--  文件编辑弹窗 -->
-    <!-- ============================================================ -->
-    <el-dialog
-      v-model="fileDialogVisible"
-      title="✏️ 编辑文件属性"
-      width="420px"
-      :close-on-click-modal="false"
-    >
-      <el-form label-position="top" size="large">
-        <el-form-item label="文件">
+    <el-dialog v-model="fileDialogVisible" title="编辑文件属性" width="440px" :close-on-click-modal="false">
+      <el-form label-position="top">
+        <el-form-item label="文件名">
           <el-input :model-value="fileForm.fileName" disabled />
         </el-form-item>
-
         <el-form-item label="提取码">
           <el-input :model-value="fileForm.code" disabled />
         </el-form-item>
-
         <el-form-item label="过期时间">
           <div class="file-edit-time-row">
-            <el-input
-              v-model="fileForm.expireTime"
-              type="datetime-local"
-              placeholder="选择过期时间"
-              :disabled="fileForm.expireTime === 'permanent'"
-            />
-            <el-checkbox
-              v-model="fileForm.isPermanent"
-              @change="(val) => { fileForm.expireTime = val ? 'permanent' : '' }"
-            >
+            <el-input v-model="fileForm.expireTime" type="datetime-local" :disabled="fileForm.isPermanent" placeholder="选择过期时间" />
+            <el-checkbox v-model="fileForm.isPermanent" @change="(value) => { fileForm.expireTime = value ? 'permanent' : '' }">
               永久有效
             </el-checkbox>
           </div>
-          <div class="form-hint" style="margin-top: 4px">
-            取消勾选「永久有效」后可手动设定过期时间
-          </div>
+          <div class="form-hint">取消勾选后可手动设置过期时间。</div>
         </el-form-item>
-
-        <el-form-item label="下载次数限制（-1 = 无限次）">
-          <el-input-number
-            v-model="fileForm.maxDownloads"
-            :min="-1"
-            :max="1000"
-            :step="1"
-          />
+        <el-form-item label="下载次数限制（-1 表示无限）">
+          <el-input-number v-model="fileForm.maxDownloads" :min="-1" :max="1000" :step="1" />
         </el-form-item>
       </el-form>
 
       <template #footer>
         <el-button @click="fileDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="fileFormLoading"
-          @click="submitFileForm"
-        >
-          {{ fileFormLoading ? '保存中…' : '保存' }}
+        <el-button type="primary" :loading="fileFormLoading" @click="submitFileForm">
+          {{ fileFormLoading ? '保存中...' : '保存' }}
         </el-button>
       </template>
     </el-dialog>
@@ -759,140 +678,297 @@ onMounted(() => {
 
 <style scoped>
 .admin-view {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 20px 16px 40px;
 }
 
 .page-title {
-  font-size: 1.4rem;
-  font-weight: 400;
-  color: #e0e0e0;
   margin: 0 0 20px;
-  letter-spacing: 1px;
-}
-.title-icon {
-  margin-right: 8px;
+  color: var(--text-primary);
+  font-size: 1.5rem;
+  font-weight: 600;
 }
 
 .admin-tabs {
-  --el-tabs-header-bg-color: #16162a;
-  --el-tabs-content-bg-color: #16162a;
-  border: 1px solid #222244;
-  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
   overflow: hidden;
+  background: var(--bg-card);
 }
 
 .tab-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 16px;
   flex-wrap: wrap;
-  gap: 8px;
 }
 
 .tab-count {
-  color: #888;
-  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
 }
 
-.tab-actions {
+.tab-actions,
+.row-actions,
+.llm-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
-/* 表格样式覆盖 */
-:deep(.el-table) {
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: #0d0d1a;
-  --el-table-row-hover-bg-color: #1a1a30;
-  --el-table-border-color: #1a1a30;
-  --el-table-text-color: #c0c0e0;
-  --el-table-header-text-color: #888;
+.single-panel {
+  max-width: 920px;
+  background: color-mix(in srgb, var(--bg-card) 96%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  padding: 18px;
 }
 
-:deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
-  background: #111125;
+.feedback-list {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-/* 徽标 */
-.badge-unlimited,
-.badge-count {
-  display: inline-block;
-  padding: 0 8px;
-  border-radius: 4px;
+.feedback-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  border: 1px dashed var(--border-color);
+  border-radius: 16px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-input) 72%, transparent);
+}
+
+.feedback-card {
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+}
+
+.feedback-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.feedback-card-head h4 {
+  margin: 0 0 6px;
+  color: var(--text-primary);
+  font-size: 0.98rem;
+}
+
+.feedback-card-head span {
+  color: var(--text-secondary);
   font-size: 0.8rem;
 }
-.badge-unlimited {
-  color: #67c23a;
+
+.feedback-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 12px;
 }
-.badge-count {
-  color: #c0c0e0;
+
+.feedback-meta div {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-input) 86%, transparent);
+  border: 1px solid var(--border-color);
 }
-.badge-permanent {
-  font-size: 0.7rem;
-  color: #67c23a;
-  margin-left: 4px;
+
+.feedback-meta dt {
+  margin: 0 0 6px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
 }
-.text-expired {
-  color: #666;
+
+.feedback-meta dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.feedback-details {
+  color: var(--text-primary);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .file-edit-time-row {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
 }
 
 .form-hint {
-  color: #888;
-  font-size: 0.8rem;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
 }
 
-.llm-form-wrap {
-  max-width: 560px;
-  padding: 8px 0;
+.badge-unlimited {
+  color: #67c23a;
 }
 
-.llm-form-wrap .el-form-item:last-child {
-  margin-bottom: 0;
+.badge-count {
+  color: var(--text-primary);
+}
+
+.text-expired {
+  color: #ff8f8f;
 }
 
 .llm-autocomplete {
   width: 100%;
 }
 
-:deep(.llm-autocomplete .el-input__wrapper) {
-  background: #0d0d1a;
-  box-shadow: 0 0 0 1px #222244 inset;
+.llm-action-item {
+  margin-bottom: 0;
 }
-:deep(.llm-autocomplete .el-input__wrapper:hover) {
-  box-shadow: 0 0 0 1px #333366 inset;
+
+:deep(.el-tabs--border-card) {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
 }
-:deep(.llm-autocomplete .el-input__inner) {
-  color: #c0c0e0;
+
+:deep(.el-tabs--border-card > .el-tabs__header) {
+  background: color-mix(in srgb, var(--bg-deep) 94%, transparent);
+  border-bottom: 1px solid #262b45;
 }
-:deep(.el-autocomplete-suggestion__wrap) {
-  background: #16162a;
-  border: 1px solid #222244;
-  border-radius: 8px;
+
+:deep(.el-tabs--border-card > .el-tabs__content) {
+  background: var(--bg-card);
 }
-:deep(.el-autocomplete-suggestion__list li) {
-  color: #c0c0e0;
-  background: transparent;
-  padding: 8px 14px;
-  font-size: 0.88rem;
+
+:deep(.el-tabs__item) {
+  color: var(--text-secondary);
 }
-:deep(.el-autocomplete-suggestion__list li:hover) {
-  background: #1e1e40;
-  color: #409eff;
+
+:deep(.el-tabs__item.is-active) {
+  color: var(--text-primary);
+}
+
+:deep(.el-form-item__label) {
+  color: var(--text-primary);
+}
+
+:deep(.el-input__wrapper),
+:deep(.el-textarea__inner),
+:deep(.el-input-number .el-input__wrapper) {
+  background: var(--bg-input);
+  box-shadow: 0 0 0 1px var(--border-color) inset;
+}
+
+:deep(.el-input__wrapper:hover),
+:deep(.el-textarea__inner:hover),
+:deep(.el-input-number .el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 38%, var(--border-color)) inset;
+}
+
+:deep(.el-input__inner),
+:deep(.el-textarea__inner) {
+  color: var(--text-primary);
+}
+
+:deep(.el-input__inner::placeholder),
+:deep(.el-textarea__inner::placeholder) {
+  color: var(--text-dim);
+}
+
+:deep(.el-table) {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--bg-input);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-border-color: var(--border-color);
+  --el-table-text-color: var(--text-primary);
+  --el-table-header-text-color: var(--text-secondary);
+}
+
+:deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
+  background: color-mix(in srgb, var(--bg-input) 72%, transparent);
+}
+
+:deep(.el-dialog) {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+}
+
+:deep(.el-dialog__title) {
+  color: var(--text-primary);
+}
+
+:deep(.el-dialog__body),
+:deep(.el-dialog__footer) {
+  color: var(--text-primary);
+}
+
+:deep(.el-radio) {
+  color: var(--text-primary);
+}
+
+:deep(.el-autocomplete-suggestion) {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+}
+
+:deep(.el-autocomplete-suggestion li) {
+  color: var(--text-primary);
+}
+
+:deep(.el-autocomplete-suggestion li.highlighted) {
+  background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-hover));
+  color: var(--text-primary);
+}
+
+@media (max-width: 768px) {
+  .admin-view {
+    padding: 14px 10px 28px;
+  }
+
+  .feedback-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .feedback-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 @media (max-width: 640px) {
-  .admin-view { padding: 12px 8px 30px; }
-  .tab-header { flex-direction: column; align-items: flex-start; }
+  .page-title {
+    font-size: 1.25rem;
+  }
+
+  .row-actions,
+  .tab-actions,
+  .llm-actions {
+    width: 100%;
+  }
+
+  .row-actions :deep(.el-button),
+  .tab-actions :deep(.el-button),
+  .llm-actions :deep(.el-button) {
+    flex: 1;
+  }
+
+  .single-panel {
+    padding: 14px;
+    border-radius: 14px;
+  }
 }
 </style>

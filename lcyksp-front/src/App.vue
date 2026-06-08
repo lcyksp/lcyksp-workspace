@@ -1,6 +1,7 @@
-<script setup>
+﻿<script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import {
   Expand,
@@ -17,6 +18,7 @@ import {
   Moon,
   Sunny,
   RefreshRight,
+  ChatDotRound,
 } from '@element-plus/icons-vue'
 import AuthDialog from './components/AuthDialog.vue'
 import { getCurrentTheme, resetThemeAuto, setThemeMode } from './main.js'
@@ -27,10 +29,19 @@ const route = useRoute()
 const THEME_MODE_KEY = 'lcyksp_theme_mode'
 
 const authDialogVisible = ref(false)
+const feedbackDialogVisible = ref(false)
 const currentUser = ref(null)
 const sidebarCollapsed = ref(false)
 const currentTheme = ref(getCurrentTheme())
 const currentThemeMode = ref(localStorage.getItem(THEME_MODE_KEY) || 'auto')
+const feedbackSubmitting = ref(false)
+
+const feedbackForm = reactive({
+  pageName: '',
+  featureName: '',
+  problemSummary: '',
+  details: '',
+})
 
 const isLoggedIn = computed(() => !!currentUser.value)
 const isAdmin = computed(() => currentUser.value?.role === 'admin')
@@ -80,7 +91,7 @@ const menuItems = reactive([
     children: [
       { name: '赛博菜谱', path: '/recipe' },
       { name: '共享相册', path: '/gallery' },
-      { name: '短视频解析下载', path: '/video-download' },
+      { name: '音视频下载', path: '/video-download' },
     ],
     isOpen: false,
   },
@@ -171,6 +182,43 @@ function cycleThemeMode() {
 function enableAutoTheme() {
   applyThemeMode('auto')
   ElMessage.success('已恢复自动切换模式')
+}
+
+function openFeedbackDialog() {
+  feedbackForm.pageName = routeLabel.value || route.path || '当前页面'
+  feedbackForm.featureName = ''
+  feedbackForm.problemSummary = ''
+  feedbackForm.details = ''
+  feedbackDialogVisible.value = true
+}
+
+async function submitFeedback() {
+  if (!feedbackForm.pageName.trim() || !feedbackForm.featureName.trim() || !feedbackForm.problemSummary.trim() || !feedbackForm.details.trim()) {
+    ElMessage.warning('请把页面、功能、问题和具体情况都填写完整')
+    return
+  }
+
+  feedbackSubmitting.value = true
+  try {
+    const res = await axios.post('/api/feedback', {
+      pageName: feedbackForm.pageName.trim(),
+      featureName: feedbackForm.featureName.trim(),
+      problemSummary: feedbackForm.problemSummary.trim(),
+      details: feedbackForm.details.trim(),
+    })
+
+    if (!res.data?.success) {
+      ElMessage.error(res.data?.message || '反馈提交失败')
+      return
+    }
+
+    ElMessage.success('问题反馈已提交')
+    feedbackDialogVisible.value = false
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || error.response?.data?.message || error.message || '反馈提交失败')
+  } finally {
+    feedbackSubmitting.value = false
+  }
 }
 
 const themeButtonTitle = computed(() => {
@@ -266,6 +314,13 @@ onMounted(() => {
         </div>
 
         <div class="top-bar-right">
+          <div class="feedback-control">
+            <el-button size="small" text class="feedback-btn" title="提交问题反馈" @click="openFeedbackDialog">
+              <el-icon :size="18"><ChatDotRound /></el-icon>
+              <span class="feedback-label">反馈</span>
+            </el-button>
+          </div>
+
           <div class="theme-control">
             <el-button size="small" text class="theme-btn" :title="themeButtonTitle" @click="cycleThemeMode">
               <el-icon :size="18">
@@ -315,6 +370,39 @@ onMounted(() => {
     </div>
 
     <AuthDialog v-model:visible="authDialogVisible" @login-success="handleLoginSuccess" />
+
+    <el-dialog v-model="feedbackDialogVisible" title="问题反馈" width="520px" :close-on-click-modal="false">
+      <div class="feedback-form">
+        <div class="feedback-field">
+          <label>哪个页面出了问题</label>
+          <el-input v-model="feedbackForm.pageName" placeholder="例如：音视频下载 / PDF转图片 / 图片解混淆" clearable />
+        </div>
+        <div class="feedback-field">
+          <label>哪个功能出了问题</label>
+          <el-input v-model="feedbackForm.featureName" placeholder="例如：解析、下载、预览、导出" clearable />
+        </div>
+        <div class="feedback-field">
+          <label>问题是什么</label>
+          <el-input v-model="feedbackForm.problemSummary" placeholder="例如：点击后一直加载、结果为空、提示转换失败" clearable />
+        </div>
+        <div class="feedback-field">
+          <label>具体是什么样的情况</label>
+          <el-input
+            v-model="feedbackForm.details"
+            type="textarea"
+            :rows="6"
+            resize="vertical"
+            placeholder="请尽量描述你做了什么、输入了什么、页面提示了什么、结果和你预期哪里不一样。"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <div class="feedback-footer">
+          <el-button @click="feedbackDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="feedbackSubmitting" @click="submitFeedback">提交反馈</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -374,6 +462,7 @@ onMounted(() => {
 .collapse-btn,
 .menu-btn,
 .login-btn,
+.feedback-btn,
 .theme-btn,
 .theme-auto-btn {
   color: var(--text-secondary);
@@ -382,6 +471,7 @@ onMounted(() => {
 .collapse-btn:hover,
 .menu-btn:hover,
 .login-btn:hover,
+.feedback-btn:hover,
 .theme-btn:hover,
 .theme-auto-btn:hover {
   color: var(--accent-blue);
@@ -536,6 +626,7 @@ onMounted(() => {
   text-transform: capitalize;
 }
 
+.feedback-control,
 .theme-control {
   display: flex;
   align-items: center;
@@ -545,7 +636,8 @@ onMounted(() => {
   border-right: 1px solid var(--border-subtle);
 }
 
-.theme-label {
+.theme-label,
+.feedback-label {
   margin-left: 4px;
 }
 
@@ -572,6 +664,28 @@ onMounted(() => {
 
 .main-content {
   flex: 1;
+}
+
+.feedback-form {
+  display: grid;
+  gap: 14px;
+}
+
+.feedback-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feedback-field label {
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+.feedback-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .fade-enter-active,
@@ -609,6 +723,7 @@ onMounted(() => {
     padding: 0 10px;
   }
 
+  .feedback-control,
   .theme-control {
     gap: 2px;
     padding-right: 2px;
@@ -616,6 +731,7 @@ onMounted(() => {
   }
 
   .theme-label,
+  .feedback-label,
   .login-label {
     display: none;
   }
