@@ -1,4 +1,4 @@
-import { createApp } from 'vue'
+﻿import { createApp } from 'vue'
 import ElementPlus from 'element-plus'
 import { ElMessage } from 'element-plus'
 import 'element-plus/dist/index.css'
@@ -37,9 +37,11 @@ axios.interceptors.response.use(
 
       if (status === 401 || status === 403) {
         const token = localStorage.getItem('lcyksp_token')
-        if (token) {
+        const isBanMessage = /封禁/.test(String(msg || ''))
+        if (token && !isBanMessage && status === 401) {
           localStorage.removeItem('lcyksp_token')
-          ElMessage.error('登录已过期，请重新登录')
+          localStorage.removeItem('lcyksp_user')
+          ElMessage.error('登录已失效，请重新登录')
         } else {
           ElMessage.error(msg)
         }
@@ -72,8 +74,6 @@ function applyTheme(theme) {
 
 function initializeTheme() {
   const html = document.documentElement
-
-  // 移除默认的 dark 类，由代码控制
   html.classList.remove('dark')
 
   const savedTheme = localStorage.getItem(THEME_KEY)

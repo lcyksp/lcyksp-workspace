@@ -1,7 +1,7 @@
 ﻿<script setup>
 import { computed, onUnmounted, ref } from 'vue'
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Headset, Loading, Picture, VideoCamera } from '@element-plus/icons-vue'
 
 const uiText = {
@@ -48,6 +48,28 @@ const downloading = ref(false)
 const imageSourceSelections = ref({})
 const selectedImageRouteIndex = ref('0')
 const selectedVideoRouteUrl = ref('')
+
+function isQuotaExceededMessage(message) {
+  return /免费解析\/下载次数已用完|额度已用完/.test(String(message || ''))
+}
+
+async function showQuotaUpgradeDialog(message) {
+  await ElMessageBox.alert(
+    `
+      <div style="line-height:1.8;color:#cfd6e6;">
+        <div style="font-size:14px;margin-bottom:8px;">${message}</div>
+        <div style="font-size:13px;opacity:.88;">捐赠成为高级用户后，可获得更高的解析/下载额度，也能解锁更多功能。</div>
+      </div>
+    `,
+    '当前额度已用完',
+    {
+      confirmButtonText: '知道了',
+      dangerouslyUseHTMLString: true,
+      customClass: 'quota-upgrade-dialog',
+    },
+  )
+  window.dispatchEvent(new CustomEvent('open-support-dialog', { detail: { reason: 'quota' } }))
+}
 
 function sanitizeDownloadName(name) {
   return String(name || 'download')
@@ -194,6 +216,10 @@ async function handleAnalyzeLink() {
     ElMessage.success(res.data?.message || '解析成功')
   } catch (error) {
     const message = error.response?.data?.message || error.message || '解析失败'
+    if (error.response?.status === 429 || isQuotaExceededMessage(message)) {
+      await showQuotaUpgradeDialog(message)
+      return
+    }
     ElMessage.error(message)
   } finally {
     loading.value = false
@@ -313,6 +339,10 @@ async function handleDownloadSelected() {
       ElMessage.success('视频下载成功')
     }
   } catch (error) {
+    if (isQuotaExceededMessage(error.message)) {
+      await showQuotaUpgradeDialog(error.message || '当前时段额度已用完')
+      return
+    }
     ElMessage.error(error.message || '下载失败')
   } finally {
     downloading.value = false
@@ -342,6 +372,10 @@ async function handleDownloadAllImages() {
     }
     ElMessage.success('图集下载任务已开始')
   } catch (error) {
+    if (isQuotaExceededMessage(error.message)) {
+      await showQuotaUpgradeDialog(error.message || '当前时段额度已用完')
+      return
+    }
     ElMessage.error(error.message || '批量下载失败')
   } finally {
     downloading.value = false
@@ -951,6 +985,16 @@ onUnmounted(() => {
 .dialog-title {
   color: var(--text-primary);
   font-size: 0.95rem;
+}
+
+:global(.quota-upgrade-dialog .el-message-box) {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+}
+
+:global(.quota-upgrade-dialog .el-message-box__title),
+:global(.quota-upgrade-dialog .el-message-box__message) {
+  color: var(--text-primary);
 }
 
 :deep(.mobile-preview-dialog .el-dialog) {
