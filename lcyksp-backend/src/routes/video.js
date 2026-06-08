@@ -7,9 +7,13 @@ import { Readable } from 'stream'
 import { fileURLToPath } from 'url'
 import sharp from 'sharp'
 import { generateABogus } from '../utils/douyin-a-bogus.js'
+import { authMiddleware } from '../middleware/auth.js'
+import { ACTION_ANALYZE, ACTION_DOWNLOAD, PLAN_FREE, buildQuotaExceededMessage, consumeQuota } from '../utils/quota.js'
+import { getClientIp } from '../utils/turnstile.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = express.Router()
+router.use(authMiddleware)
 
 const DATA_DIR = path.resolve(__dirname, '../../data')
 const DEFAULT_COOKIES_PATH = path.join(DATA_DIR, 'cookies.txt')
@@ -66,6 +70,30 @@ const DOUYIN_IMAGE_URL_BLOCKLIST = [
 ]
 const douyinAnalyzeCache = new Map()
 let douyinAnalyzeInFlight = null
+
+async function enforceVideoQuota(req, action) {
+  const plan = req.user?.role === 'admin' ? 'admin' : req.user?.role === 'premium' || req.user?.quotaPlan === 'premium' ? 'premium' : 'free'
+  const subjectKey = req.user?.userId ? `user:${req.user.userId}` : `ip:${getClientIp(req)}`
+  const result = await consumeQuota({
+    subjectType: req.user?.userId ? plan : PLAN_FREE,
+    subjectKey,
+    action,
+    amount: 1,
+  })
+
+  if (!result.allowed) {
+    return {
+      allowed: false,
+      message: buildQuotaExceededMessage(),
+      quota: result,
+    }
+  }
+
+  return {
+    allowed: true,
+    quota: result,
+  }
+}
 
 function pickUrlFromText(input) {
   if (!input || typeof input !== 'string') return ''
@@ -1335,6 +1363,15 @@ router.post('/analyze', async (req, res) => {
     return res.json({ success: false, message: '当前暂仅支持抖音和 B站，YouTube 解析入口已暂时关闭。' })
   }
 
+  const quotaCheck = await enforceVideoQuota(req, ACTION_ANALYZE)
+  if (!quotaCheck.allowed) {
+    return res.status(429).json({
+      success: false,
+      message: quotaCheck.message,
+      quota: quotaCheck.quota,
+    })
+  }
+
   console.error('[Video] analyze start:', { url, requestedPlatform })
 
   async function runDouyinPrimaryFlow(finalUrl) {
@@ -1506,6 +1543,14 @@ router.post('/download', async (req, res) => {
   const requestedPlatform = detectPlatform(url)
   if (requestedPlatform === 'youtube') {
     return res.status(400).json({ error: '当前暂仅支持抖音和 B站，YouTube 下载入口已暂时关闭。' })
+  }
+
+  const quotaCheck = await enforceVideoQuota(req, ACTION_DOWNLOAD)
+  if (!quotaCheck.allowed) {
+    return res.status(429).json({
+      error: quotaCheck.message,
+      quota: quotaCheck.quota,
+    })
   }
 
   let tempDir = ''

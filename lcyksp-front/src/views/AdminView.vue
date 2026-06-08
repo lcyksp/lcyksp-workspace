@@ -1,7 +1,7 @@
-<script setup>
-import { onMounted, reactive, ref } from 'vue'
+﻿<script setup>
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { formatSize } from '../utils/format.js'
 
@@ -19,6 +19,7 @@ const filesLoading = ref(false)
 
 const users = ref([])
 const usersLoading = ref(false)
+const userKeyword = ref('')
 
 const feedbackList = ref([])
 const feedbackLoading = ref(false)
@@ -42,6 +43,10 @@ const userForm = reactive({
   username: '',
   password: '',
   role: 'user',
+  premiumPreset: 'none',
+  premiumExpiresAt: '',
+  isBanned: false,
+  bannedReason: '',
 })
 
 const llmConfig = reactive({
@@ -52,6 +57,7 @@ const llmConfig = reactive({
 const llmLoading = ref(false)
 const llmSaving = ref(false)
 const llmTesting = ref(false)
+const quickActionLoadingId = ref(null)
 
 const MAX_HISTORY = 5
 const HISTORY_KEYS = {
@@ -59,6 +65,18 @@ const HISTORY_KEYS = {
   key: 'llmKeyHistory',
   model: 'llmModelHistory',
 }
+
+const premiumPresetOptions = [
+  { label: '不开通', value: 'none' },
+  { label: '7天', value: '7d' },
+  { label: '30天', value: '30d' },
+  { label: '永久', value: 'permanent' },
+  { label: '自定义', value: 'custom' },
+]
+
+const userRoleLabel = computed(() => {
+  return userForm.role === 'admin' ? '管理员' : userForm.role === 'premium' ? '高级用户' : '普通用户'
+})
 
 function loadHistory(storageKey) {
   try {
@@ -124,7 +142,6 @@ async function loadFiles() {
     const res = await axios.get('/api/admin/files')
     files.value = Array.isArray(res.data?.files) ? res.data.files : []
   } catch (error) {
-    console.error('加载文件列表失败:', error)
     ElMessage.error(error.response?.data?.error || '加载文件列表失败')
   } finally {
     filesLoading.value = false
@@ -133,7 +150,7 @@ async function loadFiles() {
 
 async function deleteFile(code, fileName) {
   try {
-    await ElMessageBox.confirm(`确定要删除文件“${fileName}”（提取码 ${code}）吗？此操作不可撤销。`, '删除文件', {
+    await ElMessageBox.confirm(`确定要删除文件“${fileName}”吗？此操作不可撤销。`, '删除文件', {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
@@ -210,23 +227,37 @@ async function submitFileForm() {
 async function loadUsers() {
   usersLoading.value = true
   try {
-    const res = await axios.get('/api/admin/users')
+    const params = userKeyword.value.trim() ? { keyword: userKeyword.value.trim() } : undefined
+    const res = await axios.get('/api/admin/users', { params })
     users.value = Array.isArray(res.data?.users) ? res.data.users : []
   } catch (error) {
-    console.error('加载用户列表失败:', error)
     ElMessage.error(error.response?.data?.error || '加载用户列表失败')
   } finally {
     usersLoading.value = false
   }
 }
 
-function openAddUser() {
-  userDialogMode.value = 'add'
+function resetUserForm() {
   userForm.id = null
   userForm.username = ''
   userForm.password = ''
   userForm.role = 'user'
+  userForm.premiumPreset = 'none'
+  userForm.premiumExpiresAt = ''
+  userForm.isBanned = false
+  userForm.bannedReason = ''
+}
+
+function openAddUser() {
+  userDialogMode.value = 'add'
+  resetUserForm()
   userDialogVisible.value = true
+}
+
+function inferPremiumPreset(expiresAt) {
+  if (!expiresAt) return 'none'
+  if (String(expiresAt).includes('2099')) return 'permanent'
+  return 'custom'
 }
 
 function openEditUser(user) {
@@ -235,7 +266,38 @@ function openEditUser(user) {
   userForm.username = user.username
   userForm.password = ''
   userForm.role = user.role || 'user'
+  userForm.isBanned = Boolean(user.is_banned || user.isBanned)
+  userForm.bannedReason = user.banned_reason || user.bannedReason || ''
+  userForm.premiumExpiresAt = ''
+
+  const expiresAt = user.premium_expires_at || user.premiumExpiresAt || ''
+  userForm.premiumPreset = inferPremiumPreset(expiresAt)
+  if (expiresAt && userForm.premiumPreset === 'custom') {
+    const date = new Date(expiresAt)
+    if (!Number.isNaN(date.getTime())) {
+      const pad = (value) => String(value).padStart(2, '0')
+      userForm.premiumExpiresAt = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+    }
+  }
+
   userDialogVisible.value = true
+}
+
+function buildPremiumExpiresAt() {
+  if (userForm.role !== 'premium') return null
+  if (userForm.premiumPreset === 'permanent') return '2099-12-31T23:59:59.000Z'
+  if (userForm.premiumPreset === '7d' || userForm.premiumPreset === '30d') {
+    const days = userForm.premiumPreset === '7d' ? 7 : 30
+    const date = new Date()
+    date.setDate(date.getDate() + days)
+    return date.toISOString()
+  }
+  if (userForm.premiumPreset === 'custom') {
+    const date = new Date(userForm.premiumExpiresAt)
+    if (Number.isNaN(date.getTime())) return '__invalid__'
+    return date.toISOString()
+  }
+  return null
 }
 
 async function submitUserForm() {
@@ -247,25 +309,43 @@ async function submitUserForm() {
     ElMessage.warning('密码至少 6 个字符')
     return
   }
+  if (userForm.role === 'premium' && userForm.premiumPreset === 'none') {
+    ElMessage.warning('请为高级用户选择有效期')
+    return
+  }
+  if (userForm.isBanned && !userForm.bannedReason.trim()) {
+    ElMessage.warning('请填写封禁原因')
+    return
+  }
+
+  const premiumExpiresAt = buildPremiumExpiresAt()
+  if (premiumExpiresAt === '__invalid__') {
+    ElMessage.warning('请输入有效的高级用户到期时间')
+    return
+  }
 
   userFormLoading.value = true
   try {
+    const payload = {
+      username: userForm.username.trim(),
+      role: userForm.role,
+      premiumExpiresAt,
+      isBanned: userForm.isBanned,
+      bannedReason: userForm.isBanned ? userForm.bannedReason.trim() : '',
+    }
+    if (userForm.password) payload.password = userForm.password
+
     if (userDialogMode.value === 'add') {
       await axios.post('/api/admin/users', {
-        username: userForm.username.trim(),
+        ...payload,
         password: userForm.password,
-        role: userForm.role,
       })
       ElMessage.success('用户创建成功')
     } else {
-      const payload = {
-        username: userForm.username.trim(),
-        role: userForm.role,
-      }
-      if (userForm.password) payload.password = userForm.password
       await axios.put(`/api/admin/users/${userForm.id}`, payload)
       ElMessage.success('用户信息已更新')
     }
+
     userDialogVisible.value = false
     loadUsers()
   } catch (error) {
@@ -307,7 +387,6 @@ async function loadLlmConfig() {
       llmConfig.apiKey = res.data.apiKey || ''
     }
   } catch (error) {
-    console.error('加载大模型配置失败:', error)
     ElMessage.error(error.response?.data?.error || '加载大模型配置失败')
   } finally {
     llmLoading.value = false
@@ -371,7 +450,6 @@ async function loadFeedback() {
     const res = await axios.get('/api/admin/feedback')
     feedbackList.value = Array.isArray(res.data?.feedback) ? res.data.feedback : []
   } catch (error) {
-    console.error('加载问题反馈失败:', error)
     ElMessage.error(error.response?.data?.error || '加载问题反馈失败')
   } finally {
     feedbackLoading.value = false
@@ -417,6 +495,163 @@ function isExpired(value) {
   return !Number.isNaN(date.getTime()) && date.getTime() < Date.now()
 }
 
+function roleTagType(role) {
+  if (role === 'admin') return 'danger'
+  if (role === 'premium') return 'warning'
+  return 'success'
+}
+
+function roleLabel(role) {
+  if (role === 'admin') return '管理员'
+  if (role === 'premium') return '高级用户'
+  return '普通用户'
+}
+
+async function quickUpdateUser(user, overrides, successMessage) {
+  try {
+    quickActionLoadingId.value = user.id
+    await axios.put(`/api/admin/users/${user.id}`, {
+      username: user.username,
+      role: overrides.role ?? user.role,
+      premiumExpiresAt: overrides.premiumExpiresAt,
+      isBanned: overrides.isBanned ?? Boolean(user.is_banned),
+      bannedReason: overrides.bannedReason ?? (overrides.isBanned ? (user.banned_reason || '管理员手动封禁') : ''),
+    })
+    ElMessage.success(successMessage)
+    loadUsers()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '快捷操作失败')
+  } finally {
+    quickActionLoadingId.value = null
+  }
+}
+
+function buildFutureIso(days) {
+  const date = new Date()
+  date.setDate(date.getDate() + days)
+  return date.toISOString()
+}
+
+async function quickSetPremium(user, preset) {
+  if (user.role === 'admin') {
+    ElMessage.warning('不能在这里修改其他管理员')
+    return
+  }
+
+  if (user.id === currentUser?.id && preset === 'ban') {
+    ElMessage.warning('不能封禁当前登录的管理员账号')
+    return
+  }
+
+  if (preset === '7d') {
+    await quickUpdateUser(user, {
+      role: 'premium',
+      premiumExpiresAt: buildFutureIso(7),
+      isBanned: false,
+      bannedReason: '',
+    }, '已设置为 7 天高级用户')
+    return
+  }
+
+  if (preset === '30d') {
+    await quickUpdateUser(user, {
+      role: 'premium',
+      premiumExpiresAt: buildFutureIso(30),
+      isBanned: false,
+      bannedReason: '',
+    }, '已设置为 30 天高级用户')
+    return
+  }
+
+  if (preset === 'permanent') {
+    await quickUpdateUser(user, {
+      role: 'premium',
+      premiumExpiresAt: '2099-12-31T23:59:59.000Z',
+      isBanned: false,
+      bannedReason: '',
+    }, '已设置为永久高级用户')
+    return
+  }
+
+  if (preset === 'normal') {
+    await quickUpdateUser(user, {
+      role: 'user',
+      premiumExpiresAt: null,
+      isBanned: false,
+      bannedReason: '',
+    }, '已恢复为普通用户')
+    return
+  }
+
+  if (preset === 'unban') {
+    await quickUpdateUser(user, {
+      isBanned: false,
+      bannedReason: '',
+    }, '已解除封禁')
+    return
+  }
+
+  if (preset === 'ban') {
+    try {
+      const { value } = await ElMessageBox.prompt('请输入封禁原因', '封禁用户', {
+        confirmButtonText: '确认封禁',
+        cancelButtonText: '取消',
+        inputPlaceholder: '例如：大量滥用解析接口、恶意注册、违规传播内容',
+        inputValidator: (inputValue) => {
+          if (!String(inputValue || '').trim()) return '请填写封禁原因'
+          return true
+        },
+      })
+
+      await quickUpdateUser(user, {
+        isBanned: true,
+        bannedReason: String(value || '').trim(),
+      }, '已封禁该用户')
+    } catch (error) {
+      if (error !== 'cancel' && error !== 'close') {
+        ElMessage.error('封禁用户失败')
+      }
+    }
+  }
+}
+
+async function handleQuickActionChange(user, value) {
+  if (!value) return
+
+  if (value === 'custom') {
+    try {
+      const { value: customValue } = await ElMessageBox.prompt('请输入高级用户天数', '自定义时长', {
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+        inputPlaceholder: '例如：15',
+        inputValidator: (inputValue) => {
+          const days = Number.parseInt(String(inputValue || '').trim(), 10)
+          if (!Number.isInteger(days) || days <= 0) return '请输入大于 0 的整数天数'
+          if (days > 3650) return '天数不要超过 3650'
+          return true
+        },
+      })
+
+      const days = Number.parseInt(String(customValue || '').trim(), 10)
+      const date = new Date()
+      date.setDate(date.getDate() + days)
+      await quickUpdateUser(user, {
+        role: 'premium',
+        premiumExpiresAt: date.toISOString(),
+        isBanned: false,
+        bannedReason: '',
+      }, `已设置为 ${days} 天高级用户`)
+    } catch (error) {
+      if (error !== 'cancel' && error !== 'close') {
+        ElMessage.error('自定义高级用户时长失败')
+      }
+    }
+    return
+  }
+
+  await quickSetPremium(user, value)
+}
+
 onMounted(() => {
   loadFiles()
   loadUsers()
@@ -433,7 +668,7 @@ onMounted(() => {
       <el-tab-pane label="文件管理">
         <div class="tab-header">
           <span class="tab-count">共 {{ files.length }} 条文件记录</span>
-          <el-button size="small" @click="loadFiles" :loading="filesLoading">
+          <el-button size="small" :loading="filesLoading" @click="loadFiles">
             <el-icon><Refresh /></el-icon>
             刷新
           </el-button>
@@ -476,11 +711,14 @@ onMounted(() => {
 
       <el-tab-pane label="用户管理">
         <div class="tab-header">
-          <span class="tab-count">共 {{ users.length }} 个注册用户</span>
-          <div class="tab-actions">
-            <el-button size="small" @click="loadUsers" :loading="usersLoading">
+          <span class="tab-count">共 {{ users.length }} 个用户</span>
+          <div class="tab-actions user-search-wrap">
+            <el-input v-model="userKeyword" placeholder="搜索用户名" clearable class="user-search" @keyup.enter="loadUsers">
+              <template #prefix><el-icon><Search /></el-icon></template>
+            </el-input>
+            <el-button size="small" :loading="usersLoading" @click="loadUsers">
               <el-icon><Refresh /></el-icon>
-              刷新
+              搜索
             </el-button>
             <el-button type="primary" size="small" @click="openAddUser">
               <el-icon><Plus /></el-icon>
@@ -492,24 +730,66 @@ onMounted(() => {
         <el-table v-loading="usersLoading" :data="users" stripe size="small" empty-text="暂无用户数据">
           <el-table-column prop="id" label="ID" width="70" />
           <el-table-column prop="username" label="用户名" min-width="160" />
-          <el-table-column prop="role" label="角色" width="100">
+          <el-table-column label="角色" width="110">
             <template #default="{ row }">
-              <el-tag :type="row.role === 'admin' ? 'danger' : 'info'" effect="dark" size="small">
-                {{ row.role === 'admin' ? '管理员' : '用户' }}
+              <el-tag :type="roleTagType(row.role)" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="高级用户到期" width="180">
+            <template #default="{ row }">
+              <span v-if="row.role === 'premium'">
+                {{ !row.premium_expires_at || String(row.premium_expires_at).includes('2099') ? '永久' : formatTime(row.premium_expires_at) }}
+              </span>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }">
+              <el-tag :type="row.is_banned ? 'danger' : 'success'" effect="dark" size="small">
+                {{ row.is_banned ? '已封禁' : '正常' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="groupName" label="家庭组" width="130">
-            <template #default="{ row }">{{ row.groupName || '-' }}</template>
+          <el-table-column label="封禁原因" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.is_banned ? (row.banned_reason || '-') : '-' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="group_name" label="家庭组" width="130">
+            <template #default="{ row }">{{ row.group_name || '-' }}</template>
           </el-table-column>
           <el-table-column label="注册时间" width="180">
-            <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+            <template #default="{ row }">{{ formatTime(row.created_at || row.createdAt) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="170" fixed="right">
             <template #default="{ row }">
               <div class="row-actions">
-                <el-button size="small" type="primary" plain @click="openEditUser(row)">编辑</el-button>
+                <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
                 <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="快捷操作" width="220" fixed="right">
+            <template #default="{ row }">
+              <div v-if="row.role === 'admin'" class="quick-action-placeholder">
+                其他管理员不可在此修改
+              </div>
+              <div v-else class="quick-action-select-wrap">
+                <el-select
+                  placeholder="选择操作"
+                  size="small"
+                  class="quick-action-select"
+                  :loading="quickActionLoadingId === row.id"
+                  @change="(value) => handleQuickActionChange(row, value)"
+                >
+                  <el-option label="设为普通用户" value="normal" />
+                  <el-option label="高级用户 7 天" value="7d" />
+                  <el-option label="高级用户 30 天" value="30d" />
+                  <el-option label="高级用户 永久" value="permanent" />
+                  <el-option label="高级用户 自定义天数" value="custom" />
+                  <el-option v-if="row.is_banned" label="解除封禁" value="unban" />
+                  <el-option v-else label="封禁用户" value="ban" />
+                </el-select>
               </div>
             </template>
           </el-table-column>
@@ -518,8 +798,8 @@ onMounted(() => {
 
       <el-tab-pane label="大模型配置">
         <div class="tab-header">
-          <span class="tab-count">配置加密保存，仅在服务端运行时解密使用</span>
-          <el-button size="small" @click="loadLlmConfig" :loading="llmLoading">
+          <span class="tab-count">配置会加密保存，仅在服务端运行时解密使用</span>
+          <el-button size="small" :loading="llmLoading" @click="loadLlmConfig">
             <el-icon><Refresh /></el-icon>
             刷新
           </el-button>
@@ -542,7 +822,7 @@ onMounted(() => {
               <el-autocomplete
                 v-model="llmConfig.apiKey"
                 :fetch-suggestions="queryKeyHistory"
-                placeholder="输入新的 API Key，留空则不覆盖"
+                placeholder="输入新的 API Key"
                 clearable
                 :trigger-on-focus="true"
                 class="llm-autocomplete"
@@ -562,12 +842,8 @@ onMounted(() => {
 
             <el-form-item class="llm-action-item">
               <div class="llm-actions">
-                <el-button type="primary" :loading="llmSaving" @click="saveLlmConfig">
-                  {{ llmSaving ? '保存中...' : '保存配置' }}
-                </el-button>
-                <el-button :loading="llmTesting" @click="testLlmConfig">
-                  {{ llmTesting ? '测试中...' : '测试连接' }}
-                </el-button>
+                <el-button type="primary" :loading="llmSaving" @click="saveLlmConfig">{{ llmSaving ? '保存中...' : '保存配置' }}</el-button>
+                <el-button :loading="llmTesting" @click="testLlmConfig">{{ llmTesting ? '测试中...' : '测试连接' }}</el-button>
               </div>
             </el-form-item>
           </el-form>
@@ -576,8 +852,8 @@ onMounted(() => {
 
       <el-tab-pane label="问题反馈">
         <div class="tab-header">
-          <span class="tab-count">查看用户提交的问题、页面、功能与具体现象</span>
-          <el-button size="small" @click="loadFeedback" :loading="feedbackLoading">
+          <span class="tab-count">查看用户提交的问题反馈记录</span>
+          <el-button size="small" :loading="feedbackLoading" @click="loadFeedback">
             <el-icon><Refresh /></el-icon>
             刷新
           </el-button>
@@ -593,9 +869,7 @@ onMounted(() => {
                   <h4>{{ item.problemSummary }}</h4>
                   <span>{{ formatTime(item.createdAt) }}</span>
                 </div>
-                <el-button size="small" type="danger" plain :loading="feedbackDeletingId === item.id" @click="deleteFeedback(item.id)">
-                  删除
-                </el-button>
+                <el-button size="small" type="danger" plain :loading="feedbackDeletingId === item.id" @click="deleteFeedback(item.id)">删除</el-button>
               </div>
 
               <dl class="feedback-meta">
@@ -620,7 +894,7 @@ onMounted(() => {
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="userDialogVisible" :title="userDialogMode === 'add' ? '新增用户' : '编辑用户'" width="420px" :close-on-click-modal="false">
+    <el-dialog v-model="userDialogVisible" :title="userDialogMode === 'add' ? '新增用户' : '编辑用户'" width="520px" :close-on-click-modal="false">
       <el-form label-position="top">
         <el-form-item label="用户名">
           <el-input v-model="userForm.username" placeholder="2-32 个字符" clearable />
@@ -631,16 +905,34 @@ onMounted(() => {
         <el-form-item label="角色">
           <el-radio-group v-model="userForm.role">
             <el-radio value="user">普通用户</el-radio>
+            <el-radio value="premium">高级用户</el-radio>
             <el-radio value="admin">管理员</el-radio>
           </el-radio-group>
+        </el-form-item>
+
+        <el-form-item v-if="userForm.role === 'premium'" label="高级用户有效期">
+          <el-select v-model="userForm.premiumPreset" class="full-width">
+            <el-option v-for="item in premiumPresetOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <div class="form-hint">当前设置为：{{ userRoleLabel }}</div>
+        </el-form-item>
+
+        <el-form-item v-if="userForm.role === 'premium' && userForm.premiumPreset === 'custom'" label="自定义到期时间">
+          <el-input v-model="userForm.premiumExpiresAt" type="datetime-local" />
+        </el-form-item>
+
+        <el-form-item label="封禁状态">
+          <el-switch v-model="userForm.isBanned" active-text="已封禁" inactive-text="正常" />
+        </el-form-item>
+
+        <el-form-item v-if="userForm.isBanned" label="封禁原因">
+          <el-input v-model="userForm.bannedReason" type="textarea" :rows="3" placeholder="例如：大量滥用解析接口、恶意注册、违规传播内容" />
         </el-form-item>
       </el-form>
 
       <template #footer>
         <el-button @click="userDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="userFormLoading" @click="submitUserForm">
-          {{ userFormLoading ? '保存中...' : '保存' }}
-        </el-button>
+        <el-button type="primary" :loading="userFormLoading" @click="submitUserForm">{{ userFormLoading ? '保存中...' : '保存' }}</el-button>
       </template>
     </el-dialog>
 
@@ -655,9 +947,7 @@ onMounted(() => {
         <el-form-item label="过期时间">
           <div class="file-edit-time-row">
             <el-input v-model="fileForm.expireTime" type="datetime-local" :disabled="fileForm.isPermanent" placeholder="选择过期时间" />
-            <el-checkbox v-model="fileForm.isPermanent" @change="(value) => { fileForm.expireTime = value ? 'permanent' : '' }">
-              永久有效
-            </el-checkbox>
+            <el-checkbox v-model="fileForm.isPermanent" @change="(value) => { fileForm.expireTime = value ? 'permanent' : '' }">永久有效</el-checkbox>
           </div>
           <div class="form-hint">取消勾选后可手动设置过期时间。</div>
         </el-form-item>
@@ -668,9 +958,7 @@ onMounted(() => {
 
       <template #footer>
         <el-button @click="fileDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="fileFormLoading" @click="submitFileForm">
-          {{ fileFormLoading ? '保存中...' : '保存' }}
-        </el-button>
+        <el-button type="primary" :loading="fileFormLoading" @click="submitFileForm">{{ fileFormLoading ? '保存中...' : '保存' }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -717,6 +1005,28 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.user-search-wrap {
+  align-items: center;
+}
+
+.user-search {
+  width: 220px;
+}
+
+.quick-action-select-wrap {
+  width: 100%;
+}
+
+.quick-action-select {
+  width: 100%;
+}
+
+.quick-action-placeholder {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 .single-panel {
@@ -818,6 +1128,11 @@ onMounted(() => {
   font-size: 0.82rem;
 }
 
+.full-width,
+.llm-autocomplete {
+  width: 100%;
+}
+
 .badge-unlimited {
   color: #67c23a;
 }
@@ -828,10 +1143,6 @@ onMounted(() => {
 
 .text-expired {
   color: #ff8f8f;
-}
-
-.llm-autocomplete {
-  width: 100%;
 }
 
 .llm-action-item {
@@ -866,15 +1177,10 @@ onMounted(() => {
 
 :deep(.el-input__wrapper),
 :deep(.el-textarea__inner),
-:deep(.el-input-number .el-input__wrapper) {
+:deep(.el-input-number .el-input__wrapper),
+:deep(.el-select__wrapper) {
   background: var(--bg-input);
   box-shadow: 0 0 0 1px var(--border-color) inset;
-}
-
-:deep(.el-input__wrapper:hover),
-:deep(.el-textarea__inner:hover),
-:deep(.el-input-number .el-input__wrapper:hover) {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 38%, var(--border-color)) inset;
 }
 
 :deep(.el-input__inner),
@@ -912,11 +1218,10 @@ onMounted(() => {
 }
 
 :deep(.el-dialog__body),
-:deep(.el-dialog__footer) {
-  color: var(--text-primary);
-}
-
-:deep(.el-radio) {
+:deep(.el-dialog__footer),
+:deep(.el-radio),
+:deep(.el-checkbox),
+:deep(.el-switch__label) {
   color: var(--text-primary);
 }
 
@@ -947,6 +1252,10 @@ onMounted(() => {
     flex-direction: column;
     align-items: stretch;
   }
+
+  .user-search {
+    width: 100%;
+  }
 }
 
 @media (max-width: 640px) {
@@ -956,7 +1265,8 @@ onMounted(() => {
 
   .row-actions,
   .tab-actions,
-  .llm-actions {
+  .llm-actions,
+  .user-search-wrap {
     width: 100%;
   }
 

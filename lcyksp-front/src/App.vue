@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
@@ -30,11 +30,14 @@ const THEME_MODE_KEY = 'lcyksp_theme_mode'
 
 const authDialogVisible = ref(false)
 const feedbackDialogVisible = ref(false)
+const accessDialogVisible = ref(false)
 const currentUser = ref(null)
 const sidebarCollapsed = ref(false)
 const currentTheme = ref(getCurrentTheme())
 const currentThemeMode = ref(localStorage.getItem(THEME_MODE_KEY) || 'auto')
 const feedbackSubmitting = ref(false)
+const supportChannel = ref('wechat')
+const accessDialogTarget = ref('')
 
 const feedbackForm = reactive({
   pageName: '',
@@ -46,9 +49,56 @@ const feedbackForm = reactive({
 const isLoggedIn = computed(() => !!currentUser.value)
 const isAdmin = computed(() => currentUser.value?.role === 'admin')
 const displayName = computed(() => currentUser.value?.username || '')
+const memberStatusText = computed(() => {
+  if (!currentUser.value) return ''
+  if (currentUser.value.isBanned) return '已封禁'
+  if (currentUser.value.role === 'admin') return '管理员'
+  if (currentUser.value.role === 'premium') {
+    const expiresAt = currentUser.value.premiumExpiresAt
+    if (!expiresAt || String(expiresAt).includes('2099')) return '高级用户 | 永久'
+    const date = new Date(expiresAt)
+    if (!Number.isNaN(date.getTime())) {
+      return `高级用户 | 至 ${date.toLocaleDateString('zh-CN')}`
+    }
+    return '高级用户'
+  }
+  return '普通用户'
+})
+const memberStatusType = computed(() => {
+  if (!currentUser.value) return ''
+  if (currentUser.value.isBanned) return 'danger'
+  if (currentUser.value.role === 'admin') return 'danger'
+  if (currentUser.value.role === 'premium') return 'warning'
+  return 'success'
+})
 const activePath = computed(() => route.path)
 const routeLabel = computed(() => String(route.name || ''))
 const isThemeAuto = computed(() => currentThemeMode.value === 'auto')
+const supportOptions = [
+  { key: 'wechat', label: '微信', image: '/support-wechat.png' },
+  { key: 'alipay', label: '支付宝', image: '/support-alipay.jpg' },
+]
+const activeSupportOption = computed(() => {
+  return supportOptions.find((item) => item.key === supportChannel.value) || supportOptions[0]
+})
+const accessDialogTitle = computed(() => {
+  if (accessDialogTarget.value === '/gallery') return '共享相册当前仅对高级用户开放'
+  if (accessDialogTarget.value === '/recipe') return '赛博菜谱当前仅对高级用户开放'
+  if (accessDialogTarget.value === 'quota') return '当前时段额度已用完'
+  return '支持一下'
+})
+const accessDialogSubText = computed(() => {
+  if (accessDialogTarget.value === '/gallery') {
+    return '普通用户被高级用户加入家庭组后，也可以进入共享相册。'
+  }
+  if (accessDialogTarget.value === '/recipe') {
+    return '捐赠成为高级用户后，即可解锁赛博菜谱与更高使用额度。'
+  }
+  if (accessDialogTarget.value === 'quota') {
+    return '捐赠成为高级用户后，可获得更高的解析/下载额度，也能解锁更多功能。'
+  }
+  return '觉得不错？支持一下'
+})
 
 const menuItems = reactive([
   {
@@ -111,6 +161,25 @@ function loadUserFromStorage() {
   }
 }
 
+async function refreshCurrentUser() {
+  const token = localStorage.getItem('lcyksp_token')
+  if (!token) return
+
+  try {
+    const res = await axios.get('/api/auth/me')
+    if (res.data?.user) {
+      currentUser.value = res.data.user
+      localStorage.setItem('lcyksp_user', JSON.stringify(res.data.user))
+    }
+  } catch (error) {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('lcyksp_token')
+      localStorage.removeItem('lcyksp_user')
+      currentUser.value = null
+    }
+  }
+}
+
 function handleLoginSuccess(user) {
   currentUser.value = user
 }
@@ -143,6 +212,65 @@ function navigateTo(path) {
   if (window.innerWidth < 768) {
     sidebarCollapsed.value = true
   }
+}
+
+function canAccessPremiumFeature(path) {
+  if (!currentUser.value) {
+    return {
+      allowed: false,
+      message: '请先登录。捐赠成为高级用户后，可获得更高额度并解锁更多功能。',
+    }
+  }
+
+  if (path === '/recipe') {
+    if (['admin', 'premium'].includes(currentUser.value.role)) {
+      return { allowed: true, message: '' }
+    }
+    return {
+      allowed: false,
+      message: '当前用户仅对高级用户开放。捐赠成为高级用户后即可使用赛博菜谱。',
+    }
+  }
+
+  if (path === '/gallery') {
+    if (
+      ['admin', 'premium'].includes(currentUser.value.role)
+      || currentUser.value.groupId
+    ) {
+      return { allowed: true, message: '' }
+    }
+    return {
+      allowed: false,
+      message: '当前用户仅对高级用户开放。普通用户需先被高级用户加入家庭组后才能进入共享相册。',
+    }
+  }
+
+  return { allowed: true, message: '' }
+}
+
+function openAccessDialog(path) {
+  accessDialogTarget.value = path
+  supportChannel.value = 'wechat'
+  accessDialogVisible.value = true
+}
+
+function openSupportDialogFor(reason = '') {
+  accessDialogTarget.value = reason || 'support'
+  supportChannel.value = 'wechat'
+  accessDialogVisible.value = true
+}
+
+function handleMenuNavigate(path) {
+  if (path === '/recipe' || path === '/gallery') {
+    const access = canAccessPremiumFeature(path)
+    if (!access.allowed) {
+      ElMessage.warning(access.message)
+      openAccessDialog(path)
+      return
+    }
+  }
+
+  navigateTo(path)
 }
 
 function isActive(item) {
@@ -238,10 +366,20 @@ watch(
 
 onMounted(() => {
   loadUserFromStorage()
+  refreshCurrentUser()
   syncOpenGroups()
   currentTheme.value = getCurrentTheme()
   currentThemeMode.value = localStorage.getItem(THEME_MODE_KEY) || 'auto'
+  window.addEventListener('open-support-dialog', handleGlobalSupportDialog)
 })
+
+onUnmounted(() => {
+  window.removeEventListener('open-support-dialog', handleGlobalSupportDialog)
+})
+
+function handleGlobalSupportDialog(event) {
+  openSupportDialogFor(event?.detail?.reason || 'support')
+}
 </script>
 
 <template>
@@ -278,7 +416,7 @@ onMounted(() => {
                 :key="child.name"
                 class="menu-item submenu-item"
                 :class="{ active: activePath === child.path, disabled: child.disabled }"
-                @click="!child.disabled && navigateTo(child.path)"
+                @click="!child.disabled && handleMenuNavigate(child.path)"
               >
                 <span class="menu-label">{{ child.name }}</span>
                 <span v-if="child.disabled" class="menu-badge">即将上线</span>
@@ -345,6 +483,9 @@ onMounted(() => {
           </div>
 
           <template v-if="isLoggedIn">
+            <el-tag size="small" effect="dark" :type="memberStatusType" class="member-status-tag">
+              {{ memberStatusText }}
+            </el-tag>
             <span class="user-greeting">
               <el-icon><UserFilled /></el-icon>
               {{ displayName }}
@@ -402,6 +543,36 @@ onMounted(() => {
           <el-button type="primary" :loading="feedbackSubmitting" @click="submitFeedback">提交反馈</el-button>
         </div>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="accessDialogVisible" title="" width="420px" :close-on-click-modal="false" class="support-modal">
+      <div class="support-dialog">
+        <div class="support-copy">
+          <p class="support-copy-single">
+            {{ accessDialogTitle }}
+          </p>
+          <p class="support-copy-sub">
+            {{ accessDialogSubText }}
+          </p>
+        </div>
+
+        <div class="support-tabs">
+          <button
+            v-for="item in supportOptions"
+            :key="item.key"
+            type="button"
+            class="support-tab"
+            :class="{ active: supportChannel === item.key }"
+            @click="supportChannel = item.key"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+
+        <div class="support-qrcode-wrap">
+          <img class="support-qrcode" :src="activeSupportOption.image" :alt="`${activeSupportOption.label}收款码`" />
+        </div>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -658,6 +829,10 @@ onMounted(() => {
   gap: 4px;
 }
 
+.member-status-tag {
+  margin-right: 2px;
+}
+
 .login-label {
   margin-left: 4px;
 }
@@ -686,6 +861,88 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.support-dialog {
+  display: grid;
+  gap: 18px;
+  text-align: center;
+  justify-items: center;
+}
+
+.support-copy {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
+.support-copy-single {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.08rem;
+  line-height: 1.5;
+  font-weight: 600;
+  text-align: center;
+}
+
+.support-copy-sub {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.7;
+  text-align: center;
+}
+
+.support-tabs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.support-tab {
+  min-width: 88px;
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 28%, transparent);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.support-tab.active {
+  background: color-mix(in srgb, var(--accent-blue) 22%, transparent);
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--accent-blue) 56%, transparent);
+}
+
+.support-qrcode-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.support-qrcode {
+  width: 240px;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
+:deep(.support-modal .el-dialog__header) {
+  margin-right: 0;
+  padding-bottom: 0;
+  padding-top: 10px;
+  min-height: 18px;
+}
+
+:deep(.support-modal .el-dialog__title) {
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .fade-enter-active,
@@ -742,5 +999,12 @@ onMounted(() => {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  .member-status-tag {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
 }
 </style>

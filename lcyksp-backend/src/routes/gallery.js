@@ -5,6 +5,7 @@ import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { getDb } from '../config/db.js';
 import { authMiddleware, requireAuth } from '../middleware/auth.js';
+import { requireGalleryAccess, requirePremiumOrAdmin } from '../middleware/access.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,7 +39,7 @@ const upload = multer({
 });
 
 // ========== GET /api/gallery/photos — 家庭组数据隔离列表 ==========
-router.get('/photos', requireAuth, async (req, res, next) => {
+router.get('/photos', requireAuth, requireGalleryAccess, async (req, res, next) => {
   try {
     const db = getDb();
     const { userId, role, groupId } = req.user;
@@ -121,7 +122,7 @@ router.get('/file/:name', authMiddleware, (req, res, next) => {
 });
 
 // ========== POST /api/gallery/upload — 上传照片（自动归组） ==========
-router.post('/upload', requireAuth, upload.single('photo'), async (req, res, next) => {
+router.post('/upload', requireAuth, requireGalleryAccess, upload.single('photo'), async (req, res, next) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: '请选择一张照片' });
@@ -164,7 +165,7 @@ router.post('/upload', requireAuth, upload.single('photo'), async (req, res, nex
 // ===================================================================
 
 // ---------- GET /api/gallery/family/members — 查看当前家庭组的所有成员 ----------
-router.get('/family/members', requireAuth, async (req, res, next) => {
+router.get('/family/members', requireAuth, requireGalleryAccess, async (req, res, next) => {
   try {
     const db = getDb();
     const { userId, groupId } = req.user;
@@ -219,7 +220,7 @@ router.get('/family/members', requireAuth, async (req, res, next) => {
 });
 
 // ---------- POST /api/gallery/family/members — 添加成员到当前家庭组 ----------
-router.post('/family/members', requireAuth, async (req, res, next) => {
+router.post('/family/members', requireAuth, requirePremiumOrAdmin, async (req, res, next) => {
   try {
     const { username } = req.body;
     if (!username || typeof username !== 'string') {
@@ -301,7 +302,7 @@ router.post('/family/members', requireAuth, async (req, res, next) => {
 });
 
 // ---------- DELETE /api/gallery/family/members/:userId — 从当前家庭组移除成员 ----------
-router.delete('/family/members/:memberId', requireAuth, async (req, res, next) => {
+router.delete('/family/members/:memberId', requireAuth, requirePremiumOrAdmin, async (req, res, next) => {
   try {
     const memberId = parseInt(req.params.memberId, 10);
     if (isNaN(memberId)) {
