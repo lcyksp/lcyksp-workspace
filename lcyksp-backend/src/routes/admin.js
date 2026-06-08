@@ -157,14 +157,22 @@ router.delete('/files/:code', async function (req, res, next) {
 router.get('/users', async function (req, res, next) {
   try {
     var db = getDb();
+    var keyword = typeof req.query.keyword === 'string' ? req.query.keyword.trim() : '';
+    var sql = "SELECT u.id, u.username, u.role, u.quota_plan, u.premium_expires_at, u.is_banned, u.banned_reason, u.group_id, u.created_at, COALESCE(fg.group_name, '') AS group_name FROM users u LEFT JOIN family_groups fg ON u.group_id = fg.id";
+    var params = [];
+
+    if (keyword) {
+      sql += ' WHERE u.username LIKE ?';
+      params.push('%' + keyword + '%');
+    }
+
+    sql += ' ORDER BY u.id ASC';
+
     var rows = await new Promise(function (resolve, reject) {
-      db.all(
-        'SELECT u.id, u.username, u.role, u.group_id, u.created_at, COALESCE(fg.group_name, \'\') AS group_name FROM users u LEFT JOIN family_groups fg ON u.group_id = fg.id ORDER BY u.id ASC',
-        function (err, rows) {
-          if (err) return reject(err);
-          resolve(rows);
-        },
-      );
+      db.all(sql, params, function (err, rows) {
+        if (err) return reject(err);
+        resolve(rows);
+      });
     });
 
     res.json({ users: rows });
@@ -178,6 +186,9 @@ router.post('/users', async function (req, res, next) {
     var username = req.body.username;
     var password = req.body.password;
     var role = req.body.role;
+    var premiumExpiresAt = req.body.premiumExpiresAt;
+    var isBanned = req.body.isBanned;
+    var bannedReason = req.body.bannedReason;
 
     if (!username || !password) {
       return res.status(400).json({ error: '用户名和密码不能为空' });
@@ -197,10 +208,17 @@ router.post('/users', async function (req, res, next) {
     }
 
     var hashed = await bcrypt.hash(password, SALT_ROUNDS);
-    var userRole = role === 'admin' ? 'admin' : 'user';
+    var userRole = role === 'admin' ? 'admin' : role === 'premium' ? 'premium' : 'user';
+    var quotaPlan = userRole === 'admin' ? 'admin' : userRole === 'premium' ? 'premium' : 'free';
+    if (userRole === 'premium' && premiumExpiresAt && Number.isNaN(new Date(premiumExpiresAt).getTime())) {
+      return res.status(400).json({ error: '??????????' });
+    }
+    var safePremiumExpiresAt = userRole === 'premium' && premiumExpiresAt ? new Date(premiumExpiresAt).toISOString() : null;
+    var safeIsBanned = isBanned ? 1 : 0;
+    var safeBannedReason = typeof bannedReason === 'string' ? bannedReason.trim() : '';
 
     var result = await new Promise(function (resolve, reject) {
-      db.run('INSERT INTO users (username, password, role) VALUES (?, ?, ?)', [username, hashed, userRole], function (err) {
+      db.run('INSERT INTO users (username, password, role, quota_plan, premium_expires_at, is_banned, banned_reason) VALUES (?, ?, ?, ?, ?, ?, ?)', [username, hashed, userRole, quotaPlan, safePremiumExpiresAt, safeIsBanned, safeBannedReason], function (err) {
         if (err) return reject(err);
         resolve({ id: this.lastID });
       });
@@ -221,6 +239,9 @@ router.put('/users/:id', async function (req, res, next) {
     var username = req.body.username;
     var password = req.body.password;
     var role = req.body.role;
+    var premiumExpiresAt = req.body.premiumExpiresAt;
+    var isBanned = req.body.isBanned;
+    var bannedReason = req.body.bannedReason;
     var setClauses = [];
     var params = [];
 
@@ -243,8 +264,37 @@ router.put('/users/:id', async function (req, res, next) {
     }
 
     if (role !== undefined) {
+      var nextRole = role === 'admin' ? 'admin' : role === 'premium' ? 'premium' : 'user';
+      var nextQuotaPlan = nextRole === 'admin' ? 'admin' : nextRole === 'premium' ? 'premium' : 'free';
       setClauses.push('role = ?');
-      params.push(role);
+      params.push(nextRole);
+      setClauses.push('quota_plan = ?');
+      params.push(nextQuotaPlan);
+      if (nextRole !== 'premium') {
+        setClauses.push('premium_expires_at = NULL');
+      }
+    }
+
+    if (premiumExpiresAt !== undefined) {
+      if (premiumExpiresAt) {
+        if (Number.isNaN(new Date(premiumExpiresAt).getTime())) {
+          return res.status(400).json({ error: '??????????' });
+        }
+        setClauses.push('premium_expires_at = ?');
+        params.push(new Date(premiumExpiresAt).toISOString());
+      } else {
+        setClauses.push('premium_expires_at = NULL');
+      }
+    }
+
+    if (isBanned !== undefined) {
+      setClauses.push('is_banned = ?');
+      params.push(isBanned ? 1 : 0);
+    }
+
+    if (bannedReason !== undefined) {
+      setClauses.push('banned_reason = ?');
+      params.push(typeof bannedReason === 'string' ? bannedReason.trim() : '');
     }
 
     if (setClauses.length === 0) return res.status(400).json({ error: '未提供修改字段' });

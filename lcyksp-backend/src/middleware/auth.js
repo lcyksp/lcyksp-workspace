@@ -1,47 +1,120 @@
-import jwt from 'jsonwebtoken';
+﻿import jwt from 'jsonwebtoken'
+import { getDb } from '../config/db.js'
+import { normalizeRole, roleToPlan } from '../utils/quota.js'
 
-const JWT_SECRET = process.env.JWT_SECRET || 'lcyksp-jwt-secret-dev-2026';
+const JWT_SECRET = process.env.JWT_SECRET || 'lcyksp-jwt-secret-dev-2026'
 
-/** JWT 签名负载 — 携带 userId, username, role, groupId */
+function dbGet(sql, params = []) {
+  const db = getDb()
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)))
+  })
+}
+
+function dbRun(sql, params = []) {
+  const db = getDb()
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function onRun(err) {
+      if (err) return reject(err)
+      resolve({ changes: this.changes })
+    })
+  })
+}
+
+async function normalizeUserAccess(userId) {
+  const user = await dbGet(
+    'SELECT id, username, role, quota_plan, group_id, premium_expires_at, is_banned, banned_reason FROM users WHERE id = ?',
+    [userId],
+  )
+  if (!user) return null
+
+  if (user.is_banned) {
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      quotaPlan: user.quota_plan,
+      groupId: user.group_id || null,
+      premiumExpiresAt: user.premium_expires_at || null,
+      isBanned: true,
+      bannedReason: user.banned_reason || '',
+    }
+  }
+
+  if (user.role === 'premium' && user.premium_expires_at) {
+    const expiresAt = new Date(user.premium_expires_at)
+    if (!Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) {
+      await dbRun(
+        "UPDATE users SET role = 'user', quota_plan = 'free', premium_expires_at = NULL WHERE id = ?",
+        [user.id],
+      )
+      user.role = 'user'
+      user.quota_plan = 'free'
+      user.premium_expires_at = null
+    }
+  }
+
+  const role = normalizeRole(user.role)
+  return {
+    id: user.id,
+    username: user.username,
+    role,
+    quotaPlan: user.quota_plan || roleToPlan(role),
+    groupId: user.group_id || null,
+    premiumExpiresAt: user.premium_expires_at || null,
+    isBanned: Boolean(user.is_banned),
+    bannedReason: user.banned_reason || '',
+  }
+}
+
 export function signToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' })
 }
 
-/**
- * JWT 鉴权中间件（可选解析）
- * 将 { userId, username, role, groupId } 注入 req.user
- * 无 Token 时 req.user = null（游客模式）
- */
-export function authMiddleware(req, res, next) {
-  const authHeader = req.headers.authorization;
+export async function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    req.user = null;
-    return next();
+    req.user = null
+    return next()
   }
 
-  const token = authHeader.slice(7);
+  const token = authHeader.slice(7)
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET)
+    const user = await normalizeUserAccess(decoded.userId)
+    if (!user) {
+      req.user = null
+      return next()
+    }
+
     req.user = {
-      userId: decoded.userId,
-      username: decoded.username,
-      role: decoded.role || 'user',
-      groupId: decoded.groupId || null,
-    };
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      quotaPlan: user.quotaPlan,
+      groupId: user.groupId,
+      premiumExpiresAt: user.premiumExpiresAt,
+      isBanned: user.isBanned,
+      bannedReason: user.bannedReason,
+    }
   } catch {
-    req.user = null;
+    req.user = null
   }
-  next();
+  next()
 }
 
-/**
- * 强制登录中间件 — 要求必须有有效 Token
- */
 export function requireAuth(req, res, next) {
   if (!req.user || !req.user.userId) {
-    return res.status(401).json({ error: '请先登录' });
+    return res.status(401).json({ error: '请先登录' })
   }
-  next();
+  if (req.user.isBanned) {
+    return res.status(403).json({ error: req.user.bannedReason || '当前账号已被封禁' })
+  }
+  next()
 }
 
-export default { signToken, authMiddleware, requireAuth };
+export async function buildFreshUserPayload(userId) {
+  return normalizeUserAccess(userId)
+}
+
+export default { signToken, authMiddleware, requireAuth, buildFreshUserPayload }

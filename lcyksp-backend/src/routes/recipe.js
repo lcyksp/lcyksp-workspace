@@ -1,8 +1,12 @@
 import { Router } from 'express';
 import { getDb } from '../config/db.js';
+import { authMiddleware, requireAuth } from '../middleware/auth.js';
+import { requirePremiumOrAdmin } from '../middleware/access.js';
 import { decrypt } from '../utils/crypto.js';
 
 var router = Router();
+
+router.use(authMiddleware);
 
 var AI_TIMEOUT_MS = 60_000;
 
@@ -54,9 +58,8 @@ function loadLlmEndpoint() {
 function normalizeEndpoint(url) {
   if (!url || typeof url !== 'string') return 'https://api.deepseek.com/chat/completions';
   var trimmed = url.trim();
-  if (trimmed.slice(-18) === '/chat/completions') return trimmed;
-  if (trimmed.slice(-1) === '/') return trimmed + 'chat/completions';
-  return trimmed + '/chat/completions';
+  if (trimmed.indexOf('/chat/completions') !== -1) return trimmed;
+  return trimmed.replace(/\/$/, '') + '/chat/completions';
 }
 
 async function streamRecipeSteps(recipe, res, signal) {
@@ -71,8 +74,8 @@ async function streamRecipeSteps(recipe, res, signal) {
   var endpoint = await loadLlmEndpoint();
   var targetUrl = normalizeEndpoint(endpoint.apiUrl);
 
-  console.log('[AI] Key prefix:', (apiKey || '').slice(0, 4) + '****');
-  console.log('[AI] Request URL:', targetUrl);
+  console.log('[AI] Key prefix:', String(apiKey || '').slice(0, 4));
+  console.log('[AI] Final URL:', targetUrl);
   console.log('[AI] Model:', endpoint.model);
 
   try {
@@ -229,7 +232,7 @@ router.get('/search', async function (req, res, next) {
 //  POST / — 添加自创菜式
 // =====================================================================
 
-router.post('/', async function (req, res, next) {
+router.post('/', requireAuth, requirePremiumOrAdmin, async function (req, res, next) {
   try {
     var body = (typeof req.body === 'object' && req.body !== null) ? req.body : {};
     var name = body.name;
@@ -300,7 +303,7 @@ router.post('/', async function (req, res, next) {
 //  POST /:id/stream — SSE 流式续写做法
 // =====================================================================
 
-router.post('/:id/stream', async function (req, res, next) {
+router.post('/:id/stream', requireAuth, requirePremiumOrAdmin, async function (req, res, next) {
   try {
     var id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
