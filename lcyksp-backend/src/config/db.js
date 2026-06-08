@@ -90,6 +90,19 @@ export async function initDb() {
       );
 
       db.run(
+        'CREATE TABLE IF NOT EXISTS feedback_reports (' +
+        '  id              INTEGER PRIMARY KEY AUTOINCREMENT,' +
+        '  page_name       TEXT NOT NULL,' +
+        '  feature_name    TEXT NOT NULL,' +
+        '  problem_summary TEXT NOT NULL,' +
+        '  details         TEXT NOT NULL,' +
+        '  reporter_id     INTEGER DEFAULT NULL REFERENCES users(id),' +
+        '  reporter_name   TEXT DEFAULT \'\',' +
+        '  created_at      TEXT NOT NULL DEFAULT (datetime(\'now\'))' +
+        ');',
+      );
+
+      db.run(
         'CREATE TABLE IF NOT EXISTS transfers (' +
         '  id            VARCHAR(32) PRIMARY KEY,' +
         '  file_name     TEXT    NOT NULL,' +
@@ -115,6 +128,7 @@ export async function initDb() {
       db.run('CREATE INDEX IF NOT EXISTS idx_transfers_expire ON transfers(expire_time)', function () {});
       db.run('CREATE INDEX IF NOT EXISTS idx_gallery_photos_group ON gallery_photos(family_group_id)', function () {});
       db.run('CREATE INDEX IF NOT EXISTS idx_llm_history_type ON llm_config_history(type)', function () {});
+      db.run('CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback_reports(created_at)', function () {});
 
       db.run(
         "UPDATE users SET role = 'admin' WHERE id = 1 AND role != 'admin'",
