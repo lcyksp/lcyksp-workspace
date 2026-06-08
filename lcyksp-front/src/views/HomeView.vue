@@ -1,166 +1,171 @@
-<script setup>
-/**
- * HomeView.vue V3.1 — 极简欢迎主页
- * 打字机 Slogan + 极客数字时钟 + 云端状态微挂件
- */
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import axios from 'axios'
+﻿<script setup>
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
-// ========== 打字机 Slogan ==========
-const fullText = 'Lcyksp Workspace — 极简在线工具箱'
+const fullText = 'Lcyksp Workspace | 轻量但够用的在线工具站'
 const displayText = ref('')
 const cursorVisible = ref(true)
+const supportDialogVisible = ref(false)
+const supportChannel = ref('wechat')
 
 let typeInterval = null
 let cursorInterval = null
 let charIndex = 0
+let clockInterval = null
 
-// ========== 数字时钟 ==========
 const now = ref(new Date())
-
-const timeStr = computed(() => {
-  return now.value.toLocaleTimeString('zh-CN', { hour12: false })
-})
+const timeStr = computed(() => now.value.toLocaleTimeString('zh-CN', { hour12: false }))
 
 const dateStr = computed(() => {
   return now.value.toLocaleDateString('zh-CN', {
-    year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
   })
 })
 
 const greeting = computed(() => {
-  const h = now.value.getHours()
-  if (h < 6) return '夜深了，注意休息 🌙'
-  if (h < 9) return '早上好 ☀️'
-  if (h < 12) return '上午好 🌤️'
-  if (h < 14) return '中午好 🌞'
-  if (h < 18) return '下午好 ⛅'
-  if (h < 22) return '傍晚好 🌆'
-  return '夜深了，注意休息 🌙'
+  const hour = now.value.getHours()
+  if (hour < 6) return '夜深了，也别忘了早点休息。'
+  if (hour < 9) return '早上好，来把今天要用的工具开起来。'
+  if (hour < 12) return '上午好，祝你今天一路顺手。'
+  if (hour < 14) return '中午好，忙里也记得吃饭。'
+  if (hour < 18) return '下午好，继续推进今天的事情。'
+  if (hour < 22) return '晚上好，希望这些工具能帮你省点时间。'
+  return '夜深了，也别忘了早点休息。'
 })
 
-let clockInterval = null
+const supportOptions = [
+  { key: 'wechat', label: '微信', image: '/support-wechat.png' },
+  { key: 'alipay', label: '支付宝', image: '/support-alipay.jpg' },
+]
 
-// ========== 云端状态微挂件 ==========
-const serverStatus = ref({
-  status: 'connecting',
-  ping: null,
-  serverInfo: '',
+const activeSupportOption = computed(() => {
+  return supportOptions.find((item) => item.key === supportChannel.value) || supportOptions[0]
 })
 
-let statusInterval = null
-
-async function fetchServerStatus() {
-  try {
-    const start = performance.now()
-    const res = await axios.get('/api/health', { timeout: 5000 })
-    const elapsed = Math.round(performance.now() - start)
-    serverStatus.value = {
-      status: 'online',
-      ping: elapsed,
-      serverInfo: res.data?.server || 'Node.js',
-    }
-  } catch {
-    serverStatus.value = {
-      status: 'offline',
-      ping: null,
-      serverInfo: '',
-    }
-  }
+function openSupportDialog() {
+  supportChannel.value = 'wechat'
+  supportDialogVisible.value = true
 }
 
 onMounted(() => {
-  // 打字机
   typeInterval = setInterval(() => {
     if (charIndex < fullText.length) {
       displayText.value += fullText[charIndex]
-      charIndex++
+      charIndex += 1
     } else {
       clearInterval(typeInterval)
     }
-  }, 80)
+  }, 75)
 
   cursorInterval = setInterval(() => {
     cursorVisible.value = !cursorVisible.value
   }, 500)
 
-  // 数字时钟 — 每秒
   clockInterval = setInterval(() => {
     now.value = new Date()
   }, 1000)
-
-  // 云端状态 — 首次立即执行，之后每 5 秒
-  fetchServerStatus()
-  statusInterval = setInterval(fetchServerStatus, 5000)
 })
 
 onUnmounted(() => {
   clearInterval(typeInterval)
   clearInterval(cursorInterval)
   clearInterval(clockInterval)
-  clearInterval(statusInterval)
 })
 </script>
 
 <template>
   <div class="home-view">
     <div class="hero">
-      <!-- 打字机 Slogan -->
+      <div class="hero-main">
       <h1 class="slogan">
         {{ displayText }}<span class="cursor" :class="{ hidden: !cursorVisible }">|</span>
       </h1>
 
-      <!-- 极客数字时钟 -->
       <div class="clock-widget">
         <div class="clock-time">{{ timeStr }}</div>
         <div class="clock-date">{{ dateStr }}</div>
         <div class="clock-greeting">{{ greeting }}</div>
       </div>
-
-      <!-- 云端状态微挂件 -->
-      <div class="server-widget" :class="serverStatus.status">
-        <span class="status-dot" />
-        <span class="status-label">
-          <template v-if="serverStatus.status === 'online'">
-            后端在线 · Ping {{ serverStatus.ping }}ms
-          </template>
-          <template v-else-if="serverStatus.status === 'connecting'">
-            正在连接…
-          </template>
-          <template v-else>
-            后端离线
-          </template>
-        </span>
+      <p class="hint">点开左侧菜单就能开始用工具。</p>
       </div>
 
-      <!-- 引导 -->
-      <p class="hint">点击左上角菜单开始使用</p>
+      <div class="home-bottom">
+        <button class="support-link" type="button" @click="openSupportDialog">
+          觉得不错？赞助一下
+        </button>
+        <p class="disclaimer">
+          本网站仅供个人学习、研究与效率辅助使用，请勿用于商业用途、批量爬取、侵权传播或任何违法违规场景。因用户自行使用本网站产生的任何风险、纠纷或损失，与本站无关。
+        </p>
+      </div>
     </div>
+
+    <el-dialog
+      v-model="supportDialogVisible"
+      title=""
+      width="420px"
+      :close-on-click-modal="false"
+      class="support-modal"
+    >
+      <div class="support-dialog">
+        <div class="support-copy">
+          <p class="support-copy-single">赏口饭吃谢谢喵</p>
+        </div>
+
+        <div class="support-tabs">
+          <button
+            v-for="item in supportOptions"
+            :key="item.key"
+            type="button"
+            class="support-tab"
+            :class="{ active: supportChannel === item.key }"
+            @click="supportChannel = item.key"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+
+        <div class="support-qrcode-wrap">
+          <img class="support-qrcode" :src="activeSupportOption.image" :alt="`${activeSupportOption.label}收款码`" />
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .home-view {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  min-height: calc(100vh - 80px);
+  width: 100%;
+  min-height: calc(100vh - 64px);
   text-align: center;
 }
 
 .hero {
-  max-width: 600px;
-  padding: 0 20px;
+  width: min(760px, 100%);
+  min-height: calc(100vh - 64px);
+  padding: 0 20px 24px;
+  display: flex;
+  flex-direction: column;
 }
 
-/* ---------- Slogan ---------- */
+.hero-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 .slogan {
-  font-size: 1.8rem;
-  font-weight: 300;
-  color: var(--text-heading);
   margin: 0 0 32px;
-  letter-spacing: 2px;
+  font-size: 1.85rem;
+  font-weight: 300;
   line-height: 1.6;
+  letter-spacing: 2px;
+  color: var(--text-heading);
 }
 
 .cursor {
@@ -168,9 +173,11 @@ onUnmounted(() => {
   font-weight: 100;
   transition: opacity 0.2s;
 }
-.cursor.hidden { opacity: 0; }
 
-/* ---------- 数字时钟 ---------- */
+.cursor.hidden {
+  opacity: 0;
+}
+
 .clock-widget {
   margin-bottom: 28px;
 }
@@ -185,94 +192,161 @@ onUnmounted(() => {
 }
 
 .clock-date {
-  font-size: 0.9rem;
-  color: var(--text-muted);
   margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
 }
 
 .clock-greeting {
-  font-size: 0.85rem;
+  margin-top: 8px;
   color: var(--text-dim);
-  margin-top: 6px;
+  font-size: 0.88rem;
 }
 
-/* ---------- 云端状态 ---------- */
-.server-widget {
+.hint {
+  margin: 0 0 14px;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  opacity: 0.68;
+}
+
+.home-bottom {
+  margin-top: auto;
+  padding-top: 32px;
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+}
+
+.support-link {
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--text-secondary) 88%, transparent);
+  font-size: 0.82rem;
+  cursor: pointer;
+  opacity: 0.72;
+  letter-spacing: 0.2px;
+  transition: color 0.18s ease, opacity 0.18s ease, transform 0.18s ease;
+}
+
+.support-link:hover {
+  color: var(--accent-blue);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.disclaimer {
+  max-width: 760px;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.8;
+  opacity: 0.78;
+}
+
+.support-dialog {
+  display: grid;
+  gap: 18px;
+  text-align: center;
+  justify-items: center;
+}
+
+.support-copy {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.support-copy-single {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  line-height: 1.5;
+  font-weight: 600;
+  text-align: center;
+}
+
+.support-tabs {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 6px 16px;
-  border-radius: 20px;
-  font-size: 0.8rem;
-  margin-bottom: 24px;
-  transition: all 0.3s;
 }
 
-.server-widget.online {
-  background: rgba(46, 204, 113, 0.08);
-  color: #2ecc71;
-  border: 1px solid rgba(46, 204, 113, 0.2);
-}
-
-.server-widget.offline {
-  background: rgba(231, 76, 60, 0.08);
-  color: #e74c3c;
-  border: 1px solid rgba(231, 76, 60, 0.2);
-}
-
-.server-widget.connecting {
-  background: rgba(100, 100, 100, 0.08);
+.support-tab {
+  min-width: 88px;
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 28%, transparent);
+  background: transparent;
   color: var(--text-secondary);
-  border: 1px solid rgba(100, 100, 100, 0.2);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: all 0.18s ease;
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
+.support-tab.active {
+  background: color-mix(in srgb, var(--accent-blue) 22%, transparent);
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--accent-blue) 56%, transparent);
 }
 
-.server-widget.online .status-dot {
-  background: #2ecc71;
-  box-shadow: 0 0 6px rgba(46, 204, 113, 0.6);
-  animation: pulse-green 2s infinite;
+.support-qrcode-wrap {
+  display: flex;
+  justify-content: center;
 }
 
-.server-widget.offline .status-dot {
-  background: #e74c3c;
+.support-qrcode {
+  width: 240px;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
 }
 
-.server-widget.connecting .status-dot {
-  background: var(--text-secondary);
-  animation: pulse-gray 1s infinite;
+:deep(.support-modal .el-dialog__header) {
+  margin-right: 0;
+  padding-bottom: 0;
+  padding-top: 10px;
+  min-height: 18px;
 }
 
-@keyframes pulse-green {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+:deep(.support-modal .el-dialog__title) {
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
-@keyframes pulse-gray {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-.status-label { letter-spacing: 0.5px; }
-
-/* ---------- 引导 ---------- */
-.hint {
-  color: var(--text-dim);
-  font-size: 0.85rem;
-  margin: 0;
-  opacity: 0.5;
-  transition: opacity 0.8s;
-}
-.hint:hover { opacity: 1; }
-
-/* ---------- 手机端 ---------- */
 @media (max-width: 640px) {
-  .slogan { font-size: 1.3rem; }
-  .clock-time { font-size: 2.2rem; letter-spacing: 4px; }
+  .hero {
+    padding: 0 14px 20px;
+    min-height: calc(100vh - 64px);
+  }
+
+  .slogan {
+    font-size: 1.28rem;
+  }
+
+  .clock-time {
+    font-size: 2.2rem;
+    letter-spacing: 4px;
+  }
+
+  .home-bottom {
+    padding-top: 24px;
+    gap: 10px;
+  }
+
+  .support-link {
+    font-size: 0.78rem;
+  }
+
+  .disclaimer {
+    font-size: 0.68rem;
+  }
+
+  .support-qrcode {
+    width: 210px;
+  }
 }
 </style>

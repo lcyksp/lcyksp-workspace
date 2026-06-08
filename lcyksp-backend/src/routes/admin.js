@@ -535,4 +535,72 @@ router.post('/config/llm/test', async function (req, res, next) {
   }
 });
 
+// ===================================================================
+//  问题反馈管理
+// ===================================================================
+
+router.get('/feedback', async function (req, res, next) {
+  try {
+    var db = getDb();
+    var rows = await new Promise(function (resolve, reject) {
+      db.all(
+        'SELECT id, page_name, feature_name, problem_summary, details, reporter_id, reporter_name, created_at FROM feedback_reports ORDER BY created_at DESC, id DESC',
+        function (err, rows) {
+          if (err) return reject(err);
+          resolve(rows);
+        },
+      );
+    });
+
+    res.json({
+      feedback: rows.map(function (row) {
+        return {
+          id: row.id,
+          pageName: row.page_name,
+          featureName: row.feature_name,
+          problemSummary: row.problem_summary,
+          details: row.details,
+          reporterId: row.reporter_id,
+          reporterName: row.reporter_name || 'guest',
+          createdAt: row.created_at,
+        };
+      }),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/feedback/:id', async function (req, res, next) {
+  try {
+    var feedbackId = parseInt(req.params.id, 10);
+    if (isNaN(feedbackId)) {
+      return res.status(400).json({ error: '无效的反馈 ID' });
+    }
+
+    var db = getDb();
+    var exists = await new Promise(function (resolve, reject) {
+      db.get('SELECT id FROM feedback_reports WHERE id = ?', [feedbackId], function (err, row) {
+        if (err) return reject(err);
+        resolve(row);
+      });
+    });
+
+    if (!exists) {
+      return res.status(404).json({ error: '反馈记录不存在' });
+    }
+
+    await new Promise(function (resolve, reject) {
+      db.run('DELETE FROM feedback_reports WHERE id = ?', [feedbackId], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    res.json({ message: '反馈记录已删除' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

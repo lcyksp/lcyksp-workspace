@@ -5,6 +5,7 @@ import os from 'os'
 import path from 'path'
 import { Readable } from 'stream'
 import { fileURLToPath } from 'url'
+import sharp from 'sharp'
 import { generateABogus } from '../utils/douyin-a-bogus.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -350,6 +351,23 @@ function pickFirstUrl(input) {
   return ''
 }
 
+function collectUrlCandidates(input) {
+  if (!input) return []
+  if (typeof input === 'string') return input.trim() ? [input.trim()] : []
+  if (Array.isArray(input)) {
+    return input.flatMap((item) => collectUrlCandidates(item)).filter(Boolean)
+  }
+  if (typeof input === 'object') {
+    return [
+      ...collectUrlCandidates(input.url_list),
+      ...collectUrlCandidates(input.urlList),
+      ...collectUrlCandidates(input.src),
+      ...collectUrlCandidates(input.uri),
+    ].filter(Boolean)
+  }
+  return []
+}
+
 function writeDouyinDebugFile(fileName, content) {
   if (!process.env.DOUYIN_DEBUG) return
   fs.mkdirSync(DOUYIN_DEBUG_DIR, { recursive: true })
@@ -376,6 +394,18 @@ function dedupeMediaItems(items) {
   return result
 }
 
+function dedupeStrings(values) {
+  const result = []
+  const seen = new Set()
+  for (const value of values || []) {
+    const next = String(value || '').trim()
+    if (!next || seen.has(next)) continue
+    seen.add(next)
+    result.push(next)
+  }
+  return result
+}
+
 function inferExtensionFromUrl(url, fallback = 'jpg') {
   const lower = String(url || '').toLowerCase()
   const fromQueryless = lower.split('?')[0]
@@ -389,6 +419,87 @@ function inferImageContentType(url) {
   if (ext === 'png') return 'image/png'
   if (ext === 'webp') return 'image/webp'
   return 'image/jpeg'
+}
+
+function normalizeDouyinVideoUrl(url) {
+  const value = String(url || '').replace(/\\u002F/g, '/').trim()
+  if (!value) return ''
+
+  let next = value
+    .replace(/playwm/gi, 'play')
+    .replace(/\/playwm\//gi, '/play/')
+    .replace(/watermark=1/gi, 'watermark=0')
+    .replace(/wm=1/gi, 'wm=0')
+
+  try {
+    const parsed = new URL(next)
+    const deleteKeys = ['watermark', 'wm', 'is_play_url']
+    deleteKeys.forEach((key) => {
+      const current = parsed.searchParams.get(key)
+      if (current === '1') parsed.searchParams.set(key, '0')
+    })
+    next = parsed.toString()
+  } catch {
+    // keep normalized string as-is
+  }
+
+  return next
+}
+
+function normalizeDouyinImageUrl(url) {
+  const value = String(url || '').replace(/\\u002F/g, '/').trim()
+  if (!value) return ''
+  return value
+}
+
+function buildDouyinImageVariants(url) {
+  const normalized = normalizeDouyinImageUrl(url)
+  if (!normalized) return []
+  return [normalized]
+}
+
+function scoreDouyinImageUrl(url) {
+  const value = String(url || '').toLowerCase()
+  if (!value) return -Infinity
+
+  let score = 0
+  if (/\.webp($|\?)/.test(value)) score += 20
+  if (/tplv-dy-aweme-images/.test(value)) score += 80
+  if (/tplv-dy-water-v2/.test(value)) score -= 120
+  if (/tos-cn-i-dy/.test(value)) score += 20
+  if (/p3-pc-sign|p9-pc-sign/.test(value)) score += 8
+  if (/original|source|1080|2160|raw/.test(value)) score += 5
+  return score
+}
+
+function sortDouyinImageCandidates(candidates) {
+  return dedupeStrings((candidates || []).flatMap((item) => buildDouyinImageVariants(item)).filter(Boolean))
+    .sort((a, b) => scoreDouyinImageUrl(b) - scoreDouyinImageUrl(a))
+}
+
+function pickBestDouyinImageUrl(candidates) {
+  return sortDouyinImageCandidates(candidates)[0] || ''
+}
+
+function scoreDouyinVideoUrl(url) {
+  const value = String(url || '').toLowerCase()
+  if (!value) return -Infinity
+
+  let score = 0
+  if (/play(?!wm)|play_addr|playapi|bytevc|aweme|tos-cn/.test(value)) score += 30
+  if (/playwm|watermark=1|wm=1|logo_type|\/logo\//.test(value)) score -= 120
+  if (/download_addr|download/.test(value)) score -= 35
+  if (/ratio=1080|ratio=720|1080p|720p|source=pack/.test(value)) score += 5
+  if (/is_play_url=1/.test(value)) score += 18
+  if (/mime_type=video_mp4/.test(value)) score += 8
+  return score
+}
+
+function pickBestDouyinVideoUrl(candidates) {
+  return (candidates || [])
+    .map((item) => normalizeDouyinVideoUrl(item))
+    .filter(Boolean)
+    .sort((a, b) => scoreDouyinVideoUrl(b) - scoreDouyinVideoUrl(a))[0] || ''
 }
 
 function buildDouyinAnalyzeResult({ title, url, video = null, audio = null, images = [], source }) {
@@ -405,6 +516,7 @@ function buildDouyinAnalyzeResult({ title, url, video = null, audio = null, imag
       directUrl: video.url,
       audioUrl: audio?.url || '',
       contentType: video.contentType || 'video/mp4',
+      sourceCandidates: video.sourceCandidates || [],
     })
   }
 
@@ -419,6 +531,7 @@ function buildDouyinAnalyzeResult({ title, url, video = null, audio = null, imag
       directUrl: audio?.url || video.url,
       audioUrl: audio?.url || video.url,
       contentType: audio?.contentType || 'audio/mpeg',
+      sourceCandidates: audio?.sourceCandidates || video.sourceCandidates || [],
     })
   }
 
@@ -433,6 +546,7 @@ function buildDouyinAnalyzeResult({ title, url, video = null, audio = null, imag
       directUrl: item.url,
       audioUrl: '',
       contentType: item.contentType || inferImageContentType(item.url),
+      sourceCandidates: item.sourceCandidates || [],
     })
   })
 
@@ -458,18 +572,27 @@ function normalizeDouyinSignedApiImages(detail) {
   return dedupeMediaItems(
     rawImages
       .map((item) => {
-        const url =
-          pickFirstUrl(item?.display_image?.url_list) ||
-          pickFirstUrl(item?.owner_watermark_image?.url_list) ||
-          pickFirstUrl(item?.download_url_list) ||
-          pickFirstUrl(item?.downloadUrlList) ||
-          pickFirstUrl(item?.url_list) ||
-          pickFirstUrl(item?.urlList)
+        const preferredCandidates = sortDouyinImageCandidates([
+          ...collectUrlCandidates(item?.url_list),
+          ...collectUrlCandidates(item?.urlList),
+          ...collectUrlCandidates(item?.display_image?.url_list),
+        ])
+        const fallbackCandidates = sortDouyinImageCandidates([
+          ...collectUrlCandidates(item?.download_url_list),
+          ...collectUrlCandidates(item?.downloadUrlList),
+          ...collectUrlCandidates(item?.owner_watermark_image?.url_list),
+        ])
+        const sourceCandidates = dedupeStrings([
+          ...preferredCandidates,
+          ...fallbackCandidates,
+        ])
+        const url = pickBestDouyinImageUrl(sourceCandidates)
 
         if (!url || !isAllowedDouyinImageUrl(url)) return null
         return {
           url,
           contentType: inferImageContentType(url),
+          sourceCandidates,
         }
       })
       .filter(Boolean),
@@ -482,11 +605,23 @@ function normalizeDouyinSignedApiVideo(detail) {
     pickFirstUrl(video?.play_addr?.url_list),
     pickFirstUrl(video?.play_addr_h264?.url_list),
     pickFirstUrl(video?.play_addr_265?.url_list),
-    pickFirstUrl(video?.download_addr?.url_list),
   ].filter(Boolean)
 
-  const directUrl = candidates.find((item) => /play|video|aweme|tos-cn/i.test(item)) || candidates[0] || ''
-  const normalizedUrl = String(directUrl || '').replace(/\\u002F/g, '/')
+  const normalizedBitrateCandidates = (video?.bit_rate || [])
+    .flatMap((item) => [
+      pickFirstUrl(item?.play_addr?.url_list),
+      pickFirstUrl(item?.play_addr_h264?.url_list),
+      pickFirstUrl(item?.play_addr_265?.url_list),
+    ])
+    .filter(Boolean)
+
+  const sourceCandidates = dedupeStrings([...normalizedBitrateCandidates, ...candidates])
+    .map((item) => normalizeDouyinVideoUrl(item))
+    .filter(Boolean)
+    .sort((a, b) => scoreDouyinVideoUrl(b) - scoreDouyinVideoUrl(a))
+
+  const directUrl = sourceCandidates[0] || ''
+  const normalizedUrl = normalizeDouyinVideoUrl(directUrl)
   const lower = normalizedUrl.toLowerCase()
   if (!normalizedUrl) return null
   if (lower.includes('ies-music') || lower.endsWith('.mp3') || /audio|music/.test(lower)) {
@@ -496,6 +631,7 @@ function normalizeDouyinSignedApiVideo(detail) {
     ? {
         url: normalizedUrl,
         contentType: 'video/mp4',
+        sourceCandidates,
       }
     : null
 }
@@ -688,7 +824,8 @@ async function analyzeDouyinViaRequest(url) {
         .map((item) => ({ url: item, contentType: inferImageContentType(item) })),
     )
     const videoUrl = allUrls
-      .map((item) => item.replace(/\\u002F/g, '/'))
+      .map((item) => normalizeDouyinVideoUrl(item))
+      .sort((a, b) => scoreDouyinVideoUrl(b) - scoreDouyinVideoUrl(a))
       .find((item) => /play|video|aweme|bytevc|tos-cn/i.test(item.toLowerCase()))
     if (videoUrl) {
       video = { url: videoUrl, contentType: 'video/mp4' }
@@ -715,9 +852,15 @@ async function analyzeViaBrowserAutomation(_url) {
   throw new Error('browser automation fallback is currently disabled on this server')
 }
 
-function buildCommonArgs(url) {
+function buildCommonArgs(url, options = {}) {
   const platform = detectPlatform(url)
   const cookiesMeta = getCookiesMeta(platform)
+  const {
+    socketTimeout = 30,
+    concurrentFragments = 1,
+    includeRetrySleep = true,
+  } = options
+
   const args = [
     '--user-agent',
     DESKTOP_UA,
@@ -725,14 +868,23 @@ function buildCommonArgs(url) {
     '5',
     '--retries',
     '5',
+    '--file-access-retries',
+    '5',
     '--fragment-retries',
     '5',
     '--socket-timeout',
-    '15',
+    String(socketTimeout),
+    '--concurrent-fragments',
+    String(concurrentFragments),
     '--no-playlist',
     '--encoding',
     'utf-8',
   ]
+
+  if (includeRetrySleep) {
+    args.push('--retry-sleep', 'http:2')
+    args.push('--retry-sleep', 'fragment:2')
+  }
 
   if (cookiesMeta.active?.usable) {
     args.push('--cookies', cookiesMeta.active.path)
@@ -937,11 +1089,15 @@ function buildDownloadDisposition(fileName, ext = '') {
 }
 
 async function streamDirectMediaDownload({ mediaUrl, title, res, contentType }) {
+  const platform = detectPlatform(mediaUrl)
+  const cookiesMeta = getCookiesMeta(platform)
+  const cookieHeader = buildCookieHeader(cookiesMeta)
   const response = await fetch(mediaUrl, {
     headers: {
       'User-Agent': DESKTOP_UA,
-      Referer: 'https://www.douyin.com/',
-      Origin: 'https://www.douyin.com',
+      Referer: platform === 'bilibili' ? 'https://www.bilibili.com/' : 'https://www.douyin.com/',
+      Origin: platform === 'bilibili' ? 'https://www.bilibili.com' : 'https://www.douyin.com',
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     },
     redirect: 'follow',
   })
@@ -966,6 +1122,65 @@ async function streamDirectMediaDownload({ mediaUrl, title, res, contentType }) 
     res.on('finish', resolve)
     stream.pipe(res)
   })
+}
+
+async function streamDirectImageAsJpeg({ mediaUrl, title, res }) {
+  const cookiesMeta = getCookiesMeta('douyin')
+  const cookieHeader = buildCookieHeader(cookiesMeta)
+  const response = await fetch(mediaUrl, {
+    headers: {
+      'User-Agent': DESKTOP_UA,
+      Referer: 'https://www.douyin.com/',
+      Origin: 'https://www.douyin.com',
+      Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+    },
+    redirect: 'follow',
+  })
+
+  if (!response.ok || !response.body) {
+    throw new Error(`图片下载失败: HTTP ${response.status}`)
+  }
+
+  const arrayBuffer = await response.arrayBuffer()
+  const jpegBuffer = await sharp(Buffer.from(arrayBuffer)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
+
+  res.setHeader('Content-Type', 'image/jpeg')
+  res.setHeader('Content-Disposition', buildDownloadDisposition(title || 'download', '.jpg'))
+  res.setHeader('Content-Length', jpegBuffer.length)
+  res.end(jpegBuffer)
+}
+
+async function proxyImagePreview({ mediaUrl, res }) {
+  const cookiesMeta = getCookiesMeta('douyin')
+  const cookieHeader = buildCookieHeader(cookiesMeta)
+  const response = await fetch(mediaUrl, {
+    headers: {
+      'User-Agent': DESKTOP_UA,
+      Referer: 'https://www.douyin.com/',
+      Origin: 'https://www.douyin.com',
+      Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+    },
+    redirect: 'follow',
+  })
+
+  if (!response.ok || !response.body) {
+    throw new Error(`图片预览失败: HTTP ${response.status}`)
+  }
+
+  const arrayBuffer = await response.arrayBuffer()
+  const jpegBuffer = await sharp(Buffer.from(arrayBuffer)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
+  res.setHeader('Content-Type', 'image/jpeg')
+  res.setHeader('Cache-Control', 'public, max-age=300')
+  res.setHeader('Content-Length', jpegBuffer.length)
+  res.end(jpegBuffer)
 }
 
 async function extractDirectAudioToResponse({ mediaUrl, title, tempDir, res }) {
@@ -1122,6 +1337,76 @@ router.post('/analyze', async (req, res) => {
 
   console.error('[Video] analyze start:', { url, requestedPlatform })
 
+  async function runDouyinPrimaryFlow(finalUrl) {
+    if (douyinAnalyzeInFlight && douyinAnalyzeInFlight.url === finalUrl) {
+      const sharedResult = await douyinAnalyzeInFlight.promise
+      return sharedResult
+    }
+
+    const promise = (async () => {
+      try {
+        console.error('[Video] trying douyin signed-api primary:', { finalUrl, elapsedMs: Date.now() - startedAt })
+        const signedApiData = await analyzeDouyinViaSignedApi(finalUrl)
+        console.error('[Video] douyin signed-api primary ok:', {
+          finalUrl,
+          source: signedApiData?.source,
+          formats: signedApiData?.formats?.length || 0,
+          elapsedMs: Date.now() - startedAt,
+        })
+        return { data: signedApiData, message: '已通过抖音站内接口完成解析。' }
+      } catch (signedApiError) {
+        console.error('[Video] douyin signed-api primary failed:', signedApiError?.stack || signedApiError?.message || String(signedApiError))
+      }
+
+      try {
+        console.error('[Video] trying douyin request-extract primary:', { finalUrl, elapsedMs: Date.now() - startedAt })
+        const requestData = await analyzeDouyinViaRequest(finalUrl)
+        console.error('[Video] douyin request-extract primary ok:', {
+          finalUrl,
+          source: requestData?.source,
+          formats: requestData?.formats?.length || 0,
+          elapsedMs: Date.now() - startedAt,
+        })
+        return { data: requestData, message: '已通过页面提取完成解析。' }
+      } catch (requestError) {
+        console.error('[Video] douyin request-extract primary failed:', requestError?.stack || requestError?.message || String(requestError))
+      }
+
+      const { args: douyinArgs } = buildCommonArgs(finalUrl)
+      const args = [...douyinArgs, '--no-warnings', '--dump-single-json', finalUrl]
+      console.error('[Video] trying douyin yt-dlp fallback:', {
+        finalUrl,
+        elapsedMs: Date.now() - startedAt,
+      })
+
+      const { stdout } = await runYtDlp(args, { timeoutMs: 8000 })
+      const rawData = JSON.parse(stdout)
+      const formats = normalizeAnalyzeFormats(rawData.formats)
+      return {
+        data: {
+          title: rawData.title || '未知标题',
+          thumbnail: rawData.thumbnail || '',
+          directPreviewUrl: rawData.url || '',
+          directPreviewType: rawData.url ? 'video' : '',
+          webpageUrl: rawData.webpage_url || finalUrl,
+          platform: detectPlatform(finalUrl),
+          source: 'yt-dlp',
+          formats: formats.reverse(),
+        },
+        message: '已通过兼容下载器完成解析。',
+      }
+    })()
+
+    douyinAnalyzeInFlight = { url: finalUrl, promise }
+    try {
+      return await promise
+    } finally {
+      if (douyinAnalyzeInFlight?.url === finalUrl) {
+        douyinAnalyzeInFlight = null
+      }
+    }
+  }
+
   try {
     const finalUrl = await resolveShareUrl(url)
     console.error('[Video] analyze resolved url:', {
@@ -1130,15 +1415,21 @@ router.post('/analyze', async (req, res) => {
       elapsedMs: Date.now() - startedAt,
     })
 
+    if (detectPlatform(finalUrl) === 'douyin') {
+      const douyinResult = await runDouyinPrimaryFlow(finalUrl)
+      return res.json({ success: true, data: douyinResult.data, message: douyinResult.message })
+    }
+
     const { args: commonArgs } = buildCommonArgs(finalUrl)
     const args = [...commonArgs, '--no-warnings', '--dump-single-json', finalUrl]
+    const analyzeTimeoutMs = detectPlatform(finalUrl) === 'bilibili' ? 20000 : 8000
     console.error('[Video] analyze yt-dlp start:', {
       finalUrl,
-      timeoutMs: 8000,
+      timeoutMs: analyzeTimeoutMs,
       elapsedMs: Date.now() - startedAt,
     })
 
-    const { stdout } = await runYtDlp(args, { timeoutMs: 8000 })
+    const { stdout } = await runYtDlp(args, { timeoutMs: analyzeTimeoutMs })
     console.error('[Video] analyze yt-dlp ok:', {
       finalUrl,
       stdoutLength: stdout?.length || 0,
@@ -1174,65 +1465,20 @@ router.post('/analyze', async (req, res) => {
     })
 
     if (detectPlatform(finalUrl) === 'douyin') {
-      if (douyinAnalyzeInFlight && douyinAnalyzeInFlight.url === finalUrl) {
-        try {
-          const sharedResult = await douyinAnalyzeInFlight.promise
-          return res.json({ success: true, data: sharedResult.data, message: sharedResult.message })
-        } catch {
-          // ignore
-        }
-      }
-
-      const runFallback = async () => {
-        try {
-          console.error('[Video] trying signed-api fallback:', { finalUrl, elapsedMs: Date.now() - startedAt })
-          const signedApiData = await analyzeDouyinViaSignedApi(finalUrl)
-          console.error('[Video] signed-api fallback ok:', {
-            finalUrl,
-            source: signedApiData?.source,
-            formats: signedApiData?.formats?.length || 0,
-            elapsedMs: Date.now() - startedAt,
-          })
-          return { data: signedApiData, message: '已通过抖音站内接口完成解析。' }
-        } catch (signedApiError) {
-          console.error('[Video] signed-api fallback failed:', signedApiError?.stack || signedApiError?.message || String(signedApiError))
-        }
-
-        try {
-          console.error('[Video] trying request-extract fallback:', { finalUrl, elapsedMs: Date.now() - startedAt })
-          const requestData = await analyzeDouyinViaRequest(finalUrl)
-          console.error('[Video] request-extract fallback ok:', {
-            finalUrl,
-            source: requestData?.source,
-            formats: requestData?.formats?.length || 0,
-            elapsedMs: Date.now() - startedAt,
-          })
-          return { data: requestData, message: '已通过页面提取完成解析。' }
-        } catch (requestError) {
-          console.error('[Video] request-extract fallback failed:', requestError?.stack || requestError?.message || String(requestError))
-        }
-
-        console.error('[Video] trying browser fallback:', { finalUrl, elapsedMs: Date.now() - startedAt })
-        const fallbackData = await analyzeViaBrowserAutomation(finalUrl)
-        console.error('[Video] browser fallback ok:', {
+      try {
+        const douyinResult = await runDouyinPrimaryFlow(finalUrl)
+        return res.json({ success: true, data: douyinResult.data, message: douyinResult.message })
+      } catch (douyinError) {
+        const finalMessage = normalizeVideoError(douyinError?.message, finalUrl, cookiesMeta)
+        console.error('[Video] douyin primary flow failed:', {
           finalUrl,
-          source: fallbackData?.source,
-          formats: fallbackData?.formats?.length || 0,
+          finalMessage,
           elapsedMs: Date.now() - startedAt,
         })
-        return { data: fallbackData, message: '已通过浏览器自动化完成解析。' }
-      }
-
-      try {
-        douyinAnalyzeInFlight = { url: finalUrl, promise: runFallback() }
-        const fallbackResult = await douyinAnalyzeInFlight.promise
-        return res.json({ success: true, data: fallbackResult.data, message: fallbackResult.message })
-      } catch (fallbackError) {
-        console.error('[Video] browser fallback failed:', fallbackError?.stack || fallbackError?.message || String(fallbackError))
-      } finally {
-        if (douyinAnalyzeInFlight?.url === finalUrl) {
-          douyinAnalyzeInFlight = null
-        }
+        return res.json({
+          success: false,
+          message: `解析失败：${finalMessage}`,
+        })
       }
     }
 
@@ -1283,6 +1529,12 @@ router.post('/download', async (req, res) => {
           tempDir,
           res,
         })
+      } else if (formatId.startsWith('image-')) {
+        await streamDirectImageAsJpeg({
+          mediaUrl: browserDirectUrl,
+          title: title || 'douyin-image',
+          res,
+        })
       } else {
         const contentType = formatId.startsWith('image-')
           ? inferImageContentType(browserDirectUrl)
@@ -1300,32 +1552,36 @@ router.post('/download', async (req, res) => {
       return
     }
 
-    const { args: commonArgs } = buildCommonArgs(finalUrl)
+    const platform = detectPlatform(finalUrl)
+    const { args: commonArgs } = buildCommonArgs(finalUrl, {
+      socketTimeout: platform === 'bilibili' ? 45 : 30,
+      concurrentFragments: platform === 'bilibili' ? 2 : 1,
+    })
     tempDir = createTempDownloadDir()
     const isAudioOnly = String(formatId).startsWith('audio-')
     const normalizedFormatId = isAudioOnly ? String(formatId).replace(/^audio-/, '') : formatId
     const outputTemplate = path.join(tempDir, isAudioOnly ? 'audio.%(ext)s' : 'video.%(ext)s')
-    const args = isAudioOnly
-      ? [
-          ...commonArgs,
-          '-f',
-          normalizedFormatId,
-          '-o',
-          outputTemplate,
-          finalUrl,
-        ]
-      : [
-          ...commonArgs,
-          '-f',
-          `${normalizedFormatId}+bestaudio/best`,
-          '--merge-output-format',
-          'mp4',
-          '-o',
-          outputTemplate,
-          finalUrl,
-        ]
+    const args = [...commonArgs, '--no-warnings', '--force-overwrites']
 
-    await runYtDlp(args, { timeoutMs: 1200000 })
+    if (isAudioOnly) {
+      args.push('-f', normalizedFormatId, '-o', outputTemplate, finalUrl)
+    } else {
+      args.push('--continue')
+      if (platform !== 'bilibili') {
+        args.push('--no-part', '--downloader', 'native')
+      }
+      args.push(
+        '-f',
+        `${normalizedFormatId}+bestaudio/best`,
+        '--merge-output-format',
+        'mp4',
+        '-o',
+        outputTemplate,
+        finalUrl,
+      )
+    }
+
+    await runYtDlp(args, { timeoutMs: platform === 'bilibili' ? 1800000 : 1200000 })
 
     const files = fs.readdirSync(tempDir)
     const targetFile =
@@ -1368,12 +1624,29 @@ router.post('/download', async (req, res) => {
     cleanupTempDir(tempDir)
     const finalUrl = await resolveShareUrl(url)
     const { cookiesMeta } = buildCommonArgs(finalUrl)
+    console.error('[Video] download raw error:', error?.stack || error?.message || String(error))
     const finalMessage = normalizeVideoError(error.message, finalUrl, cookiesMeta)
     console.error('[Video] download failed:', finalMessage)
     if (!res.headersSent) {
       res.status(500).json({ error: `下载失败：${finalMessage}` })
     } else if (!res.writableEnded) {
       res.end()
+    }
+  }
+})
+
+router.get('/preview-image', async (req, res) => {
+  try {
+    const mediaUrl = String(req.query.url || '').trim()
+    if (!/^https?:\/\//i.test(mediaUrl)) {
+      return res.status(400).json({ error: '无效的图片地址' })
+    }
+
+    await proxyImagePreview({ mediaUrl, res })
+  } catch (error) {
+    console.error('[Video] preview-image failed:', error?.stack || error?.message || String(error))
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || '图片预览失败' })
     }
   }
 })

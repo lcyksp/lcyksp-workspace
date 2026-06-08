@@ -388,13 +388,13 @@ async function submitAdd() {
 .page-title {
   font-size: 1.4rem;
   font-weight: 400;
-  color: #e0e0e0;
+  color: var(--text-primary);
   margin: 0 0 4px;
   letter-spacing: 1px;
 }
 .title-icon { margin-right: 8px; }
 .page-desc {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   margin: 0;
 }
@@ -416,7 +416,7 @@ async function submitAdd() {
   align-items: center;
   gap: 12px;
   padding: 60px 0;
-  color: #888;
+  color: var(--text-dim);
 }
 
 /* 瀑布流网格 */
@@ -428,14 +428,14 @@ async function submitAdd() {
 
 /* 卡片 */
 .recipe-card {
-  background: #16162a;
+  background: var(--bg-card);
   border-radius: 12px;
-  border: 1px solid #222244;
+  border: 1px solid var(--border-color);
   padding: 20px;
   transition: border-color 0.2s;
 }
 .recipe-card:hover {
-  border-color: #333366;
+  border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border-color));
 }
 
 .card-header {
@@ -445,7 +445,7 @@ async function submitAdd() {
 .card-title {
   font-size: 1.2rem;
   font-weight: 600;
-  color: #c0c0e0;
+  color: var(--text-primary);
   margin: 0 0 8px;
   letter-spacing: 1px;
 }
@@ -458,35 +458,35 @@ async function submitAdd() {
 
 .card-section {
   margin-bottom: 8px;
-  color: #999;
+  color: var(--text-secondary);
   font-size: 0.9rem;
   line-height: 1.5;
 }
 
 .section-label {
-  color: #888;
+  color: var(--text-dim);
   font-weight: 500;
 }
 
 .section-text {
-  color: #aaa;
+  color: var(--text-primary);
 }
 
 /* AI 按钮 */
 .card-ai-section {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #1a1a30;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .ai-btn {
-  color: #f0c040;
-  border-color: #f0c040;
+  color: var(--accent-gold);
+  border-color: var(--accent-gold);
   background: transparent;
 }
 .ai-btn:hover {
-  background: #f0c040;
-  color: #1a1a2e;
+  background: var(--accent-gold);
+  color: var(--bg-deep);
 }
 
 /* ===== AI 流式弹窗 ===== */
@@ -494,7 +494,7 @@ async function submitAdd() {
   padding: 20px 24px 0;
 }
 :deep(.ai-dialog .el-dialog__title) {
-  color: #e0e0e0;
+  color: var(--text-primary);
   font-size: 1.15rem;
   font-weight: 500;
 }
@@ -504,11 +504,11 @@ async function submitAdd() {
 }
 :deep(.ai-dialog .el-dialog__footer) {
   padding: 8px 24px 20px;
-  border-top: 1px solid #1a1a30;
+  border-top: 1px solid var(--border-subtle);
 }
 :deep(.ai-dialog .el-dialog) {
-  background: #0d0d1a;
-  border: 1px solid #222244;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
   border-radius: 14px;
 }
 :deep(.ai-dialog .el-dialog__headerbtn) {
@@ -521,7 +521,7 @@ async function submitAdd() {
 }
 
 .dialog-ingredients {
-  background: #16162a;
+  background: var(--bg-card);
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 16px;
@@ -529,11 +529,11 @@ async function submitAdd() {
   line-height: 1.6;
 }
 .dialog-ingredients-label {
-  color: #888;
+  color: var(--text-dim);
   font-weight: 500;
 }
 .dialog-ingredients-text {
-  color: #aaa;
+  color: var(--text-primary);
 }
 
 .dialog-loading {
@@ -542,18 +542,18 @@ async function submitAdd() {
   align-items: center;
   gap: 14px;
   padding: 40px 0;
-  color: #f0c040;
+  color: var(--accent-gold);
   font-size: 0.95rem;
 }
 
 .dialog-content {
-  background: #16162a;
+  background: var(--bg-card);
   border-radius: 10px;
   padding: 16px 20px;
 }
 
 .dialog-content-label {
-  color: #f0c040;
+  color: var(--accent-gold);
   font-size: 0.85rem;
   font-weight: 500;
   margin-bottom: 10px;
@@ -561,19 +561,19 @@ async function submitAdd() {
 }
 
 .dialog-typewriter {
-  color: #c0c0e0;
+  color: var(--text-primary);
   font-size: 0.95rem;
   line-height: 1.8;
   word-break: break-word;
 }
 
 .dialog-typewriter :deep(strong) {
-  color: #f0c040;
+  color: var(--accent-gold);
   font-weight: 600;
 }
 
 .dialog-typewriter :deep(em) {
-  color: #7ccd3a;
+  color: #67c23a;
   font-style: italic;
 }
 
@@ -597,7 +597,7 @@ async function submitAdd() {
   color: #e74c3c;
   font-size: 0.88rem;
   padding: 12px 16px;
-  background: #1a0a0a;
+  background: color-mix(in srgb, #e74c3c 12%, var(--bg-card));
   border-radius: 8px;
   margin-top: 8px;
 }
@@ -612,7 +612,7 @@ async function submitAdd() {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #f0c040;
+  color: var(--accent-gold);
   font-size: 0.85rem;
   margin-left: auto;
 }
