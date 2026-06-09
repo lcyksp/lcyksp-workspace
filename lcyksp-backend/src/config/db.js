@@ -117,6 +117,39 @@ export async function initDb() {
   )
 
   await run(
+    'CREATE TABLE IF NOT EXISTS membership_cards (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'code TEXT NOT NULL UNIQUE,' +
+      'plan_key TEXT NOT NULL,' +
+      'duration_days INTEGER DEFAULT NULL,' +
+      "status TEXT NOT NULL DEFAULT 'unused'," +
+      "source TEXT NOT NULL DEFAULT 'manual'," +
+      'source_order_id TEXT DEFAULT NULL,' +
+      "note TEXT DEFAULT ''," +
+      'created_by INTEGER DEFAULT NULL REFERENCES users(id),' +
+      'used_by INTEGER DEFAULT NULL REFERENCES users(id),' +
+      'used_at TEXT DEFAULT NULL,' +
+      'granted_expires_at TEXT DEFAULT NULL,' +
+      "created_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+    ')',
+  )
+
+  await run(
+    'CREATE TABLE IF NOT EXISTS membership_orders (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'provider TEXT NOT NULL,' +
+      'order_id TEXT NOT NULL UNIQUE,' +
+      'plan_key TEXT NOT NULL,' +
+      'amount INTEGER NOT NULL DEFAULT 0,' +
+      "status TEXT NOT NULL DEFAULT 'pending'," +
+      'payload TEXT DEFAULT NULL,' +
+      'card_code TEXT DEFAULT NULL,' +
+      "created_at TEXT NOT NULL DEFAULT (datetime('now'))," +
+      "updated_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+    ')',
+  )
+
+  await run(
     'CREATE TABLE IF NOT EXISTS usage_counters (' +
       'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
       'subject_type TEXT NOT NULL,' +
@@ -171,6 +204,9 @@ export async function initDb() {
   await run('CREATE INDEX IF NOT EXISTS idx_gallery_photos_group ON gallery_photos(family_group_id)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_llm_history_type ON llm_config_history(type)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback_reports(created_at)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_membership_cards_status ON membership_cards(status, created_at)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_membership_cards_used_by ON membership_cards(used_by, used_at)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_membership_orders_provider_order ON membership_orders(provider, order_id)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_usage_counters_lookup ON usage_counters(subject_type, subject_key, action, window_start)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_registration_attempts_lookup ON registration_attempts(ip_address, window_start)').catch(() => {})
 

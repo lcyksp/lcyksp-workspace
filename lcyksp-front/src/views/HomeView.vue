@@ -1,7 +1,7 @@
 ﻿<script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
-const fullText = 'Lcyksp Workspace | 轻量但够用的在线工具站'
+const fullText = 'Workspace | 在线工具站'
 const displayText = ref('')
 const cursorVisible = ref(true)
 const supportDialogVisible = ref(false)
@@ -26,7 +26,8 @@ const dateStr = computed(() => {
 
 const greeting = computed(() => {
   const hour = now.value.getHours()
-  if (hour < 6) return '夜深了，也别忘了早点休息。'
+  if (hour < 1) return '夜深了，也别忘了早点休息。'
+  if (hour < 6) return '老大，我们这么熬真的没事嘛'
   if (hour < 9) return '早上好，来把今天要用的工具开起来。'
   if (hour < 12) return '上午好，祝你今天一路顺手。'
   if (hour < 14) return '中午好，忙里也记得吃饭。'
@@ -111,6 +112,10 @@ onUnmounted(() => {
       <div class="support-dialog">
         <div class="support-copy">
           <p class="support-copy-single">赏口饭吃谢谢喵</p>
+          <p class="support-copy-sub">
+            5 元开通 30 天高级用户，10 元开通 90 天，20 元永久。<br>
+            如果是在休息时间赞助，修改用户权限会稍慢一些。
+          </p>
         </div>
 
         <div class="support-tabs">
