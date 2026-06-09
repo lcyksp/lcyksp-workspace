@@ -19,6 +19,7 @@ import PdfPageEditorView from '../views/PdfPageEditorView.vue'
 import PdfWatermarkView from '../views/PdfWatermarkView.vue'
 import PdfSignView from '../views/PdfSignView.vue'
 import VideoDownloadView from '../views/VideoDownloadView.vue'
+import MembershipView from '../views/MembershipView.vue'
 
 function readCurrentUser() {
   try {
@@ -54,6 +55,7 @@ const routes = [
   { path: '/pdf-watermark', name: 'pdf-watermark', component: PdfWatermarkView },
   { path: '/pdf-sign', name: 'pdf-sign', component: PdfSignView },
   { path: '/video-download', name: 'video-download', component: VideoDownloadView },
+  { path: '/membership', name: 'membership', component: MembershipView },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
 ]
 

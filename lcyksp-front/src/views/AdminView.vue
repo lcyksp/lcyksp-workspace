@@ -54,6 +54,44 @@ const llmConfig = reactive({
   apiKey: '',
   model: 'deepseek-chat',
 })
+const membershipConfig = reactive({
+  afdianUrl: '',
+  notice: '登录本站账号后，前往爱发电下单，并在订单备注里填写本站用户名。支付成功后，系统会自动为对应账号开通高级用户。',
+  afdianUserId: '',
+  afdianToken: '',
+  webhookToken: '',
+  planIdMonthly: '',
+  planIdQuarterly: '',
+  planIdYearly: '',
+  plans: [],
+})
+const membershipConfigLoading = ref(false)
+const membershipConfigSaving = ref(false)
+const membershipCards = ref([])
+const membershipCardsLoading = ref(false)
+const membershipSimulating = ref(false)
+const membershipCardsPage = ref(1)
+const membershipCardsPageSize = 20
+const membershipCardForm = reactive({
+  planKey: 'monthly',
+  quantity: 1,
+  note: '',
+})
+const membershipCardGenerating = ref(false)
+const generatedCardCodes = ref([])
+const membershipImportForm = reactive({
+  planKey: 'monthly',
+  note: '',
+  codesText: '',
+})
+const membershipSimulateForm = reactive({
+  username: '',
+  planKey: 'monthly',
+  outTradeNo: '',
+  remark: '',
+})
+const membershipImporting = ref(false)
+const membershipImportSummary = ref(null)
 const llmLoading = ref(false)
 const llmSaving = ref(false)
 const llmTesting = ref(false)
@@ -76,6 +114,28 @@ const premiumPresetOptions = [
 
 const userRoleLabel = computed(() => {
   return userForm.role === 'admin' ? '管理员' : userForm.role === 'premium' ? '高级用户' : '普通用户'
+})
+
+const membershipCardStats = computed(() => {
+  const stats = {
+    total: membershipCards.value.length,
+    unused: 0,
+    used: 0,
+    invalid: 0,
+  }
+
+  membershipCards.value.forEach((card) => {
+    if (card.status === 'used') stats.used += 1
+    else if (card.status === 'invalid') stats.invalid += 1
+    else stats.unused += 1
+  })
+
+  return stats
+})
+
+const pagedMembershipCards = computed(() => {
+  const start = (membershipCardsPage.value - 1) * membershipCardsPageSize
+  return membershipCards.value.slice(start, start + membershipCardsPageSize)
 })
 
 function loadHistory(storageKey) {
@@ -444,6 +504,157 @@ async function saveLlmConfig() {
   }
 }
 
+async function loadMembershipConfig() {
+  membershipConfigLoading.value = true
+  try {
+    const res = await axios.get('/api/admin/config/membership')
+    membershipConfig.afdianUrl = res.data?.afdianUrl || ''
+    membershipConfig.notice = res.data?.notice || membershipConfig.notice
+    membershipConfig.afdianUserId = res.data?.afdianUserId || ''
+    membershipConfig.afdianToken = res.data?.afdianToken || ''
+    membershipConfig.webhookToken = res.data?.webhookToken || ''
+    membershipConfig.planIdMonthly = res.data?.planIdMonthly || ''
+    membershipConfig.planIdQuarterly = res.data?.planIdQuarterly || ''
+    membershipConfig.planIdYearly = res.data?.planIdYearly || ''
+    membershipConfig.plans = Array.isArray(res.data?.plans) ? res.data.plans : []
+    if (membershipConfig.plans.length && !membershipConfig.plans.some((item) => item.key === membershipCardForm.planKey)) {
+      membershipCardForm.planKey = membershipConfig.plans[0].key
+    }
+    if (membershipConfig.plans.length && !membershipConfig.plans.some((item) => item.key === membershipSimulateForm.planKey)) {
+      membershipSimulateForm.planKey = membershipConfig.plans[0].key
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载会员配置失败')
+  } finally {
+    membershipConfigLoading.value = false
+  }
+}
+
+async function saveMembershipConfig() {
+  membershipConfigSaving.value = true
+  try {
+    await axios.post('/api/admin/config/membership', {
+      afdianUrl: membershipConfig.afdianUrl.trim(),
+      notice: membershipConfig.notice.trim(),
+      afdianUserId: membershipConfig.afdianUserId.trim(),
+      afdianToken: membershipConfig.afdianToken.trim(),
+      webhookToken: membershipConfig.webhookToken.trim(),
+      planIdMonthly: membershipConfig.planIdMonthly.trim(),
+      planIdQuarterly: membershipConfig.planIdQuarterly.trim(),
+      planIdYearly: membershipConfig.planIdYearly.trim(),
+    })
+    ElMessage.success('会员配置已保存')
+    loadMembershipConfig()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存会员配置失败')
+  } finally {
+    membershipConfigSaving.value = false
+  }
+}
+
+async function loadMembershipCards() {
+  membershipCardsLoading.value = true
+  try {
+    const res = await axios.get('/api/admin/membership/cards')
+    membershipCards.value = Array.isArray(res.data?.cards) ? res.data.cards : []
+    membershipCardsPage.value = 1
+    if (!membershipConfig.plans.length && Array.isArray(res.data?.plans)) {
+      membershipConfig.plans = res.data.plans
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载卡密列表失败')
+  } finally {
+    membershipCardsLoading.value = false
+  }
+}
+
+async function generateMembershipCards() {
+  if (!membershipCardForm.planKey) {
+    ElMessage.warning('请先选择会员套餐')
+    return
+  }
+
+  membershipCardGenerating.value = true
+  try {
+    const res = await axios.post('/api/admin/membership/cards/generate', {
+      planKey: membershipCardForm.planKey,
+      quantity: membershipCardForm.quantity,
+      note: membershipCardForm.note.trim(),
+    })
+    generatedCardCodes.value = Array.isArray(res.data?.cards) ? res.data.cards : []
+    ElMessage.success(res.data?.message || '卡密已生成')
+    membershipCardForm.note = ''
+    membershipCardForm.quantity = 1
+    loadMembershipCards()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '生成卡密失败')
+  } finally {
+    membershipCardGenerating.value = false
+  }
+}
+
+async function importMembershipCards() {
+  if (!membershipImportForm.planKey) {
+    ElMessage.warning('请先选择会员套餐')
+    return
+  }
+  if (!membershipImportForm.codesText.trim()) {
+    ElMessage.warning('请先粘贴兑换码或兑换链接')
+    return
+  }
+
+  membershipImporting.value = true
+  try {
+    const res = await axios.post('/api/admin/membership/cards/import', {
+      planKey: membershipImportForm.planKey,
+      note: membershipImportForm.note.trim(),
+      codesText: membershipImportForm.codesText,
+    })
+    membershipImportSummary.value = {
+      importedCount: res.data?.importedCount || 0,
+      duplicateCount: res.data?.duplicateCount || 0,
+    }
+    membershipImportForm.codesText = ''
+    membershipImportForm.note = ''
+    ElMessage.success(res.data?.message || '导入完成')
+    loadMembershipCards()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '导入失败')
+  } finally {
+    membershipImporting.value = false
+  }
+}
+
+async function simulateMembershipOrder() {
+  if (!membershipSimulateForm.username.trim()) {
+    ElMessage.warning('请先输入要开通的本站用户名')
+    return
+  }
+  if (!membershipSimulateForm.planKey) {
+    ElMessage.warning('请先选择模拟开通档位')
+    return
+  }
+
+  membershipSimulating.value = true
+  try {
+    const res = await axios.post('/api/membership/simulate', {
+      username: membershipSimulateForm.username.trim(),
+      planKey: membershipSimulateForm.planKey,
+      outTradeNo: membershipSimulateForm.outTradeNo.trim(),
+      remark: membershipSimulateForm.remark.trim() || `用户名: ${membershipSimulateForm.username.trim()}`,
+    })
+    ElMessage.success(res.data?.message || '模拟开通成功')
+    membershipSimulateForm.outTradeNo = ''
+    membershipSimulateForm.remark = ''
+    await loadMembershipCards()
+    await loadUsers()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '模拟开通失败')
+  } finally {
+    membershipSimulating.value = false
+  }
+}
+
 async function loadFeedback() {
   feedbackLoading.value = true
   try {
@@ -487,6 +698,17 @@ function formatTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function membershipSourceLabel(source) {
+  if (source === 'manual') return '手动卡密'
+  if (source === 'afdian_import') return '导入兑换码'
+  if (source === 'afdian_webhook') return '爱发电自动开通'
+  return source || '-'
+}
+
+function handleMembershipPageChange(page) {
+  membershipCardsPage.value = page
 }
 
 function isExpired(value) {
@@ -656,6 +878,8 @@ onMounted(() => {
   loadFiles()
   loadUsers()
   loadLlmConfig()
+  loadMembershipConfig()
+  loadMembershipCards()
   loadFeedback()
 })
 </script>
@@ -955,6 +1179,234 @@ onMounted(() => {
         </section>
       </el-tab-pane>
 
+      <el-tab-pane label="会员配置">
+        <div class="tab-header">
+          <span class="tab-count">爱发电自动开通配置、模拟开通测试与备用卡密管理</span>
+          <div class="tab-actions">
+            <el-button size="small" :loading="membershipConfigLoading" @click="loadMembershipConfig">
+              <el-icon><Refresh /></el-icon>
+              刷新配置
+            </el-button>
+            <el-button size="small" :loading="membershipCardsLoading" @click="loadMembershipCards">
+              <el-icon><Refresh /></el-icon>
+              刷新卡密
+            </el-button>
+          </div>
+        </div>
+
+        <div class="membership-admin-grid">
+          <section class="single-panel">
+            <el-form label-position="top" size="large">
+              <el-form-item label="爱发电链接">
+                <el-input v-model="membershipConfig.afdianUrl" placeholder="https://afdian.com/..." clearable />
+              </el-form-item>
+              <el-form-item label="会员说明">
+                <el-input
+                  v-model="membershipConfig.notice"
+                  type="textarea"
+                  :rows="4"
+                  resize="vertical"
+                  placeholder="例如：登录本站账号后，前往爱发电下单，并在订单备注里填写本站用户名。支付成功后，系统会自动开通高级用户。"
+                />
+              </el-form-item>
+              <el-form-item label="爱发电 user_id">
+                <el-input v-model="membershipConfig.afdianUserId" placeholder="例如：860297d8442111f0813352540025c377" clearable />
+              </el-form-item>
+              <el-form-item label="爱发电 token">
+                <el-input v-model="membershipConfig.afdianToken" type="password" show-password placeholder="填写爱发电开发者 token" clearable />
+              </el-form-item>
+              <el-form-item label="Webhook 令牌">
+                <el-input v-model="membershipConfig.webhookToken" placeholder="自定义一个回调校验令牌，例如：afdian-hook-2026" clearable />
+              </el-form-item>
+              <el-form-item label="月卡 plan_id">
+                <el-input v-model="membershipConfig.planIdMonthly" placeholder="没有也可以先留空，系统会按 5 元自动识别" clearable />
+              </el-form-item>
+              <el-form-item label="季卡 plan_id">
+                <el-input v-model="membershipConfig.planIdQuarterly" placeholder="没有也可以先留空，系统会按 10 元自动识别" clearable />
+              </el-form-item>
+              <el-form-item label="年卡 plan_id">
+                <el-input v-model="membershipConfig.planIdYearly" placeholder="没有也可以先留空，系统会按 20 元自动识别" clearable />
+              </el-form-item>
+              <el-form-item label="Webhook 地址">
+                <el-input
+                  :model-value="`http://47.106.101.81/api/membership/afdian/webhook?token=${membershipConfig.webhookToken || '你设置的令牌'}`"
+                  readonly
+                />
+              </el-form-item>
+              <div class="form-hint">
+                推荐让用户在爱发电订单备注里填写本站用户名。支付成功后，系统会自动给对应本站账号开通会员。
+              </div>
+              <el-form-item class="llm-action-item">
+                <div class="llm-actions">
+                  <el-button type="primary" :loading="membershipConfigSaving" @click="saveMembershipConfig">
+                    {{ membershipConfigSaving ? '保存中...' : '保存会员配置' }}
+                  </el-button>
+                </div>
+              </el-form-item>
+            </el-form>
+
+            <div class="membership-plan-preview">
+              <article v-for="plan in membershipConfig.plans" :key="plan.key" class="membership-plan-preview-card">
+                <strong>{{ plan.description }}</strong>
+                <span>{{ plan.name }}</span>
+              </article>
+            </div>
+          </section>
+
+          <section class="single-panel">
+            <div class="generated-cards-title">模拟爱发电订单开通</div>
+            <div class="form-hint">请用一个当前还不是高级用户的普通账号来测试。这里会模拟“爱发电已支付成功并回调到本站”的场景，用来验证自动开通链路本身，不是正式人工代开。</div>
+            <div class="membership-card-toolbar">
+              <el-input v-model="membershipSimulateForm.username" placeholder="输入本站用户名" clearable />
+              <el-select v-model="membershipSimulateForm.planKey" class="membership-plan-select">
+                <el-option v-for="plan in membershipConfig.plans" :key="plan.key" :label="plan.description" :value="plan.key" />
+              </el-select>
+            </div>
+            <el-input
+              v-model="membershipSimulateForm.outTradeNo"
+              placeholder="可选：自定义模拟订单号；留空则自动生成"
+              clearable
+            />
+            <el-input
+              v-model="membershipSimulateForm.remark"
+              type="textarea"
+              :rows="3"
+              resize="vertical"
+              placeholder="可选：模拟爱发电订单备注。留空则自动用“用户名: xxx”"
+            />
+            <div class="membership-card-actions">
+              <el-button type="warning" :loading="membershipSimulating" @click="simulateMembershipOrder">
+                {{ membershipSimulating ? '模拟中...' : '模拟自动开通' }}
+              </el-button>
+            </div>
+
+            <div class="generated-cards-title" style="margin-top: 18px;">备用手动卡密</div>
+            <div class="membership-card-toolbar">
+              <el-select v-model="membershipCardForm.planKey" class="membership-plan-select">
+                <el-option v-for="plan in membershipConfig.plans" :key="plan.key" :label="plan.description" :value="plan.key" />
+              </el-select>
+              <el-input-number v-model="membershipCardForm.quantity" :min="1" :max="50" />
+            </div>
+            <el-input
+              v-model="membershipCardForm.note"
+              type="textarea"
+              :rows="3"
+              resize="vertical"
+              placeholder="可选备注，例如：爱发电补发 / 测试 / 手动赠送"
+            />
+            <div class="membership-card-actions">
+              <el-button type="primary" :loading="membershipCardGenerating" @click="generateMembershipCards">
+                {{ membershipCardGenerating ? '生成中...' : '生成卡密' }}
+              </el-button>
+            </div>
+
+            <div v-if="generatedCardCodes.length" class="generated-cards-box">
+              <div class="generated-cards-title">最新生成</div>
+              <div class="generated-cards-list">
+                <code v-for="code in generatedCardCodes" :key="code">{{ code }}</code>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section class="single-panel membership-card-list-panel">
+          <div class="membership-card-stats">
+            <div class="membership-stat-chip">总数 {{ membershipCardStats.total }}</div>
+            <div class="membership-stat-chip warning">未使用 {{ membershipCardStats.unused }}</div>
+            <div class="membership-stat-chip success">已使用 {{ membershipCardStats.used }}</div>
+            <div class="membership-stat-chip danger">已作废 {{ membershipCardStats.invalid }}</div>
+          </div>
+          <div v-loading="membershipCardsLoading" class="membership-card-list">
+            <div v-if="!membershipCards.length" class="feedback-empty">暂无卡密记录</div>
+            <article v-for="card in pagedMembershipCards" :key="card.id" class="membership-record-card">
+              <div class="membership-record-head">
+                <div class="membership-record-title">
+                  <h4>{{ card.planName }}</h4>
+                  <span class="membership-record-code">{{ card.code }}</span>
+                </div>
+                <el-tag :type="card.status === 'used' ? 'success' : card.status === 'invalid' ? 'danger' : 'warning'" effect="dark" size="small">
+                  {{ card.status === 'used' ? '已使用' : card.status === 'invalid' ? '已作废' : '未使用' }}
+                </el-tag>
+              </div>
+              <dl class="feedback-meta membership-record-meta">
+                <div>
+                  <dt>来源</dt>
+                  <dd>{{ membershipSourceLabel(card.source) }}</dd>
+                </div>
+                <div>
+                  <dt>使用人</dt>
+                  <dd>{{ card.usedByName || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>到期时间</dt>
+                  <dd>{{ card.grantedExpiresAt ? formatTime(card.grantedExpiresAt) : '-' }}</dd>
+                </div>
+              </dl>
+              <div class="feedback-details">
+                创建时间：{{ formatTime(card.createdAt) }}<br>
+                使用时间：{{ card.usedAt ? formatTime(card.usedAt) : '-' }}<br>
+                备注：{{ card.note || '-' }}
+              </div>
+            </article>
+          </div>
+          <div v-if="membershipCards.length > membershipCardsPageSize" class="membership-pagination">
+            <el-pagination
+              background
+              layout="prev, pager, next"
+              :page-size="membershipCardsPageSize"
+              :total="membershipCards.length"
+              :current-page="membershipCardsPage"
+              @current-change="handleMembershipPageChange"
+            />
+          </div>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="备用导入卡密">
+        <div class="tab-header">
+          <span class="tab-count">仅作为备用方案：把外部兑换码或兑换链接导入到本站会员系统</span>
+          <el-button size="small" :loading="membershipCardsLoading" @click="loadMembershipCards">
+            <el-icon><Refresh /></el-icon>
+            刷新卡密状态
+          </el-button>
+        </div>
+
+        <section class="single-panel">
+          <div class="membership-card-toolbar">
+            <el-select v-model="membershipImportForm.planKey" class="membership-plan-select">
+              <el-option v-for="plan in membershipConfig.plans" :key="plan.key" :label="plan.description" :value="plan.key" />
+            </el-select>
+          </div>
+
+          <el-input
+            v-model="membershipImportForm.note"
+            placeholder="可选备注，例如：爱发电 6 月批量导入"
+            clearable
+          />
+
+          <el-input
+            v-model="membershipImportForm.codesText"
+            class="membership-import-textarea"
+            type="textarea"
+            :rows="10"
+            resize="vertical"
+            placeholder="每行一条兑换码或兑换链接，作为备用库存整批导入"
+          />
+
+          <div class="membership-card-actions">
+            <el-button type="primary" :loading="membershipImporting" @click="importMembershipCards">
+              {{ membershipImporting ? '导入中...' : '开始导入' }}
+            </el-button>
+          </div>
+
+          <div v-if="membershipImportSummary" class="generated-cards-box">
+            <div class="generated-cards-title">
+              本次导入成功 {{ membershipImportSummary.importedCount }} 条，重复跳过 {{ membershipImportSummary.duplicateCount }} 条
+            </div>
+          </div>
+        </section>
+      </el-tab-pane>
+
       <el-tab-pane label="问题反馈">
         <div class="tab-header">
           <span class="tab-count">查看用户提交的问题反馈记录</span>
@@ -1251,6 +1703,171 @@ onMounted(() => {
   gap: 12px;
 }
 
+.membership-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.membership-plan-preview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.membership-plan-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-input) 86%, transparent);
+}
+
+.membership-plan-preview-card strong {
+  color: var(--text-primary);
+}
+
+.membership-plan-preview-card span {
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+
+.membership-card-toolbar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.membership-plan-select {
+  min-width: 220px;
+}
+
+.membership-card-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+
+.membership-import-textarea {
+  margin-top: 12px;
+}
+
+.generated-cards-box {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px dashed var(--border-color);
+  background: color-mix(in srgb, var(--bg-input) 70%, transparent);
+}
+
+.generated-cards-title {
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+
+.generated-cards-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.generated-cards-list code {
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-deep) 65%, transparent);
+  color: var(--text-primary);
+}
+
+.membership-card-list-panel {
+  max-width: none;
+}
+
+.membership-card-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.membership-stat-chip {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-input) 88%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.membership-stat-chip.warning {
+  border-color: color-mix(in srgb, #e6a23c 30%, var(--border-color));
+}
+
+.membership-stat-chip.success {
+  border-color: color-mix(in srgb, #67c23a 30%, var(--border-color));
+}
+
+.membership-stat-chip.danger {
+  border-color: color-mix(in srgb, #f56c6c 30%, var(--border-color));
+}
+
+.membership-record-card {
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+}
+
+.membership-record-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.membership-record-title {
+  min-width: 0;
+}
+
+.membership-record-head h4 {
+  margin: 0 0 6px;
+  color: var(--text-primary);
+  font-size: 0.98rem;
+}
+
+.membership-record-head span {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  word-break: break-word;
+}
+
+.membership-record-code {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-input) 92%, transparent);
+  border: 1px solid var(--border-color);
+  font-family: Consolas, 'Courier New', monospace;
+  letter-spacing: 0.02em;
+}
+
+.membership-pagination {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.membership-record-meta {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .feedback-empty {
   display: flex;
   align-items: center;
@@ -1455,6 +2072,11 @@ onMounted(() => {
     padding: 14px 10px 28px;
   }
 
+  .membership-admin-grid,
+  .membership-plan-preview {
+    grid-template-columns: 1fr;
+  }
+
   .desktop-table-wrap {
     display: none;
   }
@@ -1519,7 +2141,8 @@ onMounted(() => {
   }
 
   .mobile-admin-head,
-  .feedback-card-head {
+  .feedback-card-head,
+  .membership-record-head {
     flex-direction: column;
     align-items: stretch;
   }

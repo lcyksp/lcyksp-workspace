@@ -34,11 +34,13 @@ axios.interceptors.response.use(
       const status = error.response.status
       const data = error.response.data
       const msg = data?.error || data?.message || `请求失败 (${status})`
+      const requestUrl = String(error.config?.url || '')
+      const isAuthStatusCheck = /\/api\/auth\/me(?:\?|$)/.test(requestUrl)
 
       if (status === 401 || status === 403) {
         const token = localStorage.getItem('lcyksp_token')
         const isBanMessage = /封禁/.test(String(msg || ''))
-        if (token && !isBanMessage && status === 401) {
+        if (token && !isBanMessage && status === 401 && isAuthStatusCheck) {
           localStorage.removeItem('lcyksp_token')
           localStorage.removeItem('lcyksp_user')
           ElMessage.error('登录已失效，请重新登录')

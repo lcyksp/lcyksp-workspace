@@ -15,6 +15,7 @@ import {
   Edit,
   Upload,
   KnifeFork,
+  Star,
   Moon,
   Sunny,
   RefreshRight,
@@ -36,8 +37,15 @@ const sidebarCollapsed = ref(false)
 const currentTheme = ref(getCurrentTheme())
 const currentThemeMode = ref(localStorage.getItem(THEME_MODE_KEY) || 'auto')
 const feedbackSubmitting = ref(false)
-const supportChannel = ref('wechat')
 const accessDialogTarget = ref('')
+const membershipLoading = ref(false)
+const membershipConfig = reactive({
+  afdianUrl: '',
+  notice: '赞助后可获得卡密，回到本站兑换即可自动开通高级用户。休息时间处理用户权限会稍慢一些。',
+  plans: [],
+  apiReady: false,
+  apiStatusText: '',
+})
 
 const feedbackForm = reactive({
   pageName: '',
@@ -74,30 +82,23 @@ const memberStatusType = computed(() => {
 const activePath = computed(() => route.path)
 const routeLabel = computed(() => String(route.name || ''))
 const isThemeAuto = computed(() => currentThemeMode.value === 'auto')
-const supportOptions = [
-  { key: 'wechat', label: '微信', image: '/support-wechat.png' },
-  { key: 'alipay', label: '支付宝', image: '/support-alipay.jpg' },
-]
-const activeSupportOption = computed(() => {
-  return supportOptions.find((item) => item.key === supportChannel.value) || supportOptions[0]
-})
 const accessDialogTitle = computed(() => {
   if (accessDialogTarget.value === '/gallery') return '共享相册当前仅对高级用户开放'
   if (accessDialogTarget.value === '/recipe') return '赛博菜谱当前仅对高级用户开放'
   if (accessDialogTarget.value === 'quota') return '当前时段额度已用完'
-  return '支持一下'
+  return '高级用户兑换'
 })
 const accessDialogSubText = computed(() => {
   if (accessDialogTarget.value === '/gallery') {
     return '普通用户被高级用户加入家庭组后，也可以进入共享相册。'
   }
   if (accessDialogTarget.value === '/recipe') {
-    return '捐赠成为高级用户后，即可解锁赛博菜谱与更高使用额度。'
+    return '开通高级用户后，即可解锁赛博菜谱与更高使用额度。'
   }
   if (accessDialogTarget.value === 'quota') {
-    return '捐赠成为高级用户后，可获得更高的解析/下载额度，也能解锁更多功能。'
+    return '开通高级用户后，可获得更高的解析/下载额度，也能解锁更多功能。'
   }
-  return '觉得不错？支持一下'
+  return membershipConfig.notice
 })
 
 const menuItems = reactive([
@@ -145,6 +146,13 @@ const menuItems = reactive([
     ],
     isOpen: false,
   },
+  {
+    name: '成为会员',
+    icon: Star,
+    path: '/membership',
+    children: [],
+    isOpen: false,
+  },
 ])
 
 function loadUserFromStorage() {
@@ -180,8 +188,29 @@ async function refreshCurrentUser() {
   }
 }
 
+async function loadMembershipConfig() {
+  membershipLoading.value = true
+  try {
+    const res = await axios.get('/api/membership/config')
+    membershipConfig.afdianUrl = res.data?.afdianUrl || ''
+    membershipConfig.notice = res.data?.notice || membershipConfig.notice
+    membershipConfig.plans = Array.isArray(res.data?.plans) ? res.data.plans : []
+    membershipConfig.apiReady = Boolean(res.data?.apiReady)
+    membershipConfig.apiStatusText = res.data?.apiStatusText || ''
+  } catch (error) {
+    console.error('加载会员配置失败:', error)
+  } finally {
+    membershipLoading.value = false
+  }
+}
+
 function handleLoginSuccess(user) {
   currentUser.value = user
+  window.dispatchEvent(new CustomEvent('auth-success'))
+}
+
+function syncUserFromStorage() {
+  loadUserFromStorage()
 }
 
 function handleLogout() {
@@ -250,13 +279,11 @@ function canAccessPremiumFeature(path) {
 
 function openAccessDialog(path) {
   accessDialogTarget.value = path
-  supportChannel.value = 'wechat'
   accessDialogVisible.value = true
 }
 
 function openSupportDialogFor(reason = '') {
   accessDialogTarget.value = reason || 'support'
-  supportChannel.value = 'wechat'
   accessDialogVisible.value = true
 }
 
@@ -367,18 +394,27 @@ watch(
 onMounted(() => {
   loadUserFromStorage()
   refreshCurrentUser()
+  loadMembershipConfig()
   syncOpenGroups()
   currentTheme.value = getCurrentTheme()
   currentThemeMode.value = localStorage.getItem(THEME_MODE_KEY) || 'auto'
+  window.addEventListener('auth-success', syncUserFromStorage)
   window.addEventListener('open-support-dialog', handleGlobalSupportDialog)
+  window.addEventListener('open-auth-dialog', handleGlobalAuthDialog)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('auth-success', syncUserFromStorage)
   window.removeEventListener('open-support-dialog', handleGlobalSupportDialog)
+  window.removeEventListener('open-auth-dialog', handleGlobalAuthDialog)
 })
 
 function handleGlobalSupportDialog(event) {
   openSupportDialogFor(event?.detail?.reason || 'support')
+}
+
+function handleGlobalAuthDialog() {
+  authDialogVisible.value = true
 }
 </script>
 
@@ -556,21 +592,15 @@ function handleGlobalSupportDialog(event) {
           </p>
         </div>
 
-        <div class="support-tabs">
-          <button
-            v-for="item in supportOptions"
-            :key="item.key"
-            type="button"
-            class="support-tab"
-            :class="{ active: supportChannel === item.key }"
-            @click="supportChannel = item.key"
-          >
-            {{ item.label }}
-          </button>
+        <div class="membership-plan-list" v-loading="membershipLoading">
+          <div v-for="plan in membershipConfig.plans" :key="plan.key" class="membership-plan-card">
+            <strong>{{ plan.description }}</strong>
+            <span>{{ plan.name }}</span>
+          </div>
         </div>
 
-        <div class="support-qrcode-wrap">
-          <img class="support-qrcode" :src="activeSupportOption.image" :alt="`${activeSupportOption.label}收款码`" />
+        <div class="membership-actions">
+          <el-button type="primary" @click="navigateTo('/membership')">前往会员页面</el-button>
         </div>
       </div>
     </el-dialog>
@@ -894,6 +924,13 @@ function handleGlobalSupportDialog(event) {
   text-align: center;
 }
 
+.support-manual-tip {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-input) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 14%, var(--border-color));
+}
+
 .support-tabs {
   display: inline-flex;
   align-items: center;
@@ -931,6 +968,52 @@ function handleGlobalSupportDialog(event) {
   background: transparent;
   padding: 0;
   box-shadow: none;
+}
+
+.membership-plan-list {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.membership-plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 20%, var(--border-color));
+  background: color-mix(in srgb, var(--bg-input) 90%, transparent);
+  text-align: center;
+}
+
+.membership-plan-card strong {
+  color: var(--text-primary);
+  font-size: 0.96rem;
+}
+
+.membership-plan-card span {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.membership-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.membership-redeem {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.membership-redeem-label {
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  text-align: left;
 }
 
 :deep(.support-modal .el-dialog__header) {
@@ -1006,5 +1089,10 @@ function handleGlobalSupportDialog(event) {
     text-overflow: ellipsis;
   }
 
+  .membership-plan-list {
+    grid-template-columns: 1fr;
+  }
+
 }
 </style>
+
