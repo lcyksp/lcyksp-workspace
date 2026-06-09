@@ -2,6 +2,7 @@ import { Router } from 'express';
 import path from 'path';
 import fs from 'fs';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { getDb } from '../config/db.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -12,11 +13,47 @@ var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 
 var router = Router();
+var DEFAULT_AFDIAN_URL = 'https://ifdian.net/a/lcyksp';
+var MEMBERSHIP_PLANS = [
+  { key: 'monthly', name: '高级用户 30 天', amount: 500, durationDays: 30, description: '5 元 / 30 天' },
+  { key: 'quarterly', name: '高级用户 90 天', amount: 1000, durationDays: 90, description: '10 元 / 90 天' },
+  { key: 'permanent', name: '高级用户 永久', amount: 2000, durationDays: null, description: '20 元 / 永久' },
+];
 
 router.use(authMiddleware);
 router.use(requireAdmin);
 
 var SALT_ROUNDS = 10;
+
+function generateCardCode() {
+  var raw = crypto.randomBytes(10).toString('hex').toUpperCase();
+  return [raw.slice(0, 4), raw.slice(4, 8), raw.slice(8, 12), raw.slice(12, 16)].join('-');
+}
+
+function getMembershipPlan(planKey) {
+  for (var i = 0; i < MEMBERSHIP_PLANS.length; i++) {
+    if (MEMBERSHIP_PLANS[i].key === planKey) return MEMBERSHIP_PLANS[i];
+  }
+  return null;
+}
+
+function normalizeImportedMembershipCode(value) {
+  var input = typeof value === 'string' ? value.trim() : '';
+  if (!input) return '';
+
+  var redeemMatch = input.match(/\/redeem\/([A-Za-z0-9_-]+)/i);
+  if (redeemMatch && redeemMatch[1]) {
+    return redeemMatch[1];
+  }
+
+  return input;
+}
+
+function maskMembershipDisplayCode(value) {
+  var input = normalizeImportedMembershipCode(value);
+  if (!input || input.length < 8) return input || '';
+  return input;
+}
 
 // ===================================================================
 //  文件资产管理
@@ -580,6 +617,214 @@ router.post('/config/llm/test', async function (req, res, next) {
       }
       return res.json({ success: false, error: fetchErr.message || '请求失败' });
     }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ===================================================================
+//  会员配置与卡密管理
+// ===================================================================
+
+router.get('/config/membership', async function (req, res, next) {
+  try {
+    var db = getDb();
+    var rows = await new Promise(function (resolve, reject) {
+      db.all(
+        'SELECT key, value FROM system_config WHERE key IN (\'membership_afdian_url\', \'membership_notice\')',
+        function (err, rows) {
+          if (err) return reject(err);
+          resolve(rows);
+        },
+      );
+    });
+
+    var config = {};
+    for (var i = 0; i < rows.length; i++) {
+      config[rows[i].key] = rows[i].value;
+    }
+
+    res.json({
+      afdianUrl: config.membership_afdian_url || DEFAULT_AFDIAN_URL,
+      notice: config.membership_notice || '??????????????????????????',
+      plans: MEMBERSHIP_PLANS,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/config/membership', async function (req, res, next) {
+  try {
+    var afdianUrl = typeof req.body.afdianUrl === 'string' ? req.body.afdianUrl.trim() : DEFAULT_AFDIAN_URL;
+    var notice = typeof req.body.notice === 'string' ? req.body.notice.trim() : '';
+    var db = getDb();
+
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_afdian_url', afdianUrl], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_notice', notice], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    res.json({ message: '会员配置已保存' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/membership/cards', async function (req, res, next) {
+  try {
+    var db = getDb();
+    var status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    var sql = 'SELECT c.id, c.code, c.plan_key, c.duration_days, c.status, c.source, c.source_order_id, c.note, c.created_by, c.used_by, c.used_at, c.granted_expires_at, c.created_at, u.username AS used_by_name FROM membership_cards c LEFT JOIN users u ON c.used_by = u.id';
+    var params = [];
+    if (status) {
+      sql += ' WHERE c.status = ?';
+      params.push(status);
+    }
+    sql += ' ORDER BY c.id DESC LIMIT 100';
+
+    var rows = await new Promise(function (resolve, reject) {
+      db.all(sql, params, function (err, rows) {
+        if (err) return reject(err);
+        resolve(rows);
+      });
+    });
+
+    res.json({
+      cards: rows.map(function (row) {
+        var plan = getMembershipPlan(row.plan_key);
+        return {
+          id: row.id,
+          code: maskMembershipDisplayCode(row.code),
+          planKey: row.plan_key,
+          planName: plan ? plan.name : row.plan_key,
+          durationDays: row.duration_days,
+          status: row.status,
+          source: row.source,
+          sourceOrderId: row.source_order_id || '',
+          note: row.note || '',
+          createdBy: row.created_by || null,
+          usedBy: row.used_by || null,
+          usedByName: row.used_by_name || '',
+          usedAt: row.used_at || null,
+          grantedExpiresAt: row.granted_expires_at || null,
+          createdAt: row.created_at,
+        };
+      }),
+      plans: MEMBERSHIP_PLANS,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/membership/cards/generate', async function (req, res, next) {
+  try {
+    var planKey = typeof req.body.planKey === 'string' ? req.body.planKey.trim() : '';
+    var quantity = parseInt(req.body.quantity, 10) || 1;
+    var note = typeof req.body.note === 'string' ? req.body.note.trim() : '';
+    var plan = getMembershipPlan(planKey);
+
+    if (!plan) {
+      return res.status(400).json({ error: '无效的会员套餐' });
+    }
+    if (quantity < 1 || quantity > 50) {
+      return res.status(400).json({ error: '一次最多生成 50 张卡密' });
+    }
+
+    var db = getDb();
+    var created = [];
+
+    for (var i = 0; i < quantity; i++) {
+      var code = generateCardCode();
+      await new Promise(function (resolve, reject) {
+        db.run(
+          'INSERT INTO membership_cards (code, plan_key, duration_days, status, source, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [code, plan.key, plan.durationDays, 'unused', 'manual', note, req.user.userId],
+          function (err) {
+            if (err) return reject(err);
+            resolve();
+          },
+        );
+      });
+      created.push(code);
+    }
+
+    res.json({
+      message: '卡密已生成',
+      plan: plan,
+      cards: created,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/membership/cards/import', async function (req, res, next) {
+  try {
+    var planKey = typeof req.body.planKey === 'string' ? req.body.planKey.trim() : '';
+    var note = typeof req.body.note === 'string' ? req.body.note.trim() : '';
+    var rawText = typeof req.body.codesText === 'string' ? req.body.codesText : '';
+    var plan = getMembershipPlan(planKey);
+
+    if (!plan) {
+      return res.status(400).json({ error: '无效的会员套餐' });
+    }
+
+    var codes = rawText
+      .split(/\r?\n/g)
+      .map(normalizeImportedMembershipCode)
+      .filter(Boolean);
+
+    if (!codes.length) {
+      return res.status(400).json({ error: '请至少输入一条兑换码或兑换链接' });
+    }
+    if (codes.length > 200) {
+      return res.status(400).json({ error: '单次最多导入 200 条' });
+    }
+
+    var db = getDb();
+    var imported = [];
+    var duplicates = [];
+
+    for (var i = 0; i < codes.length; i++) {
+      var code = codes[i];
+      try {
+        await new Promise(function (resolve, reject) {
+          db.run(
+            'INSERT INTO membership_cards (code, plan_key, duration_days, status, source, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [code, plan.key, plan.durationDays, 'unused', 'afdian_import', note, req.user.userId],
+            function (err) {
+              if (err) return reject(err);
+              resolve();
+            },
+          );
+        });
+        imported.push(code);
+      } catch (error) {
+        if (String(error.message || '').includes('UNIQUE')) {
+          duplicates.push(code);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    res.json({
+      message: '导入完成',
+      importedCount: imported.length,
+      duplicateCount: duplicates.length,
+      imported: imported,
+      duplicates: duplicates,
+    });
   } catch (err) {
     next(err);
   }

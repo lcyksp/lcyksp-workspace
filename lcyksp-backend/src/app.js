@@ -9,6 +9,7 @@ import adminRouter from './routes/admin.js';
 import recipeRouter from './routes/recipe.js';
 import videoRouter from './routes/video.js';
 import feedbackRouter from './routes/feedback.js';
+import membershipRouter from './routes/membership.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
@@ -42,6 +43,7 @@ app.use('/api/admin', adminRouter);
 app.use('/api/recipe', recipeRouter);
 app.use('/api/video', videoRouter);
 app.use('/api/feedback', feedbackRouter);
+app.use('/api/membership', membershipRouter);
 
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));

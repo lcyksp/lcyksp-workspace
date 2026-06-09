@@ -1,12 +1,14 @@
 ﻿import { Router } from 'express'
 import bcrypt from 'bcrypt'
 import { getDb } from '../config/db.js'
-import { buildFreshUserPayload, requireAuth, signToken } from '../middleware/auth.js'
+import { authMiddleware, buildFreshUserPayload, requireAuth, signToken } from '../middleware/auth.js'
 import { getRegistrationAttemptCount, recordRegistrationAttempt, roleToPlan } from '../utils/quota.js'
 import { getClientIp, verifyTurnstileToken } from '../utils/turnstile.js'
 
 const router = Router()
 const SALT_ROUNDS = 10
+
+router.use(authMiddleware)
 
 function dbGet(sql, params = []) {
   const db = getDb()
@@ -181,3 +183,4 @@ router.post('/login', async (req, res, next) => {
 })
 
 export default router
+
