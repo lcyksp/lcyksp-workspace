@@ -17,7 +17,7 @@ var DEFAULT_AFDIAN_URL = 'https://ifdian.net/a/lcyksp';
 var MEMBERSHIP_PLANS = [
   { key: 'monthly', name: '高级用户 30 天', amount: 500, durationDays: 30, description: '5 元 / 30 天' },
   { key: 'quarterly', name: '高级用户 90 天', amount: 1000, durationDays: 90, description: '10 元 / 90 天' },
-  { key: 'permanent', name: '高级用户 永久', amount: 2000, durationDays: null, description: '20 元 / 永久' },
+  { key: 'yearly', name: '高级用户 365 天', amount: 2000, durationDays: 365, description: '20 元 / 365 天' },
 ];
 
 router.use(authMiddleware);
@@ -77,7 +77,12 @@ router.get('/files', async function (req, res, next) {
       var r = rows[i];
       fileList.push({
         id: r.id,
-        fileName: r.file_name,
+        fileName: (function() {
+          try {
+            var parsed = JSON.parse(r.file_name);
+            return Array.isArray(parsed) ? parsed.join(', ') : r.file_name;
+          } catch { return r.file_name; }
+        })(),
         fileSize: r.file_size,
         hasPassword: !!r.password,
         maxDownloads: r.max_downloads,
@@ -631,7 +636,7 @@ router.get('/config/membership', async function (req, res, next) {
     var db = getDb();
     var rows = await new Promise(function (resolve, reject) {
       db.all(
-        'SELECT key, value FROM system_config WHERE key IN (\'membership_afdian_url\', \'membership_notice\')',
+        'SELECT key, value FROM system_config WHERE key IN (\'membership_afdian_url\', \'membership_notice\', \'membership_afdian_user_id\', \'membership_afdian_token\', \'membership_afdian_webhook_token\', \'membership_plan_id_monthly\', \'membership_plan_id_quarterly\', \'membership_plan_id_yearly\')',
         function (err, rows) {
           if (err) return reject(err);
           resolve(rows);
@@ -646,7 +651,13 @@ router.get('/config/membership', async function (req, res, next) {
 
     res.json({
       afdianUrl: config.membership_afdian_url || DEFAULT_AFDIAN_URL,
-      notice: config.membership_notice || '??????????????????????????',
+      notice: config.membership_notice || '登录本站账号后，前往爱发电下单，并在订单备注里填写本站用户名。支付成功后，系统会自动为对应账号开通高级用户。',
+      afdianUserId: config.membership_afdian_user_id || '',
+      afdianToken: config.membership_afdian_token || '',
+      webhookToken: config.membership_afdian_webhook_token || '',
+      planIdMonthly: config.membership_plan_id_monthly || '',
+      planIdQuarterly: config.membership_plan_id_quarterly || '',
+      planIdYearly: config.membership_plan_id_yearly || '',
       plans: MEMBERSHIP_PLANS,
     });
   } catch (err) {
@@ -658,6 +669,12 @@ router.post('/config/membership', async function (req, res, next) {
   try {
     var afdianUrl = typeof req.body.afdianUrl === 'string' ? req.body.afdianUrl.trim() : DEFAULT_AFDIAN_URL;
     var notice = typeof req.body.notice === 'string' ? req.body.notice.trim() : '';
+    var afdianUserId = typeof req.body.afdianUserId === 'string' ? req.body.afdianUserId.trim() : '';
+    var afdianToken = typeof req.body.afdianToken === 'string' ? req.body.afdianToken.trim() : '';
+    var webhookToken = typeof req.body.webhookToken === 'string' ? req.body.webhookToken.trim() : '';
+    var planIdMonthly = typeof req.body.planIdMonthly === 'string' ? req.body.planIdMonthly.trim() : '';
+    var planIdQuarterly = typeof req.body.planIdQuarterly === 'string' ? req.body.planIdQuarterly.trim() : '';
+    var planIdYearly = typeof req.body.planIdYearly === 'string' ? req.body.planIdYearly.trim() : '';
     var db = getDb();
 
     await new Promise(function (resolve, reject) {
@@ -668,6 +685,42 @@ router.post('/config/membership', async function (req, res, next) {
     });
     await new Promise(function (resolve, reject) {
       db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_notice', notice], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_afdian_user_id', afdianUserId], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_afdian_token', afdianToken], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_afdian_webhook_token', webhookToken], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_plan_id_monthly', planIdMonthly], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_plan_id_quarterly', planIdQuarterly], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_plan_id_yearly', planIdYearly], function (err) {
         if (err) return reject(err);
         resolve();
       });

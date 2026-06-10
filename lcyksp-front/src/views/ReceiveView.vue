@@ -39,11 +39,14 @@ async function verifyCode(pwd) {
       code: pickupCode.value,
       password: pwd || undefined,
     })
+    const data = res.data
     verified.value = true
     needsPassword.value = false
     fileInfo.value = {
-      fileName: res.data.fileName,
-      fileSize: formatSize(res.data.fileSize),
+      fileName: Array.isArray(data.fileNames) ? data.fileNames.join(', ') : data.fileName,
+      fileNames: Array.isArray(data.fileNames) ? data.fileNames : [data.fileName],
+      fileCount: data.fileCount || 1,
+      fileSize: formatSize(data.totalSize || data.fileSize),
     }
   } catch (err) {
     const status = err.response?.status
@@ -83,29 +86,29 @@ async function submitPassword() {
 async function downloadFile() {
   const token = localStorage.getItem('lcyksp_token')
   const headers = {}
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const names = fileInfo.value?.fileNames || [fileInfo.value?.fileName || 'download']
 
-  try {
-    const res = await fetch(`/api/transmit/download/${pickupCode.value}`, { headers })
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({ error: '下载失败' }))
-      ElMessage.error(errData.error || `下载失败 (${res.status})`)
-      return
+  for (let i = 0; i < names.length; i++) {
+    try {
+      const res = await fetch(`/api/transmit/download/${pickupCode.value}?fileIndex=${i}`, { headers })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: '下载失败' }))
+        ElMessage.error(`${names[i]} 下载失败: ${errData.error}`)
+        continue
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = names[i]
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      ElMessage.error(`${names[i]} 下载失败: ${err.message}`)
     }
-
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = fileInfo.value?.fileName || 'download'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  } catch (err) {
-    ElMessage.error('下载失败: ' + (err.message || '未知错误'))
   }
 }
 

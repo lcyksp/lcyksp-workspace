@@ -9,7 +9,7 @@ import axios from 'axios'
 import { copyToClipboard } from '../utils/clipboard.js'
 
 // ---------- 状态 ----------
-const file = ref(null)
+const files = ref([])
 const uploading = ref(false)
 const dialogVisible = ref(false)
 const result = reactive({
@@ -34,24 +34,57 @@ const expireOptions = [
 
 // ---------- 文件变更 ----------
 function handleFileChange(uploadFile) {
-  file.value = uploadFile.raw
+  // 总大小校验
+  const newFiles = uploadFile.raw ? [...files.value, uploadFile.raw] : files.value
+  const totalSize = newFiles.reduce((sum, f) => sum + (f.size || 0), 0)
+  if (totalSize > 2 * 1024 * 1024 * 1024) {
+    ElMessage({
+      message: '文件总大小超过 2GB 限制，请减少文件数量',
+      type: 'warning',
+      duration: 3000,
+    })
+    return false
+  }
+  files.value.push(uploadFile.raw)
+  return false
 }
 
-function handleRemove() {
-  file.value = null
+function handleRemove(uploadFile) {
+  files.value = files.value.filter(f => f !== uploadFile.raw)
+}
+
+function handleExceed() {
+  ElMessage({
+    message: '最多上传 5 个文件',
+    type: 'warning',
+    duration: 3000,
+  })
 }
 
 // ---------- 上传 ----------
 async function handleUpload() {
-  if (!file.value) {
-    ElMessage.warning('请先选择一个文件')
+  if (files.value.length === 0) {
+    ElMessage.warning('请先选择文件')
+    return
+  }
+
+  // 最终总大小校验
+  const totalSize = files.value.reduce((sum, f) => sum + (f.size || 0), 0)
+  if (totalSize > 2 * 1024 * 1024 * 1024) {
+    ElMessage({
+      message: '文件总大小超过 2GB 限制',
+      type: 'warning',
+      duration: 3000,
+    })
     return
   }
 
   uploading.value = true
   try {
     const formData = new FormData()
-    formData.append('file', file.value)
+    for (const f of files.value) {
+      formData.append('files', f)
+    }
     formData.append('maxDownloads', security.maxDownloads > 0 ? String(security.maxDownloads) : '')
     formData.append('expireTime', security.expireTime)
     if (security.password) {
@@ -66,10 +99,8 @@ async function handleUpload() {
     dialogVisible.value = true
 
     ElMessage.success('闪传链接已生成！')
-    // 清空文件
-    file.value = null
+    files.value = []
   } catch (err) {
-    // 拦截器已处理错误提示
     console.error('上传失败:', err)
   } finally {
     uploading.value = false
@@ -92,19 +123,21 @@ async function copyLink() {
     <!-- 拖拽上传区域 -->
     <el-upload
       drag
+      multiple
       :auto-upload="false"
       :show-file-list="true"
       :on-change="handleFileChange"
       :on-remove="handleRemove"
-      :limit="1"
-      :file-list="[]"
+      :on-exceed="handleExceed"
+      :limit="5"
+      :file-list="files"
     >
       <el-icon class="upload-icon" :size="48"><UploadFilled /></el-icon>
       <div class="upload-text">
         拖拽文件到此处，或 <em>点击选择</em>
       </div>
       <template #tip>
-        <div class="upload-tip">单个文件最大支持 2GB</div>
+        <div class="upload-tip">最多 5 个文件，总大小不超过 2GB</div>
       </template>
     </el-upload>
 
@@ -149,7 +182,7 @@ async function copyLink() {
       type="primary"
       size="large"
       :loading="uploading"
-      :disabled="!file"
+      :disabled="files.length === 0"
       class="submit-btn"
       @click="handleUpload"
     >
