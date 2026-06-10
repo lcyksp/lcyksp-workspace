@@ -74,40 +74,47 @@ function hashPassword(pwd) {
 
 /** 物理删除文件并清库（用于过期/超次数/错误清理） */
 function cleanUpRecord(db, record) {
-  fs.unlink(record.file_path, (unlinkErr) => {
-    if (unlinkErr && unlinkErr.code !== 'ENOENT') {
-      console.error(`[清理] 删除文件失败: ${record.file_path}`, unlinkErr.message);
-    }
+  // 兼容多文件 JSON 存储和单文件字符串
+  var paths = [];
+  try {
+    var parsed = JSON.parse(record.file_path);
+    if (Array.isArray(parsed)) paths = parsed;
+  } catch (e) { /* 单文件路径 */ }
+  if (paths.length === 0) paths = [record.file_path];
+
+  paths.forEach(function (fp) {
+    try { fs.unlinkSync(fp); } catch (e) { if (e.code !== 'ENOENT') console.error('[清理] 删除文件失败:', fp, e.message); }
   });
-  db.run('DELETE FROM transfers WHERE id = ?', [record.id], (delErr) => {
-    if (delErr) console.error(`[清理] 删除记录失败: ${record.id}`, delErr.message);
+
+  db.run('DELETE FROM transfers WHERE id = ?', [record.id], function (delErr) {
+    if (delErr) console.error('[清理] 删除记录失败:', record.id, delErr.message);
   });
 }
 
 // ========== 接口 1: POST /upload ==========
-router.post('/upload', upload.single('file'), async (req, res, next) => {
+router.post('/upload', upload.array('files', 5), async (req, res, next) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: '请上传一个文件' });
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: '请上传至少一个文件' });
     }
 
     const db = getDb();
     const { password, maxDownloads, expireTime = '24h', isPrivate = '0' } = req.body;
 
-    // 校验次数：留空或 0 → -1 表示不限次数
+    // 校验次数
     let maxDownloadsNum;
     if (maxDownloads === undefined || maxDownloads === '' || maxDownloads === null) {
       maxDownloadsNum = -1;
     } else {
       maxDownloadsNum = parseInt(maxDownloads, 10);
       if (isNaN(maxDownloadsNum) || maxDownloadsNum < 0) {
-        fs.unlink(req.file.path, () => {});
+        req.files.forEach(f => fs.unlink(f.path, () => {}));
         return res.status(400).json({ error: 'maxDownloads 必须为 ≥0 的整数' });
       }
-      if (maxDownloadsNum === 0) maxDownloadsNum = -1; // 0 也视为不限
+      if (maxDownloadsNum === 0) maxDownloadsNum = -1;
     }
 
-    // 解析过期时间：'permanent' → 遥远的未来
+    // 过期时间
     let expireTimeIso;
     if (expireTime === 'permanent') {
       expireTimeIso = '2099-12-31T23:59:59.000Z';
@@ -115,30 +122,39 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
       try {
         expireTimeIso = parseExpireTime(expireTime);
       } catch {
-        fs.unlink(req.file.path, () => {});
-        return res.status(400).json({ error: 'expireTime 格式无效，请使用如 1h, 12h, 24h, 7d 或 permanent' });
+        req.files.forEach(f => fs.unlink(f.path, () => {}));
+        return res.status(400).json({ error: 'expireTime 格式无效' });
       }
     }
 
-    // 生成唯一取件码
+    // 修复 multer 中文文件名乱码
+    function fixFilename(originalname) {
+      try {
+        return Buffer.from(originalname, 'latin1').toString('utf8');
+      } catch {
+        return originalname;
+      }
+    }
+
     const id = await uniquePickupCode(db);
-
-    // 处理密码
     const hashedPwd = password ? hashPassword(password) : null;
-
-    // 如果已登录，记录 owner_id
     const ownerId = req.user?.userId || null;
     const privateFlag = isPrivate === '1' || isPrivate === true ? 1 : 0;
 
-    // 入库
+    // 多文件信息存储为 JSON
+    const fileNames = req.files.map(f => fixFilename(f.originalname));
+    const filePaths = req.files.map(f => f.path);
+    const fileSizes = req.files.map(f => f.size);
+    const totalSize = req.files.reduce((sum, f) => sum + f.size, 0);
+
     await new Promise((resolve, reject) => {
       db.run(
         `INSERT INTO transfers (id, file_name, file_path, file_size, password, max_downloads, expire_time, owner_id, is_private)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, req.file.originalname, req.file.path, req.file.size, hashedPwd, maxDownloadsNum, expireTimeIso, ownerId, privateFlag],
+        [id, JSON.stringify(fileNames), JSON.stringify(filePaths), totalSize, hashedPwd, maxDownloadsNum, expireTimeIso, ownerId, privateFlag],
         (err) => {
           if (err) {
-            fs.unlink(req.file.path, () => {});
+            req.files.forEach(f => fs.unlink(f.path, () => {}));
             return reject(err);
           }
           resolve();
@@ -148,8 +164,9 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
 
     res.status(201).json({
       code: id,
-      fileName: req.file.originalname,
-      fileSize: req.file.size,
+      fileNames,
+      fileCount: fileNames.length,
+      totalSize,
       hasPassword: !!password,
       maxDownloads: maxDownloadsNum === -1 ? -1 : maxDownloadsNum,
       maxDownloadsUnlimited: maxDownloadsNum === -1,
@@ -202,10 +219,27 @@ router.post('/verify', async (req, res, next) => {
       }
     }
 
+    // 解析多文件 JSON
+    let fileNames = [];
+    let filePaths = [];
+    let fileSizes = [];
+    try {
+      fileNames = JSON.parse(record.file_name);
+      filePaths = JSON.parse(record.file_path);
+      fileSizes = JSON.parse(record.file_size || '[]');
+    } catch {
+      fileNames = [record.file_name];
+      filePaths = [record.file_path];
+      fileSizes = [record.file_size];
+    }
+    const totalSize = fileSizes.reduce((s, n) => s + (n || 0), 0);
+
     res.json({
       valid: true,
-      fileName: record.file_name,
-      fileSize: record.file_size,
+      fileName: fileNames[0],
+      fileNames,
+      fileCount: fileNames.length,
+      totalSize,
     });
   } catch (err) {
     next(err);
@@ -242,24 +276,39 @@ router.get('/download/:id', async (req, res, next) => {
       }
     }
 
+    // 解析多文件路径
+    let filePaths = [], fileNames = [];
+    try {
+      filePaths = JSON.parse(record.file_path);
+      fileNames = JSON.parse(record.file_name);
+    } catch {
+      filePaths = [record.file_path];
+      fileNames = [record.file_name];
+    }
+
+    const fileIndex = parseInt(req.query.fileIndex, 10) || 0;
+    const targetFile = filePaths[fileIndex];
+    const targetName = fileNames[fileIndex] || fileNames[0] || record.file_name;
+
     // 检查物理文件是否存在
-    if (!fs.existsSync(record.file_path)) {
-      db.run('DELETE FROM transfers WHERE id = ?', [id]);
+    if (!targetFile || !fs.existsSync(targetFile)) {
       return res.status(404).json({ error: '物理文件已丢失' });
     }
 
+    // 修复文件名编码
+    function fixFilename(name) {
+      try { return Buffer.from(name, 'latin1').toString('utf8'); } catch { return name; }
+    }
+
     // 流式下载
-    res.download(record.file_path, record.file_name, (downloadErr) => {
-      if (downloadErr) {
-        if (!res.headersSent) {
-          return res.status(500).json({ error: '文件下载失败' });
-        }
+    res.download(targetFile, fixFilename(targetName), (downloadErr) => {
+      if (downloadErr && !res.headersSent) {
+        return res.status(500).json({ error: '文件下载失败' });
       }
     });
 
     // 下载完成或断开时的处理
     res.on('finish', () => {
-      // 不限次数模式：不扣减、不焚毁
       if (unlimited) return;
 
       db.run(
@@ -267,19 +316,21 @@ router.get('/download/:id', async (req, res, next) => {
         [id],
         function (updateErr) {
           if (updateErr) {
-            console.error(`[下载] 更新下载次数失败: ${id}`, updateErr.message);
+            console.error('[下载] 更新下载次数失败:', id, updateErr.message);
             return;
           }
-          const newCount = record.current_downloads + 1;
+          var newCount = record.current_downloads + 1;
           if (newCount >= record.max_downloads) {
-            fs.unlink(record.file_path, (unlinkErr) => {
-              if (unlinkErr && unlinkErr.code !== 'ENOENT') {
-                console.error(`[阅后即焚] 删除文件失败: ${record.file_path}`, unlinkErr.message);
-              }
+            // 删除所有物理文件（兼容 JSON 数组和单文件字符串）
+            var delPaths = [];
+            try { var p = JSON.parse(record.file_path); if (Array.isArray(p)) delPaths = p; } catch {}
+            if (delPaths.length === 0) delPaths = [record.file_path];
+            delPaths.forEach(function (fp) {
+              try { fs.unlinkSync(fp); } catch (e) { if (e.code !== 'ENOENT') console.error('[阅后即焚] 删除文件失败:', fp, e.message); }
             });
-            db.run('DELETE FROM transfers WHERE id = ?', [id], (delErr) => {
-              if (delErr) console.error(`[阅后即焚] 删除记录失败: ${id}`, delErr.message);
-              else console.log(`[阅后即焚] 取件码 ${id} 已销毁`);
+            db.run('DELETE FROM transfers WHERE id = ?', [id], function (delErr) {
+              if (delErr) console.error('[阅后即焚] 删除记录失败:', id, delErr.message);
+              else console.log('[阅后即焚] 取件码', id, '已销毁');
             });
           }
         },
