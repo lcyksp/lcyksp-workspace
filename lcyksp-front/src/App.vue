@@ -600,7 +600,7 @@ function handleGlobalAuthDialog() {
         </div>
 
         <div class="membership-actions">
-          <el-button type="primary" @click="navigateTo('/membership')">前往会员页面</el-button>
+          <el-button type="primary" @click="navigateTo('/membership'); accessDialogVisible = false">前往会员页面</el-button>
         </div>
       </div>
     </el-dialog>

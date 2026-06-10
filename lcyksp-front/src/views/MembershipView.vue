@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+const DEFAULT_AFDIAN_URL = 'https://ifdian.net/a/lcyksp'
+
 const loading = ref(false)
 const redeeming = ref(false)
 const currentUser = ref(null)
@@ -67,6 +69,9 @@ async function loadMyMembership() {
 
 async function loadMembershipPage() {
   loading.value = true
+  // 强制 8 秒后解除 loading，防止任何情况卡住
+  const forceTimeout = setTimeout(() => { loading.value = false }, 8000)
+
   try {
     await loadMembershipConfig()
     if (getToken()) {
@@ -76,16 +81,17 @@ async function loadMembershipPage() {
         if (error.response?.status === 401) {
           ElMessage.warning('当前登录状态已失效，请重新登录后再开通会员')
           saveCurrentUser(null)
-          return
+        } else {
+          throw error
         }
-        throw error
       }
     } else {
       redeemRecords.value = []
     }
   } catch (error) {
-    ElMessage.error(error.response?.data?.error || '加载会员信息失败')
+    console.error('加载会员信息失败:', error)
   } finally {
+    clearTimeout(forceTimeout)
     loading.value = false
   }
 }
@@ -116,11 +122,8 @@ async function ensureCurrentUser() {
 }
 
 function openAfdianPage() {
-  if (!membershipConfig.value.afdianUrl) {
-    ElMessage.warning('爱发电主页暂未配置')
-    return
-  }
-  window.open(membershipConfig.value.afdianUrl, '_blank', 'noopener')
+  const url = membershipConfig.value.afdianUrl || DEFAULT_AFDIAN_URL
+  window.open(url, '_blank', 'noopener')
 }
 
 async function redeemMembershipCard() {
@@ -132,7 +135,7 @@ async function redeemMembershipCard() {
 
   const input = redeemCode.value.trim()
   if (!input) {
-    ElMessage.warning('请输入备用卡密或外部兑换链接')
+    ElMessage.warning('粘贴爱发电自动私信的卡密链接或输入卡密')
     return
   }
 
@@ -194,12 +197,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="membership-view" v-loading="loading">
+  <div class="membership-view">
     <section class="hero-card">
       <div class="hero-copy">
         <h2>成为会员</h2>
-        <p>{{ membershipConfig.notice || '登录本站账号后，前往爱发电下单，并在订单备注里填写本站用户名。支付成功后，系统会自动为对应账号开通高级用户。' }}</p>
-        <p class="hero-sub">推荐流程：先登录本站账号，再前往爱发电支付。卡密兑换入口保留为备用方案。</p>
+        <p>{{ membershipConfig.notice || '登录本站账号后，前往爱发电下单。支付成功后，请复制自动私信内卡密链接在下方兑换。' }}</p>
+        <p class="hero-sub">推荐流程：先登录本站账号，再前往爱发电支付。支付成功后爱发电会自动私信卡密链接，复制到下方兑换即可开通。</p>
       </div>
 
       <div class="plan-grid">
@@ -212,25 +215,26 @@ onUnmounted(() => {
       <div class="hero-actions">
         <el-button type="primary" size="large" @click="openAfdianPage">前往爱发电开通</el-button>
       </div>
-
-      <div class="status-tip" :class="{ ready: membershipConfig.apiReady }">
-        {{ membershipConfig.apiStatusText || '爱发电自动开通状态暂未返回。' }}
-      </div>
     </section>
+
+    <div v-if="loading" class="inline-loading">
+      <el-icon class="is-loading"><Loading /></el-icon>
+      <span>加载中…</span>
+    </div>
 
     <section class="redeem-card">
       <div class="section-head">
-        <h3>备用卡密兑换</h3>
-        <span>{{ isLoggedIn ? '已登录，可使用备用兑换入口' : '请先登录后再使用备用兑换入口' }}</span>
+        <h3>卡密兑换</h3>
+        <span>{{ isLoggedIn ? '已登录' : '请先登录后再兑换' }}</span>
       </div>
 
-      <p class="redeem-tip">主流程推荐在爱发电下单时备注本站用户名，支付成功后系统会自动开通。这里保留本站卡密或外部兑换链接的备用兑换入口。</p>
+      <p class="redeem-tip">在爱发电支付成功后，将自动私信的卡密链接粘贴到上方输入框，点击兑换即可开通高级用户。</p>
 
       <div class="redeem-row">
         <el-input
           v-model="redeemCode"
           size="large"
-          placeholder="输入备用卡密或外部兑换链接"
+          placeholder="粘贴爱发电自动私信的卡密链接或输入卡密"
           clearable
           @keyup.enter="redeemMembershipCard"
         />
@@ -297,6 +301,16 @@ onUnmounted(() => {
   font-size: 0.84rem;
 }
 
+.inline-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
 .plan-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -326,22 +340,6 @@ onUnmounted(() => {
 
 .hero-actions {
   margin-top: 18px;
-}
-
-.status-tip {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid color-mix(in srgb, #e6a23c 28%, var(--border-color));
-  background: color-mix(in srgb, #e6a23c 10%, var(--bg-input));
-  color: var(--text-secondary);
-  font-size: 0.84rem;
-  line-height: 1.7;
-}
-
-.status-tip.ready {
-  border-color: color-mix(in srgb, #67c23a 28%, var(--border-color));
-  background: color-mix(in srgb, #67c23a 10%, var(--bg-input));
 }
 
 .section-head {

@@ -123,24 +123,31 @@ function normalizeUsernameText(value) {
 }
 
 function pickUsernameFromRemark(remark) {
-  const text = normalizeUsernameText(remark)
+  var text = String(remark || '').trim()
   if (!text) return ''
 
-  const patterns = [
-    /^用户名[:：]\s*(.+)$/i,
-    /^账号[:：]\s*(.+)$/i,
-    /^本站用户名[:：]\s*(.+)$/i,
-    /^site\s*user[:：]\s*(.+)$/i,
+  // Try to find username after common prefixes (anywhere in the remark, not just exact match)
+  var patterns = [
+    /本站用户名[:：]\s*([^\s,，、]+)/i,
+    /用户名[:：]\s*([^\s,，、]+)/i,
+    /账号[:：]\s*([^\s,，、]+)/i,
+    /site\s*user[:：]\s*([^\s,，、]+)/i,
   ]
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern)
+  for (var i = 0; i < patterns.length; i++) {
+    var match = text.match(patterns[i])
     if (match && match[1]) {
       return match[1].trim()
     }
   }
 
-  return text
+  // Fallback: if the remark is a single word and looks like a username, use it directly
+  var trimmed = text.trim()
+  if (trimmed && !trimmed.includes(' ') && !trimmed.includes('\n') && trimmed.length < 50) {
+    return trimmed
+  }
+
+  return ''
 }
 
 function buildAfdianSignature({ token, userId, params, ts }) {
@@ -553,6 +560,11 @@ router.post('/afdian/webhook', async (req, res, next) => {
     if (!order || req.body?.data?.type !== 'order') {
       return res.status(200).json({ ec: 200, em: 'ok', message: 'ignored' })
     }
+
+    // Debug log for remark parsing
+    console.log('[webhook] remark raw:', JSON.stringify(order.remark))
+    const extractedUser = pickUsernameFromRemark(order.remark || '')
+    console.log('[webhook] extracted username:', JSON.stringify(extractedUser))
 
     if (Number(order.status) !== 2) {
       await upsertMembershipOrder(order, detectPlanKeyByOrder(order, config), 'pending', order)

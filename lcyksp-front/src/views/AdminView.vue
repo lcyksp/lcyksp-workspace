@@ -72,6 +72,30 @@ const membershipCardsLoading = ref(false)
 const membershipSimulating = ref(false)
 const membershipCardsPage = ref(1)
 const membershipCardsPageSize = 20
+const membershipCardStatusFilter = ref('') // '' = all, 'unused', 'used', 'invalid'
+const membershipCardFilterPlan = ref('monthly')
+const cardDetail = ref(null)
+const cardDetailVisible = ref(false)
+
+function planCardStats(planKey) {
+  const cards = membershipCards.value.filter(c => c.plan_key === planKey)
+  const stats = { total: cards.length, unused: 0, used: 0 }
+  cards.forEach(c => { if (c.status === 'used') stats.used += 1; else stats.unused += 1 })
+  return stats
+}
+
+function filteredPlanCards(planKey) {
+  let cards = membershipCards.value.filter(c => c.plan_key === planKey)
+  if (planKey !== membershipCardFilterPlan.value) return []
+  if (membershipCardStatusFilter.value === 'unused') return cards.filter(c => c.status !== 'used' && c.status !== 'invalid')
+  if (membershipCardStatusFilter.value === 'used') return cards.filter(c => c.status === 'used')
+  return cards
+}
+
+function openCardDetail(card) {
+  cardDetail.value = card
+  cardDetailVisible.value = true
+}
 const membershipCardForm = reactive({
   planKey: 'monthly',
   quantity: 1,
@@ -133,9 +157,14 @@ const membershipCardStats = computed(() => {
   return stats
 })
 
+const filteredMembershipCards = computed(() => {
+  if (!membershipCardStatusFilter.value) return membershipCards.value
+  return membershipCards.value.filter(card => card.status === membershipCardStatusFilter.value)
+})
+
 const pagedMembershipCards = computed(() => {
   const start = (membershipCardsPage.value - 1) * membershipCardsPageSize
-  return membershipCards.value.slice(start, start + membershipCardsPageSize)
+  return filteredMembershipCards.value.slice(start, start + membershipCardsPageSize)
 })
 
 function loadHistory(storageKey) {
@@ -558,6 +587,7 @@ async function loadMembershipCards() {
     const res = await axios.get('/api/admin/membership/cards')
     membershipCards.value = Array.isArray(res.data?.cards) ? res.data.cards : []
     membershipCardsPage.value = 1
+    membershipCardFilterPlan.value = 'monthly'
     if (!membershipConfig.plans.length && Array.isArray(res.data?.plans)) {
       membershipConfig.plans = res.data.plans
     }
@@ -1310,59 +1340,53 @@ onMounted(() => {
         </div>
 
         <section class="single-panel membership-card-list-panel">
-          <div class="membership-card-stats">
-            <div class="membership-stat-chip">总数 {{ membershipCardStats.total }}</div>
-            <div class="membership-stat-chip warning">未使用 {{ membershipCardStats.unused }}</div>
-            <div class="membership-stat-chip success">已使用 {{ membershipCardStats.used }}</div>
-            <div class="membership-stat-chip danger">已作废 {{ membershipCardStats.invalid }}</div>
-          </div>
-          <div v-loading="membershipCardsLoading" class="membership-card-list">
-            <div v-if="!membershipCards.length" class="feedback-empty">暂无卡密记录</div>
-            <article v-for="card in pagedMembershipCards" :key="card.id" class="membership-record-card">
-              <div class="membership-record-head">
-                <div class="membership-record-title">
-                  <h4>{{ card.planName }}</h4>
-                  <span class="membership-record-code">{{ card.code }}</span>
-                </div>
-                <el-tag :type="card.status === 'used' ? 'success' : card.status === 'invalid' ? 'danger' : 'warning'" effect="dark" size="small">
-                  {{ card.status === 'used' ? '已使用' : card.status === 'invalid' ? '已作废' : '未使用' }}
-                </el-tag>
-              </div>
-              <dl class="feedback-meta membership-record-meta">
-                <div>
-                  <dt>来源</dt>
-                  <dd>{{ membershipSourceLabel(card.source) }}</dd>
-                </div>
-                <div>
-                  <dt>使用人</dt>
-                  <dd>{{ card.usedByName || '-' }}</dd>
-                </div>
-                <div>
-                  <dt>到期时间</dt>
-                  <dd>{{ card.grantedExpiresAt ? formatTime(card.grantedExpiresAt) : '-' }}</dd>
-                </div>
-              </dl>
-              <div class="feedback-details">
-                创建时间：{{ formatTime(card.createdAt) }}<br>
-                使用时间：{{ card.usedAt ? formatTime(card.usedAt) : '-' }}<br>
-                备注：{{ card.note || '-' }}
-              </div>
-            </article>
-          </div>
-          <div v-if="membershipCards.length > membershipCardsPageSize" class="membership-pagination">
-            <el-pagination
-              background
-              layout="prev, pager, next"
-              :page-size="membershipCardsPageSize"
-              :total="membershipCards.length"
-              :current-page="membershipCardsPage"
-              @current-change="handleMembershipPageChange"
-            />
-          </div>
-        </section>
+  <div v-for="plan in membershipConfig.plans" :key="plan.key" class="plan-card-group">
+    <div class="plan-card-group-header">
+      <strong>{{ plan.description }}</strong>
+    </div>
+    <div class="membership-card-stats">
+      <div class="membership-stat-chip" :class="{ active: membershipCardFilterPlan === plan.key && !membershipCardStatusFilter }"
+        @click="membershipCardFilterPlan = plan.key; membershipCardStatusFilter = ''; membershipCardsPage = 1">
+        全部 {{ planCardStats(plan.key).total }}
+      </div>
+      <div class="membership-stat-chip warning" :class="{ active: membershipCardFilterPlan === plan.key && membershipCardStatusFilter === 'unused' }"
+        @click="membershipCardFilterPlan = plan.key; membershipCardStatusFilter = 'unused'; membershipCardsPage = 1">
+        未使用 {{ planCardStats(plan.key).unused }}
+      </div>
+      <div class="membership-stat-chip success" :class="{ active: membershipCardFilterPlan === plan.key && membershipCardStatusFilter === 'used' }"
+        @click="membershipCardFilterPlan = plan.key; membershipCardStatusFilter = 'used'; membershipCardsPage = 1">
+        已使用 {{ planCardStats(plan.key).used }}
+      </div>
+    </div>
+    <div v-loading="membershipCardsLoading" class="membership-card-list">
+      <div v-if="filteredPlanCards(plan.key).length === 0" class="feedback-empty" style="padding: 12px 0;">暂无卡密</div>
+      <div v-for="card in filteredPlanCards(plan.key)" :key="card.id" class="membership-card-simple">
+        <span class="membership-card-code">{{ card.code }}</span>
+        <el-tag :type="card.status === 'used' ? 'success' : 'warning'" effect="dark" size="small">
+          {{ card.status === 'used' ? '已使用' : '未使用' }}
+        </el-tag>
+        <el-button size="small" text @click="openCardDetail(card)">ℹ</el-button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Card detail dialog -->
+<el-dialog v-model="cardDetailVisible" :title="cardDetail?.code || ''" width="420px" class="card-detail-dialog">
+  <dl class="card-detail-list" v-if="cardDetail">
+    <div><dt>套餐</dt><dd>{{ cardDetail.planName }}</dd></div>
+    <div><dt>状态</dt><dd>{{ cardDetail.status === 'used' ? '已使用' : cardDetail.status === 'invalid' ? '已作废' : '未使用' }}</dd></div>
+    <div><dt>来源</dt><dd>{{ membershipSourceLabel(cardDetail.source) }}</dd></div>
+    <div><dt>使用人</dt><dd>{{ cardDetail.usedByName || '-' }}</dd></div>
+    <div><dt>创建时间</dt><dd>{{ formatTime(cardDetail.createdAt) }}</dd></div>
+    <div><dt>使用时间</dt><dd>{{ cardDetail.usedAt ? formatTime(cardDetail.usedAt) : '-' }}</dd></div>
+    <div><dt>到期时间</dt><dd>{{ cardDetail.grantedExpiresAt ? formatTime(cardDetail.grantedExpiresAt) : '-' }}</dd></div>
+    <div><dt>备注</dt><dd>{{ cardDetail.note || '-' }}</dd></div>
+  </dl>
+</el-dialog>
       </el-tab-pane>
 
-      <el-tab-pane label="备用导入卡密">
+      <el-tab-pane label="导入卡密">
         <div class="tab-header">
           <span class="tab-count">仅作为备用方案：把外部兑换码或兑换链接导入到本站会员系统</span>
           <el-button size="small" :loading="membershipCardsLoading" @click="loadMembershipCards">
@@ -1802,7 +1826,50 @@ onMounted(() => {
   background: color-mix(in srgb, var(--bg-input) 88%, transparent);
   color: var(--text-secondary);
   font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s;
 }
+.membership-stat-chip:hover {
+  opacity: 0.8;
+}
+.membership-stat-chip.active {
+  border-color: var(--accent-blue) !important;
+  background: color-mix(in srgb, var(--accent-blue) 15%, var(--bg-input));
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+/* Plan card group */
+.plan-card-group {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--bg-hover);
+}
+.plan-card-group:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.plan-card-group-header { margin-bottom: 10px; }
+.plan-card-group-header strong { color: var(--text-primary); font-size: 0.95rem; }
+
+/* Simple card row */
+.membership-card-simple {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bg-hover);
+}
+.membership-card-simple:last-child { border-bottom: none; }
+.membership-card-code {
+  flex: 1;
+  color: var(--text-primary);
+  font-family: monospace;
+  font-size: 0.82rem;
+}
+
+/* Card detail dialog */
+.card-detail-list { display: flex; flex-direction: column; gap: 8px; }
+.card-detail-list div { display: flex; padding: 4px 0; border-bottom: 1px solid var(--bg-hover); }
+.card-detail-list dt { width: 80px; flex-shrink: 0; color: var(--text-secondary); font-size: 0.82rem; }
+.card-detail-list dd { flex: 1; color: var(--text-primary); font-size: 0.82rem; margin: 0; }
 
 .membership-stat-chip.warning {
   border-color: color-mix(in srgb, #e6a23c 30%, var(--border-color));
