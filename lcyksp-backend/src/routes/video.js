@@ -72,10 +72,10 @@ const douyinAnalyzeCache = new Map()
 let douyinAnalyzeInFlight = null
 
 async function enforceVideoQuota(req, action) {
-  const plan = req.user?.role === 'admin' ? 'admin' : req.user?.role === 'premium' || req.user?.quotaPlan === 'premium' ? 'premium' : 'free'
+  const plan = req.user?.role === 'admin' ? 'admin' : req.user?.role === 'pro' ? 'pro' : req.user?.role === 'premium' || req.user?.quotaPlan === 'premium' ? 'premium' : 'free'
   const subjectKey = req.user?.userId ? `user:${req.user.userId}` : `ip:${getClientIp(req)}`
   const result = await consumeQuota({
-    subjectType: req.user?.userId ? plan : PLAN_FREE,
+    subjectType: req.user?.userId ? plan : 'guest',
     subjectKey,
     action,
     amount: 1,

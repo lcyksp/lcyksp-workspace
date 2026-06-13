@@ -1,4 +1,4 @@
-﻿import path from 'path'
+import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import sqlite3 from 'sqlite3'
@@ -214,6 +214,7 @@ export async function initDb() {
     `UPDATE users
      SET quota_plan = CASE
        WHEN role = 'admin' THEN 'admin'
+       WHEN role = 'pro' THEN 'pro'
        WHEN role = 'premium' THEN 'premium'
        ELSE 'free'
      END

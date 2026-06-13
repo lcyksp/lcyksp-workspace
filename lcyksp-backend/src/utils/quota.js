@@ -2,23 +2,33 @@ import { getDb } from '../config/db.js'
 
 export const ROLE_USER = 'user'
 export const ROLE_PREMIUM = 'premium'
+export const ROLE_PRO = 'pro'
 export const ROLE_ADMIN = 'admin'
 
 export const PLAN_FREE = 'free'
 export const PLAN_PREMIUM = 'premium'
+export const PLAN_PRO = 'pro'
 export const PLAN_ADMIN = 'admin'
 
 export const ACTION_ANALYZE = 'video_analyze'
 export const ACTION_DOWNLOAD = 'video_download'
 
 export const QUOTA_RULES = {
+  guest: {
+    [ACTION_ANALYZE]: { window: 'hour', limit: 2 },
+    [ACTION_DOWNLOAD]: { window: 'hour', limit: 5 },
+  },
   [PLAN_FREE]: {
-    [ACTION_ANALYZE]: { window: 'hour', limit: 8 },
-    [ACTION_DOWNLOAD]: { window: 'hour', limit: 6 },
+    [ACTION_ANALYZE]: { window: 'hour', limit: 5 },
+    [ACTION_DOWNLOAD]: { window: 'hour', limit: 5 },
   },
   [PLAN_PREMIUM]: {
-    [ACTION_ANALYZE]: { window: 'hour', limit: 40 },
-    [ACTION_DOWNLOAD]: { window: 'hour', limit: 30 },
+    [ACTION_ANALYZE]: { window: 'hour', limit: 20 },
+    [ACTION_DOWNLOAD]: { window: 'hour', limit: 40 },
+  },
+  [PLAN_PRO]: {
+    [ACTION_ANALYZE]: { window: 'hour', limit: Number.POSITIVE_INFINITY },
+    [ACTION_DOWNLOAD]: { window: 'hour', limit: Number.POSITIVE_INFINITY },
   },
   [PLAN_ADMIN]: {
     [ACTION_ANALYZE]: { window: 'hour', limit: Number.POSITIVE_INFINITY },
@@ -49,6 +59,7 @@ function dbRun(sql, params = []) {
 
 export function normalizeRole(role) {
   if (role === ROLE_ADMIN) return ROLE_ADMIN
+  if (role === ROLE_PRO) return ROLE_PRO
   if (role === ROLE_PREMIUM) return ROLE_PREMIUM
   return ROLE_USER
 }
@@ -56,6 +67,7 @@ export function normalizeRole(role) {
 export function roleToPlan(role) {
   const normalized = normalizeRole(role)
   if (normalized === ROLE_ADMIN) return PLAN_ADMIN
+  if (normalized === ROLE_PRO) return PLAN_PRO
   if (normalized === ROLE_PREMIUM) return PLAN_PREMIUM
   return PLAN_FREE
 }

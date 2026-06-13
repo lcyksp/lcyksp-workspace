@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -794,9 +794,14 @@ onUnmounted(() => {
 }
 
 .action-row {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
   gap: 10px;
+  align-items: stretch;
+}
+
+.action-row :deep(.el-button) {
+  flex: 1;
+  min-width: 0;
 }
 
 .hint-row {
@@ -1034,7 +1039,7 @@ onUnmounted(() => {
 
 @media (max-width: 900px) {
   .action-row {
-    grid-template-columns: 1fr;
+    flex-direction: column;
   }
 
   .result-header {

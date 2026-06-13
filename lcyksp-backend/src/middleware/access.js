@@ -3,7 +3,7 @@
     return res.status(401).json({ error: '请先登录' })
   }
 
-  if (req.user.role === 'admin' || req.user.role === 'premium') {
+  if (req.user.role === 'admin' || req.user.role === 'premium' || req.user.role === 'pro') {
     return next()
   }
 
@@ -15,7 +15,7 @@ export function requireGalleryAccess(req, res, next) {
     return res.status(401).json({ error: '请先登录' })
   }
 
-  if (req.user.role === 'admin' || req.user.role === 'premium' || req.user.groupId) {
+  if (req.user.role === 'admin' || req.user.role === 'premium' || req.user.role === 'pro' || req.user.groupId) {
     return next()
   }
 

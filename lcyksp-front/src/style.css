@@ -73,6 +73,10 @@ body {
   width: 100%;
 }
 
+body.glass-home-body {
+  background: transparent !important;
+}
+
 a {
   color: inherit;
 }

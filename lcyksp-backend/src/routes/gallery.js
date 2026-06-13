@@ -45,8 +45,8 @@ router.get('/photos', requireAuth, requireGalleryAccess, async (req, res, next) 
     const { userId, role, groupId } = req.user;
     let rows;
 
-    if (role === 'admin') {
-      // 管理员查看全部
+    if (role === 'admin' || role === 'pro') {
+      // 管理员/Pro查看全部
       rows = await new Promise((res, rej) =>
         db.all(
           `SELECT gp.id, gp.file_name, gp.file_size, gp.family_group_id, gp.uploader_id, gp.created_at,
@@ -368,8 +368,8 @@ router.delete('/file/:id', requireAuth, async (req, res, next) => {
 
     const { userId, role } = req.user;
 
-    // 三权分立：admin 或 本人上传 → 允许删除
-    const isAdmin = role === 'admin';
+    // 三权分立：admin/pro 或 本人上传 → 允许删除
+    const isAdmin = role === 'admin' || role === 'pro';
     const isOwner = userId === photo.uploader_id;
 
     if (!isAdmin && !isOwner) {

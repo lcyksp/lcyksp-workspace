@@ -1,5 +1,5 @@
-﻿<script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+<script setup>
+import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
@@ -22,7 +22,11 @@ import {
   ChatDotRound,
 } from '@element-plus/icons-vue'
 import AuthDialog from './components/AuthDialog.vue'
+import VideoBackground from './components/VideoBackground.vue'
 import { getCurrentTheme, resetThemeAuto, setThemeMode } from './main.js'
+
+const GLASS_HOME_KEY = 'lcyksp_glass_home'
+const DESKTOP_BREAKPOINT = 768
 
 const router = useRouter()
 const route = useRoute()
@@ -56,11 +60,26 @@ const feedbackForm = reactive({
 
 const isLoggedIn = computed(() => !!currentUser.value)
 const isAdmin = computed(() => currentUser.value?.role === 'admin')
+const isPremiumOrAdmin = computed(() => {
+  if (!currentUser.value) return false
+  return ['admin', 'premium', 'pro'].includes(currentUser.value.role)
+})
+const isDesktop = ref(typeof window !== 'undefined' ? window.innerWidth >= DESKTOP_BREAKPOINT : true)
+const canUseGlassHome = computed(() => {
+  if (!currentUser.value) return false
+  return ['admin', 'pro'].includes(currentUser.value.role) && isDesktop.value
+})
+const glassHomeMode = ref(localStorage.getItem(GLASS_HOME_KEY) === 'true' && canUseGlassHome.value)
+const showGlassHomeToggle = computed(() => canUseGlassHome.value)
+const isGlassShellActive = computed(() => glassHomeMode.value && canUseGlassHome.value)
+
+provide('glassHomeMode', isGlassShellActive)
 const displayName = computed(() => currentUser.value?.username || '')
 const memberStatusText = computed(() => {
   if (!currentUser.value) return ''
   if (currentUser.value.isBanned) return '已封禁'
   if (currentUser.value.role === 'admin') return '管理员'
+  if (currentUser.value.role === 'pro') return 'Pro 用户'
   if (currentUser.value.role === 'premium') {
     const expiresAt = currentUser.value.premiumExpiresAt
     if (!expiresAt || String(expiresAt).includes('2099')) return '高级用户 | 永久'
@@ -76,6 +95,7 @@ const memberStatusType = computed(() => {
   if (!currentUser.value) return ''
   if (currentUser.value.isBanned) return 'danger'
   if (currentUser.value.role === 'admin') return 'danger'
+  if (currentUser.value.role === 'pro') return 'info'
   if (currentUser.value.role === 'premium') return 'warning'
   return 'success'
 })
@@ -252,7 +272,7 @@ function canAccessPremiumFeature(path) {
   }
 
   if (path === '/recipe') {
-    if (['admin', 'premium'].includes(currentUser.value.role)) {
+    if (['admin', 'premium', 'pro'].includes(currentUser.value.role)) {
       return { allowed: true, message: '' }
     }
     return {
@@ -263,7 +283,7 @@ function canAccessPremiumFeature(path) {
 
   if (path === '/gallery') {
     if (
-      ['admin', 'premium'].includes(currentUser.value.role)
+      ['admin', 'premium', 'pro'].includes(currentUser.value.role)
       || currentUser.value.groupId
     ) {
       return { allowed: true, message: '' }
@@ -391,22 +411,8 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => {
-  loadUserFromStorage()
-  refreshCurrentUser()
-  loadMembershipConfig()
-  syncOpenGroups()
-  currentTheme.value = getCurrentTheme()
-  currentThemeMode.value = localStorage.getItem(THEME_MODE_KEY) || 'auto'
-  window.addEventListener('auth-success', syncUserFromStorage)
-  window.addEventListener('open-support-dialog', handleGlobalSupportDialog)
-  window.addEventListener('open-auth-dialog', handleGlobalAuthDialog)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('auth-success', syncUserFromStorage)
-  window.removeEventListener('open-support-dialog', handleGlobalSupportDialog)
-  window.removeEventListener('open-auth-dialog', handleGlobalAuthDialog)
+watch(canUseGlassHome, () => {
+  syncGlassHomeAvailability()
 })
 
 function handleGlobalSupportDialog(event) {
@@ -416,10 +422,74 @@ function handleGlobalSupportDialog(event) {
 function handleGlobalAuthDialog() {
   authDialogVisible.value = true
 }
+
+function syncDesktopState() {
+  isDesktop.value = window.innerWidth >= DESKTOP_BREAKPOINT
+  syncGlassHomeAvailability()
+}
+
+function syncGlassBodyClass(active) {
+  document.body.classList.toggle('glass-home-body', active)
+}
+
+function toggleGlassHomeMode() {
+  if (!canUseGlassHome.value) return
+
+  glassHomeMode.value = !glassHomeMode.value
+  localStorage.setItem(GLASS_HOME_KEY, String(glassHomeMode.value))
+
+  if (glassHomeMode.value && route.path !== '/') {
+    router.push('/')
+  }
+
+  ElMessage.success(glassHomeMode.value ? '已切换至记忆大厅' : '已恢复经典主页')
+}
+
+function syncGlassHomeAvailability() {
+  if (!canUseGlassHome.value && glassHomeMode.value) {
+    glassHomeMode.value = false
+    localStorage.setItem(GLASS_HOME_KEY, 'false')
+  }
+}
+
+watch(isGlassShellActive, (active) => {
+  syncGlassBodyClass(active)
+}, { immediate: true })
+
+onMounted(async () => {
+  loadUserFromStorage()
+  syncGlassHomeAvailability()
+  await refreshCurrentUser()
+  syncGlassHomeAvailability()
+  loadMembershipConfig()
+  syncOpenGroups()
+  currentTheme.value = getCurrentTheme()
+  currentThemeMode.value = localStorage.getItem(THEME_MODE_KEY) || 'auto'
+  window.addEventListener('auth-success', syncUserFromStorage)
+  window.addEventListener('open-support-dialog', handleGlobalSupportDialog)
+  window.addEventListener('open-auth-dialog', handleGlobalAuthDialog)
+  window.addEventListener('resize', syncDesktopState)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('auth-success', syncUserFromStorage)
+  window.removeEventListener('open-support-dialog', handleGlobalSupportDialog)
+  window.removeEventListener('open-auth-dialog', handleGlobalAuthDialog)
+  window.removeEventListener('resize', syncDesktopState)
+  syncGlassBodyClass(false)
+})
 </script>
 
 <template>
-  <div class="shell" :class="{ 'sidebar-open': !sidebarCollapsed }">
+  <VideoBackground :active="isGlassShellActive" />
+
+  <div
+    class="shell"
+    :class="{
+      'sidebar-open': !sidebarCollapsed,
+      'glass-shell': isGlassShellActive,
+    }"
+  >
     <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="sidebar-header">
         <span class="sidebar-logo" @click="navigateTo('/')">lcyksp</span>
@@ -488,6 +558,18 @@ function handleGlobalAuthDialog() {
         </div>
 
         <div class="top-bar-right">
+          <button
+            v-if="showGlassHomeToggle"
+            type="button"
+            class="glass-home-toggle"
+            :class="{ active: glassHomeMode }"
+            :title="glassHomeMode ? '切换回经典主页' : '切换至记忆大厅'"
+            @click="toggleGlassHomeMode"
+          >
+            <span class="glass-home-toggle__ring" />
+            <el-icon :size="16"><RefreshRight /></el-icon>
+          </button>
+
           <div class="feedback-control">
             <el-button size="small" text class="feedback-btn" title="提交问题反馈" @click="openFeedbackDialog">
               <el-icon :size="18"><ChatDotRound /></el-icon>
@@ -519,7 +601,7 @@ function handleGlobalAuthDialog() {
           </div>
 
           <template v-if="isLoggedIn">
-            <el-tag size="small" effect="dark" :type="memberStatusType" class="member-status-tag">
+            <el-tag size="small" effect="dark" :type="memberStatusType" :class="['member-status-tag', { 'pro-tag': currentUser?.role === 'pro' }]">
               {{ memberStatusText }}
             </el-tag>
             <span class="user-greeting">
@@ -609,12 +691,220 @@ function handleGlobalAuthDialog() {
 
 <style scoped>
 .shell {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: flex;
   background:
     radial-gradient(circle at top right, rgba(64, 158, 255, 0.1), transparent 28%),
     linear-gradient(180deg, var(--bg-deep) 0%, color-mix(in srgb, var(--bg-deep) 92%, var(--accent-blue) 8%) 100%);
   transition: background 0.3s ease;
+}
+
+.shell.glass-shell {
+  background: transparent;
+  --bg-deep: transparent;
+  --bg-card: rgba(255, 255, 255, 0.04);
+  --bg-sidebar: transparent;
+  --bg-ctrl: rgba(255, 255, 255, 0.03);
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.10);
+  --bg-input: rgba(255, 255, 255, 0.04);
+  --bg-canvas: transparent;
+  --border-color: rgba(255, 255, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --text-heading: rgba(255, 255, 255, 0.96);
+  --text-primary: rgba(255, 255, 255, 0.9);
+  --text-secondary: rgba(255, 255, 255, 0.78);
+  --text-muted: rgba(255, 255, 255, 0.62);
+  --text-dim: rgba(255, 255, 255, 0.52);
+}
+
+/* 全透明侧边栏 — 与水珠气泡样式统一 */
+.shell.glass-shell .sidebar {
+  background: transparent;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.shell.glass-shell .sidebar-header {
+  background: transparent;
+  margin: 0 12px;
+  padding: 16px 12px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 22px;
+}
+
+.shell.glass-shell .sidebar-footer {
+  background: transparent;
+  margin: 0 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 18px;
+}
+
+.shell.glass-shell .sidebar-logo {
+  color: rgba(255, 255, 255, 0.96);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  font-weight: 700;
+  font-size: 1.2rem;
+  position: relative;
+  z-index: 1;
+}
+
+/* 水珠菜单项 — 与底部气泡完全一致 */
+.shell.glass-shell .menu-item {
+  position: relative;
+  isolation: isolate;
+  color: rgba(255, 255, 255, 0.88);
+  border-radius: 16px;
+  margin: 3px 10px;
+  padding: 10px 14px;
+  background: transparent;
+  transition: all 0.25s ease;
+  z-index: 0;
+}
+
+.shell.glass-shell .menu-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: radial-gradient(circle at 22% 15%, rgba(255, 255, 255, 0.25), transparent 60%);
+  z-index: -1;
+}
+
+.shell.glass-shell .menu-item:hover {
+  color: #fff;
+}
+
+.shell.glass-shell .menu-item:hover::before {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: radial-gradient(circle at 22% 15%, rgba(255, 255, 255, 0.32), transparent 60%);
+}
+
+.shell.glass-shell .menu-item.active {
+  color: #fff;
+}
+
+.shell.glass-shell .menu-item.active::before {
+  border-color: rgba(255, 255, 255, 0.30);
+  background: radial-gradient(circle at 22% 15%, rgba(255, 255, 255, 0.35), transparent 55%);
+}
+
+.shell.glass-shell .menu-arrow {
+  color: rgba(255, 255, 255, 0.35);
+  position: relative;
+  z-index: 1;
+}
+
+.shell.glass-shell .menu-label,
+.shell.glass-shell .menu-icon {
+  position: relative;
+  z-index: 1;
+}
+
+/* 全透明顶栏 — 与底部气泡样式统一 */
+.shell.glass-shell .top-bar {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  margin: 8px 12px 0;
+  padding: 0 16px;
+  height: 48px;
+  border-radius: 999px;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.shell.glass-shell .main-content {
+  background: transparent;
+}
+
+.shell.glass-shell .breadcrumb,
+.shell.glass-shell .feedback-btn,
+.shell.glass-shell .theme-btn,
+.shell.glass-shell .theme-auto-btn,
+.shell.glass-shell .login-btn,
+.shell.glass-shell .user-greeting,
+.shell.glass-shell .collapse-btn,
+.shell.glass-shell .menu-btn {
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.10);
+  position: relative;
+  z-index: 1;
+}
+
+.shell.glass-shell .feedback-control,
+.shell.glass-shell .theme-control {
+  border-right-color: rgba(255, 255, 255, 0.06);
+}
+
+.shell.glass-shell .theme-auto-pill {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  position: relative;
+  z-index: 1;
+}
+
+.glass-home-toggle {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.96);
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.glass-home-toggle:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.glass-home-toggle.active {
+  color: #fff;
+  background: rgba(64, 158, 255, 0.28);
+}
+
+.glass-home-toggle__ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1px dashed rgba(255, 255, 255, 0.42);
+  animation: glass-toggle-spin 6s linear infinite;
+  pointer-events: none;
+}
+
+.glass-home-toggle.active .glass-home-toggle__ring {
+  border-color: rgba(126, 196, 255, 0.72);
+}
+
+@keyframes glass-toggle-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .sidebar {
@@ -863,6 +1153,12 @@ function handleGlobalAuthDialog() {
   margin-right: 2px;
 }
 
+.pro-tag {
+  background: linear-gradient(135deg, #1a1a2e 0%, #c9a84c 100%) !important;
+  border-color: #c9a84c !important;
+  color: #fff !important;
+}
+
 .login-label {
   margin-left: 4px;
 }
@@ -1095,4 +1391,3 @@ function handleGlobalAuthDialog() {
 
 }
 </style>
-

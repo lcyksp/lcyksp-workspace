@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 const fullText = 'Workspace | 在线工具站'
@@ -99,6 +99,9 @@ onUnmounted(() => {
         <p class="disclaimer">
           本网站仅供个人学习、研究与效率辅助使用，请勿用于商业用途、批量爬取、侵权传播或任何违法违规场景。因用户自行使用本网站产生的任何风险、纠纷或损失，与本站无关。
         </p>
+        <p class="icp-record">
+          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2026075435号-1</a>
+        </p>
       </div>
     </div>
 
@@ -113,7 +116,6 @@ onUnmounted(() => {
         <div class="support-copy">
           <p class="support-copy-single">赏口饭吃谢谢喵</p>
           <p class="support-copy-sub">
-            5 元开通 30 天高级用户，10 元开通 90 天，20 元永久。<br>
             如果是在休息时间赞助，修改用户权限会稍慢一些。
           </p>
         </div>
@@ -249,6 +251,23 @@ onUnmounted(() => {
   opacity: 0.78;
 }
 
+.icp-record {
+  margin: 8px 0 0;
+  font-size: 0.72rem;
+}
+
+.icp-record a {
+  color: var(--text-dim);
+  text-decoration: none;
+  opacity: 0.78;
+  transition: color 0.18s ease, opacity 0.18s ease;
+}
+
+.icp-record a:hover {
+  color: var(--accent-blue);
+  opacity: 1;
+}
+
 .support-dialog {
   display: grid;
   gap: 18px;
@@ -259,7 +278,8 @@ onUnmounted(() => {
 .support-copy {
   width: 100%;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
 }
 
 .support-copy-single {
@@ -347,6 +367,10 @@ onUnmounted(() => {
   }
 
   .disclaimer {
+    font-size: 0.68rem;
+  }
+
+  .icp-record {
     font-size: 0.68rem;
   }
 
