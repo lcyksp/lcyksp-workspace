@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search } from '@element-plus/icons-vue'
@@ -137,7 +137,7 @@ const premiumPresetOptions = [
 ]
 
 const userRoleLabel = computed(() => {
-  return userForm.role === 'admin' ? '管理员' : userForm.role === 'premium' ? '高级用户' : '普通用户'
+  return userForm.role === 'admin' ? '管理员' : userForm.role === 'pro' ? 'Pro 用户' : userForm.role === 'premium' ? '高级用户' : '普通用户'
 })
 
 const membershipCardStats = computed(() => {
@@ -749,12 +749,14 @@ function isExpired(value) {
 
 function roleTagType(role) {
   if (role === 'admin') return 'danger'
+  if (role === 'pro') return 'info'
   if (role === 'premium') return 'warning'
   return 'success'
 }
 
 function roleLabel(role) {
   if (role === 'admin') return '管理员'
+  if (role === 'pro') return 'Pro 用户'
   if (role === 'premium') return '高级用户'
   return '普通用户'
 }
@@ -787,6 +789,11 @@ function buildFutureIso(days) {
 async function quickSetPremium(user, preset) {
   if (user.role === 'admin') {
     ElMessage.warning('不能在这里修改其他管理员')
+    return
+  }
+
+  if (user.role === 'pro' && preset !== 'normal') {
+    ElMessage.warning('Pro 用户请通过编辑弹窗修改角色')
     return
   }
 
@@ -832,6 +839,16 @@ async function quickSetPremium(user, preset) {
       isBanned: false,
       bannedReason: '',
     }, '已恢复为普通用户')
+    return
+  }
+
+  if (preset === 'pro') {
+    await quickUpdateUser(user, {
+      role: 'pro',
+      premiumExpiresAt: null,
+      isBanned: false,
+      bannedReason: '',
+    }, '已设为 Pro 用户')
     return
   }
 
@@ -1029,7 +1046,7 @@ onMounted(() => {
               <el-table-column prop="username" label="用户名" min-width="160" />
               <el-table-column label="角色" width="110">
                 <template #default="{ row }">
-                  <el-tag :type="roleTagType(row.role)" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
+                  <el-tag :type="roleTagType(row.role)" :class="{ 'pro-tag': row.role === 'pro' }" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
                 </template>
               </el-table-column>
               <el-table-column label="高级用户到期" width="180">
@@ -1084,6 +1101,7 @@ onMounted(() => {
                       <el-option label="高级用户 30 天" value="30d" />
                       <el-option label="高级用户 永久" value="permanent" />
                       <el-option label="高级用户 自定义天数" value="custom" />
+                      <el-option label="设为 Pro 用户" value="pro" />
                       <el-option v-if="row.is_banned" label="解除封禁" value="unban" />
                       <el-option v-else label="封禁用户" value="ban" />
                     </el-select>
@@ -1101,7 +1119,7 @@ onMounted(() => {
                 <h4>{{ row.username }}</h4>
                 <span class="mobile-admin-sub">ID {{ row.id }}</span>
               </div>
-              <el-tag :type="roleTagType(row.role)" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
+              <el-tag :type="roleTagType(row.role)" :class="{ 'pro-tag': row.role === 'pro' }" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
             </div>
             <dl class="mobile-admin-meta">
               <div>
@@ -1147,6 +1165,7 @@ onMounted(() => {
                 <el-option label="高级用户 30 天" value="30d" />
                 <el-option label="高级用户 永久" value="permanent" />
                 <el-option label="高级用户 自定义天数" value="custom" />
+                <el-option label="设为 Pro 用户" value="pro" />
                 <el-option v-if="row.is_banned" label="解除封禁" value="unban" />
                 <el-option v-else label="封禁用户" value="ban" />
               </el-select>
@@ -1487,6 +1506,7 @@ onMounted(() => {
           <el-radio-group v-model="userForm.role">
             <el-radio value="user">普通用户</el-radio>
             <el-radio value="premium">高级用户</el-radio>
+            <el-radio value="pro">Pro 用户</el-radio>
             <el-radio value="admin">管理员</el-radio>
           </el-radio-group>
         </el-form-item>
@@ -2223,5 +2243,11 @@ onMounted(() => {
     padding: 14px;
     border-radius: 14px;
   }
+}
+
+.pro-tag {
+  background: linear-gradient(135deg, #1a1a2e 0%, #c9a84c 100%) !important;
+  border-color: #c9a84c !important;
+  color: #fff !important;
 }
 </style>

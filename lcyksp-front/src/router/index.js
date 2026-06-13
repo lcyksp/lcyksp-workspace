@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import HomeView from '../views/HomeView.vue'
+import HomePageView from '../views/HomePageView.vue'
 import TransmitView from '../views/TransmitView.vue'
 import CompressView from '../views/CompressView.vue'
 import ConvertView from '../views/ConvertView.vue'
@@ -37,7 +37,7 @@ function canAccessGallery(user) {
 }
 
 const routes = [
-  { path: '/', name: 'home', component: HomeView },
+  { path: '/', name: 'home', component: HomePageView },
   { path: '/transmit', name: 'transmit', component: TransmitView },
   { path: '/transmit/:id', name: 'receive', component: ReceiveView },
   { path: '/compress', name: 'compress', component: CompressView },
