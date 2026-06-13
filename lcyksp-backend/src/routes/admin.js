@@ -250,8 +250,8 @@ router.post('/users', async function (req, res, next) {
     }
 
     var hashed = await bcrypt.hash(password, SALT_ROUNDS);
-    var userRole = role === 'admin' ? 'admin' : role === 'premium' ? 'premium' : 'user';
-    var quotaPlan = userRole === 'admin' ? 'admin' : userRole === 'premium' ? 'premium' : 'free';
+    var userRole = role === 'admin' ? 'admin' : role === 'pro' ? 'pro' : role === 'premium' ? 'premium' : 'user';
+    var quotaPlan = userRole === 'admin' ? 'admin' : userRole === 'pro' ? 'pro' : userRole === 'premium' ? 'premium' : 'free';
     if (userRole === 'premium' && premiumExpiresAt && Number.isNaN(new Date(premiumExpiresAt).getTime())) {
       return res.status(400).json({ error: '??????????' });
     }
@@ -306,8 +306,8 @@ router.put('/users/:id', async function (req, res, next) {
     }
 
     if (role !== undefined) {
-      var nextRole = role === 'admin' ? 'admin' : role === 'premium' ? 'premium' : 'user';
-      var nextQuotaPlan = nextRole === 'admin' ? 'admin' : nextRole === 'premium' ? 'premium' : 'free';
+      var nextRole = role === 'admin' ? 'admin' : role === 'pro' ? 'pro' : role === 'premium' ? 'premium' : 'user';
+      var nextQuotaPlan = nextRole === 'admin' ? 'admin' : nextRole === 'pro' ? 'pro' : nextRole === 'premium' ? 'premium' : 'free';
       setClauses.push('role = ?');
       params.push(nextRole);
       setClauses.push('quota_plan = ?');
