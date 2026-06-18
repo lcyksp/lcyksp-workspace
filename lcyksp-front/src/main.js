@@ -1,4 +1,4 @@
-﻿import { createApp } from 'vue'
+import { createApp } from 'vue'
 import ElementPlus from 'element-plus'
 import { ElMessage } from 'element-plus'
 import 'element-plus/dist/index.css'
@@ -13,7 +13,7 @@ const THEME_KEY = 'lcyksp_theme'
 const THEME_LOCK_KEY = 'lcyksp_theme_locked'
 const THEME_MODE_KEY = 'lcyksp_theme_mode'
 
-axios.defaults.baseURL = 'http://47.106.101.81:3000'
+axios.defaults.baseURL = import.meta.env.PROD ? '' : 'http://localhost:3000'
 axios.defaults.timeout = 120000
 
 axios.interceptors.request.use(

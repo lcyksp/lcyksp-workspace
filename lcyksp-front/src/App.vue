@@ -137,6 +137,8 @@ const menuItems = reactive([
       { name: '格式转换', path: '/convert' },
       { name: '像素画转换', path: '/pixel-art' },
       { name: '图片解混淆', path: '/obfuscate' },
+      { name: '水印生成器', path: '/watermark' },
+      { name: '图片无损放大', path: '/image-upscale' },
     ],
     isOpen: false,
   },
@@ -145,14 +147,23 @@ const menuItems = reactive([
     icon: Upload,
     children: [
       { name: '文件闪传', path: '/transmit' },
-      { name: 'PDF合并', path: '/pdf-merge' },
-      { name: 'PDF拆分', path: '/pdf-split' },
-      { name: '图片转PDF', path: '/img-to-pdf' },
-      { name: 'PDF转图片', path: '/pdf-to-img' },
-      { name: 'PDF提取文本', path: '/pdf-extract-text' },
-      { name: 'PDF页面编辑', path: '/pdf-page-editor' },
-      { name: 'PDF水印', path: '/pdf-watermark' },
-      { name: 'PDF签名', path: '/pdf-sign' },
+      {
+        name: 'PDF 助手',
+        isFolder: true,
+        isOpen: false,
+        children: [
+          { name: 'PDF合并', path: '/pdf-merge' },
+          { name: 'PDF拆分', path: '/pdf-split' },
+          { name: '图片转PDF', path: '/img-to-pdf' },
+          { name: 'PDF转图片', path: '/pdf-to-img' },
+          { name: 'PDF提取文本', path: '/pdf-extract-text' },
+          { name: 'PDF页面编辑', path: '/pdf-page-editor' },
+          { name: 'PDF水印', path: '/pdf-watermark' },
+          { name: 'PDF签名', path: '/pdf-sign' },
+          { name: 'PDF转Word', path: '/pdf-to-word' },
+        ],
+      },
+      { name: '在线压缩解压', path: '/zip-tool' },
     ],
     isOpen: false,
   },
@@ -163,6 +174,14 @@ const menuItems = reactive([
       { name: '赛博菜谱', path: '/recipe' },
       { name: '共享相册', path: '/gallery' },
       { name: '音视频下载', path: '/video-download' },
+      { name: '电视剧/电影观看', path: '/tv-download' },
+      { name: '屏幕录制', path: '/screen-recording' },
+      { name: '在线PS', path: '/photopea' },
+      { name: 'IP归属地查询', path: '/ip-lookup' },
+      { name: '证件照制作', path: '/id-photo' },
+      { name: '系统更新模拟', path: '/win-update' },
+      { name: '随机小助手', path: '/roll-call' },
+      { name: '气象数据查询', path: '/weather' },
     ],
     isOpen: false,
   },
@@ -322,14 +341,37 @@ function handleMenuNavigate(path) {
 
 function isActive(item) {
   if (item.path) return activePath.value === item.path
-  if (item.children?.length) return item.children.some((child) => child.path === activePath.value)
+  if (item.children?.length) {
+    return item.children.some((child) => {
+      if (child.isFolder) {
+        return child.children?.some((sub) => sub.path === activePath.value)
+      }
+      return child.path === activePath.value
+    })
+  }
   return false
+}
+
+function isSubFolderActive(folder) {
+  return folder.children?.some((sub) => sub.path === activePath.value) || false
 }
 
 function syncOpenGroups() {
   menuItems.forEach((group) => {
     if (group.children?.length) {
-      group.isOpen = group.children.some((child) => child.path === activePath.value)
+      let groupActive = false
+      group.children.forEach((child) => {
+        if (child.isFolder) {
+          const folderActive = child.children?.some((sub) => sub.path === activePath.value)
+          if (folderActive) {
+            child.isOpen = true
+            groupActive = true
+          }
+        } else if (child.path === activePath.value) {
+          groupActive = true
+        }
+      })
+      group.isOpen = groupActive
     }
   })
 }
@@ -517,16 +559,45 @@ onUnmounted(() => {
 
           <transition name="slide">
             <div v-if="group.isOpen" class="submenu">
-              <div
-                v-for="child in group.children"
-                :key="child.name"
-                class="menu-item submenu-item"
-                :class="{ active: activePath === child.path, disabled: child.disabled }"
-                @click="!child.disabled && handleMenuNavigate(child.path)"
-              >
-                <span class="menu-label">{{ child.name }}</span>
-                <span v-if="child.disabled" class="menu-badge">即将上线</span>
-              </div>
+              <template v-for="child in group.children" :key="child.name">
+                <!-- Subfolder Mode -->
+                <template v-if="child.isFolder">
+                  <div
+                    class="menu-item submenu-item folder-header"
+                    :class="{ active: isSubFolderActive(child) }"
+                    @click="child.isOpen = !child.isOpen"
+                  >
+                    <span class="menu-label">{{ child.name }}</span>
+                    <span class="menu-arrow" :class="{ rotated: child.isOpen }">
+                      <el-icon :size="12"><ArrowDown /></el-icon>
+                    </span>
+                  </div>
+                  <transition name="slide">
+                    <div v-if="child.isOpen" class="sub-submenu">
+                      <div
+                        v-for="subChild in child.children"
+                        :key="subChild.name"
+                        class="menu-item sub-submenu-item"
+                        :class="{ active: activePath === subChild.path, disabled: subChild.disabled }"
+                        @click="!subChild.disabled && handleMenuNavigate(subChild.path)"
+                      >
+                        <span class="menu-label">{{ subChild.name }}</span>
+                        <span v-if="subChild.disabled" class="menu-badge">即将上线</span>
+                      </div>
+                    </div>
+                  </transition>
+                </template>
+                <!-- Standard Submenu Item Mode -->
+                <div
+                  v-else
+                  class="menu-item submenu-item"
+                  :class="{ active: activePath === child.path, disabled: child.disabled }"
+                  @click="!child.disabled && handleMenuNavigate(child.path)"
+                >
+                  <span class="menu-label">{{ child.name }}</span>
+                  <span v-if="child.disabled" class="menu-badge">即将上线</span>
+                </div>
+              </template>
             </div>
           </transition>
         </div>

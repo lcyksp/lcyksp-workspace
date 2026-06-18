@@ -173,10 +173,18 @@ router.delete('/files/:code', async function (req, res, next) {
       return res.status(404).json({ error: '记录不存在' });
     }
 
-    fs.unlink(record.file_path, function (unlinkErr) {
-      if (unlinkErr && unlinkErr.code !== 'ENOENT') {
-        console.error('[管理员] 删除文件失败:', record.file_path, unlinkErr.message);
-      }
+    let paths = [];
+    try {
+      paths = JSON.parse(record.file_path);
+    } catch {
+      paths = [record.file_path];
+    }
+    paths.forEach(function (fp) {
+      fs.unlink(fp, function (unlinkErr) {
+        if (unlinkErr && unlinkErr.code !== 'ENOENT') {
+          console.error('[管理员] 删除文件失败:', fp, unlinkErr.message);
+        }
+      });
     });
 
     await new Promise(function (resolve, reject) {

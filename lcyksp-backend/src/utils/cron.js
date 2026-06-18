@@ -19,6 +19,13 @@ async function cleanExpiredRecords() {
 
   const now = new Date().toISOString();
 
+  // 清理 7 天前的下载日志
+  db.run("DELETE FROM download_logs WHERE created_at < datetime('now', '-7 days')", (err) => {
+    if (err) {
+      console.error('[清道夫] 清理 7 天前下载日志失败:', err.message);
+    }
+  });
+
   db.all('SELECT id, file_path FROM transfers WHERE expire_time < ?', [now], (err, rows) => {
     if (err) {
       console.error('[清道夫] 查询过期记录失败:', err.message);
@@ -31,12 +38,20 @@ async function cleanExpiredRecords() {
     let errorCount = 0;
 
     rows.forEach((record) => {
-      // 物理删除文件
-      fs.unlink(record.file_path, (unlinkErr) => {
-        if (unlinkErr && unlinkErr.code !== 'ENOENT') {
-          console.error(`[清道夫] 删除文件失败: ${record.file_path}`, unlinkErr.message);
-          errorCount++;
-        }
+      // 物理删除文件（兼容 JSON 数组和单文件字符串）
+      let paths = [];
+      try {
+        paths = JSON.parse(record.file_path);
+      } catch {
+        paths = [record.file_path];
+      }
+      paths.forEach((fp) => {
+        fs.unlink(fp, (unlinkErr) => {
+          if (unlinkErr && unlinkErr.code !== 'ENOENT') {
+            console.error(`[清道夫] 删除文件失败: ${fp}`, unlinkErr.message);
+            errorCount++;
+          }
+        });
       });
 
       // 删除数据库记录

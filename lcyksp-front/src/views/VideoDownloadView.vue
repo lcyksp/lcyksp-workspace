@@ -1,8 +1,8 @@
 <script setup>
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download, Headset, Loading, Picture, VideoCamera } from '@element-plus/icons-vue'
+import { Download, Headset, Loading, Picture, VideoCamera, QuestionFilled } from '@element-plus/icons-vue'
 
 const uiText = {
   pageTitle: '\u97f3\u89c6\u9891\u4e0b\u8f7d',
@@ -48,6 +48,83 @@ const downloading = ref(false)
 const imageSourceSelections = ref({})
 const selectedImageRouteIndex = ref('0')
 const selectedVideoRouteUrl = ref('')
+
+const isLoggedIn = ref(false)
+const customCookie = ref('')
+const saveToCloud = ref(false)
+
+async function fetchCloudCookie() {
+  try {
+    const res = await axios.get('/api/video/cookie')
+    if (res.data?.success && res.data.cookieJson) {
+      customCookie.value = res.data.cookieJson
+      saveToCloud.value = true
+    }
+  } catch (err) {
+    console.error('获取云端Cookie失败', err)
+  }
+}
+
+async function handleSaveToCloudChange(val) {
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录后再保存 Cookie 到云端')
+    saveToCloud.value = false
+    return
+  }
+  if (val) {
+    if (!customCookie.value.trim()) {
+      ElMessage.warning('Cookie 内容为空，无法保存')
+      saveToCloud.value = false
+      return
+    }
+    try {
+      JSON.parse(customCookie.value.trim())
+    } catch (e) {
+      ElMessage.error('Cookie 格式错误，必须是有效的 JSON 数组')
+      saveToCloud.value = false
+      return
+    }
+    await saveCookieToCloud()
+  } else {
+    await deleteCookieFromCloud()
+  }
+}
+
+async function saveCookieToCloud() {
+  try {
+    const res = await axios.post('/api/video/cookie', {
+      cookieJson: customCookie.value.trim()
+    })
+    if (res.data?.success) {
+      ElMessage.success('Cookie 已保存至云端并与您的账号绑定')
+    } else {
+      ElMessage.error(res.data?.message || '保存失败')
+      saveToCloud.value = false
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || err.message || '保存失败')
+    saveToCloud.value = false
+  }
+}
+
+async function deleteCookieFromCloud() {
+  try {
+    const res = await axios.delete('/api/video/cookie')
+    if (res.data?.success) {
+      ElMessage.success('已清除云端绑定的 Cookie')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || err.message || '清除失败')
+    saveToCloud.value = true
+  }
+}
+
+onMounted(async () => {
+  isLoggedIn.value = !!localStorage.getItem('lcyksp_token')
+  if (isLoggedIn.value) {
+    await fetchCloudCookie()
+  }
+})
 
 function isQuotaExceededMessage(message) {
   return /免费解析\/下载次数已用完|额度已用完/.test(String(message || ''))
@@ -201,6 +278,7 @@ async function handleAnalyzeLink() {
   try {
     const res = await axios.post('/api/video/analyze', {
       url: videoUrl.value.trim(),
+      customCookie: customCookie.value.trim() || undefined,
     })
 
     if (!res.data?.success) {
@@ -328,6 +406,7 @@ async function handleDownloadSelected() {
           : (meta.directUrl || videoInfo.value.directPreviewUrl || ''),
       browserAudioUrl: meta.audioUrl || '',
       source: videoInfo.value.source || 'yt-dlp',
+      customCookie: customCookie.value.trim() || undefined,
     }
     await downloadByPayload(payload, fallbackName)
 
@@ -365,6 +444,7 @@ async function handleDownloadAllImages() {
           title: `${videoInfo.value.title || 'download'}_${item.quality}`,
           browserDirectUrl: imageSourceSelections.value[item.formatId] || item.directUrl || '',
           source: videoInfo.value.source || 'yt-dlp',
+          customCookie: customCookie.value.trim() || undefined,
         },
         `${videoInfo.value.title || 'download'}_${item.quality}.jpg`,
       )
@@ -419,6 +499,50 @@ onUnmounted(() => {
             >
               {{ loading ? uiText.analyzing : uiText.startAnalyze }}
             </el-button>
+          </div>
+
+          <!-- 自定义 Cookie 配置 -->
+          <div class="cookie-config-section">
+            <el-collapse>
+              <el-collapse-item name="cookie">
+                <template #title>
+                  <span class="cookie-collapse-title">
+                    自定义 Cookie (免额度解析/下载)
+                    <el-tooltip placement="top" raw-content>
+                      <template #content>
+                        <div style="line-height: 1.6; max-width: 320px;">
+                          <strong>使用说明：</strong><br/>
+                          1. 浏览器安装 <strong>Cookie-Editor</strong> 插件。<br/>
+                          2. 登录 B站 (bilibili.com) 或 抖音 (douyin.com)。<br/>
+                          3. 点击插件，点击右下角 <strong>Export -> JSON</strong> 导出为 JSON 格式。<br/>
+                          4. 粘贴到下方文本框内。<br/>
+                          5. <strong>额度说明：</strong>使用您自己的 Cookie 解析/下载<strong>不计入免费额度</strong>，使用本站 Cookie 将扣除解析额度。
+                        </div>
+                      </template>
+                      <el-icon class="help-icon" style="margin-left: 4px; vertical-align: middle;"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
+                </template>
+                <div class="cookie-panel-content">
+                  <el-input
+                    v-model="customCookie"
+                    type="textarea"
+                    :rows="4"
+                    placeholder='粘贴 Cookie-Editor 导出的 JSON 格式 Cookie，形如：[{"domain": ".bilibili.com", "name": "SESSDATA", ...}]'
+                    class="cookie-textarea"
+                  />
+                  <div class="cookie-actions">
+                    <el-switch
+                      v-model="saveToCloud"
+                      active-text="储存 Cookie 到云端"
+                      :disabled="!isLoggedIn"
+                      @change="handleSaveToCloudChange"
+                    />
+                    <span v-if="!isLoggedIn" class="login-tip">请先登录以保存到云端</span>
+                  </div>
+                </div>
+              </el-collapse-item>
+            </el-collapse>
           </div>
         </div>
 
@@ -804,6 +928,10 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.action-row :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
 .hint-row {
   display: flex;
   align-items: center;
@@ -1112,6 +1240,89 @@ onUnmounted(() => {
   .album-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+.cookie-config-section {
+  margin-top: 18px;
+  border-top: 1px dashed var(--border-color);
+  padding-top: 14px;
+}
+
+.cookie-config-section :deep(.el-collapse) {
+  border: none;
+}
+
+.cookie-config-section :deep(.el-collapse-item__header) {
+  background: transparent;
+  color: var(--text-heading);
+  border: none;
+  font-size: 0.88rem;
+  height: 36px;
+}
+
+.cookie-config-section :deep(.el-collapse-item__wrap) {
+  background: transparent;
+  border: none;
+}
+
+.cookie-config-section :deep(.el-collapse-item__content) {
+  padding: 8px 0 0;
+  color: var(--text-secondary);
+}
+
+.cookie-collapse-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  cursor: pointer;
+}
+
+.cookie-collapse-title:hover {
+  opacity: 0.85;
+}
+
+.help-icon {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.cookie-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cookie-textarea :deep(.el-textarea__inner) {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 8px;
+  font-family: monospace;
+  font-size: 0.82rem;
+}
+
+.cookie-textarea :deep(.el-textarea__inner:focus) {
+  border-color: var(--accent-blue);
+}
+
+.cookie-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cookie-actions :deep(.el-switch__label) {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.login-tip {
+  font-size: 0.78rem;
+  color: var(--accent-gold);
 }
 </style>
 

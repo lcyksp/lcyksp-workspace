@@ -1,14 +1,17 @@
 <script setup>
 /**
- * TransmitBox.vue — 完全体临时文件闪传组件
- * 拖拽上传 + 高级安全选项 + 一键复制取件码
+ * TransmitBox.vue — 临时文件闪传与分享管理组件
+ * 支持拖拽上传、安全选项、自动销毁、分享历史管理、取件码自定义及物理销毁
  */
-import { ref, reactive } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, reactive, onMounted, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { UploadFilled, Link, CopyDocument, Delete, Edit, Document, Lock } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { copyToClipboard } from '../utils/clipboard.js'
+import { formatSize } from '../utils/format.js'
 
 // ---------- 状态 ----------
+const activeTab = ref('upload')
 const files = ref([])
 const uploading = ref(false)
 const dialogVisible = ref(false)
@@ -32,9 +35,97 @@ const expireOptions = [
   { label: '🔒 永久有效（不自动销毁）', value: 'permanent' },
 ]
 
+// 历史记录状态
+const isLoggedIn = ref(false)
+const historyList = ref([])
+const loadingHistory = ref(false)
+
+function checkLoginState() {
+  isLoggedIn.value = !!localStorage.getItem('lcyksp_token')
+}
+
+// ---------- 监听 Tab 切换 ----------
+watch(activeTab, (newTab) => {
+  checkLoginState()
+  if (newTab === 'history' && isLoggedIn.value) {
+    fetchHistory()
+  }
+})
+
+onMounted(() => {
+  checkLoginState()
+  // 监听可能的登录成功事件，同步状态
+  window.addEventListener('login-success', checkLoginState)
+})
+
+// ---------- 获取分享历史 ----------
+async function fetchHistory() {
+  loadingHistory.value = true
+  try {
+    const res = await axios.get('/api/transmit/history')
+    historyList.value = res.data.history || []
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || '获取历史分享失败')
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+// ---------- 修改提取码 ----------
+function handleEditCode(row) {
+  ElMessageBox.prompt('请输入新的 4-16 位提取码（仅限大写字母和数字，排除 0/1/I/O）', '修改提取码', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    inputValue: row.code,
+    inputPattern: /^[a-zA-Z2-9]{4,16}$/,
+    inputErrorMessage: '提取码应为 4-16 位字母或数字（不包含 0/1/I/O）'
+  }).then(async ({ value }) => {
+    try {
+      const res = await axios.post('/api/transmit/update-code', {
+        oldCode: row.code,
+        newCode: value
+      })
+      ElMessage.success(res.data.message || '提取码修改成功')
+      fetchHistory()
+    } catch (err) {
+      ElMessage.error(err.response?.data?.error || '修改失败')
+    }
+  }).catch(() => {})
+}
+
+// ---------- 删除分享记录 ----------
+function handleDelete(row) {
+  ElMessageBox.confirm('确定要删除这个分享吗？物理文件也将被立即从服务器永久删除！', '物理销毁确认', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    try {
+      const res = await axios.delete('/api/transmit/delete/' + row.code)
+      ElMessage.success(res.data.message || '分享已成功删除')
+      fetchHistory()
+    } catch (err) {
+      ElMessage.error(err.response?.data?.error || '删除失败')
+    }
+  }).catch(() => {})
+}
+
+// ---------- 复制辅助 ----------
+async function copyRowCode(code) {
+  const ok = await copyToClipboard(code)
+  if (ok) ElMessage.success('提取码已复制')
+  else ElMessage.warning('复制失败')
+}
+
+async function copyRowLink(code) {
+  const url = `${window.location.origin}/transmit/${code}`
+  const ok = await copyToClipboard(url)
+  if (ok) ElMessage.success('提取链接已复制')
+  else ElMessage.warning('复制失败')
+}
+
 // ---------- 文件变更 ----------
 function handleFileChange(uploadFile) {
-  // 总大小校验
   const newFiles = uploadFile.raw ? [...files.value, uploadFile.raw] : files.value
   const totalSize = newFiles.reduce((sum, f) => sum + (f.size || 0), 0)
   if (totalSize > 2 * 1024 * 1024 * 1024) {
@@ -63,12 +154,17 @@ function handleExceed() {
 
 // ---------- 上传 ----------
 async function handleUpload() {
+  checkLoginState()
+  if (!isLoggedIn.value) {
+    ElMessage.warning('请先登录账号，只有登录用户才能上传文件！')
+    return
+  }
+
   if (files.value.length === 0) {
     ElMessage.warning('请先选择文件')
     return
   }
 
-  // 最终总大小校验
   const totalSize = files.value.reduce((sum, f) => sum + (f.size || 0), 0)
   if (totalSize > 2 * 1024 * 1024 * 1024) {
     ElMessage({
@@ -101,13 +197,12 @@ async function handleUpload() {
     ElMessage.success('闪传链接已生成！')
     files.value = []
   } catch (err) {
-    console.error('上传失败:', err)
+    ElMessage.error(err.response?.data?.error || '上传并创建链接失败')
   } finally {
     uploading.value = false
   }
 }
 
-// ---------- 一键复制（带兼容降级）----------
 async function copyLink() {
   const ok = await copyToClipboard(result.url)
   if (ok) {
@@ -116,79 +211,178 @@ async function copyLink() {
     ElMessage.warning('复制失败，请手动复制')
   }
 }
+
+function formatTime(isoStr) {
+  if (!isoStr) return '-'
+  if (String(isoStr).includes('2099')) return '永久有效'
+  try {
+    const d = new Date(isoStr)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  } catch {
+    return isoStr
+  }
+}
 </script>
 
 <template>
   <div class="transmit-box">
-    <!-- 拖拽上传区域 -->
-    <el-upload
-      drag
-      multiple
-      :auto-upload="false"
-      :show-file-list="true"
-      :on-change="handleFileChange"
-      :on-remove="handleRemove"
-      :on-exceed="handleExceed"
-      :limit="5"
-      :file-list="files"
-    >
-      <el-icon class="upload-icon" :size="48"><UploadFilled /></el-icon>
-      <div class="upload-text">
-        拖拽文件到此处，或 <em>点击选择</em>
-      </div>
-      <template #tip>
-        <div class="upload-tip">最多 5 个文件，总大小不超过 2GB</div>
-      </template>
-    </el-upload>
+    <el-tabs v-model="activeTab" class="custom-tabs">
+      <!-- Upload Tab -->
+      <el-tab-pane label="📤 上传文件" name="upload">
+        <div class="tab-pane-content">
+          <!-- Not Logged In Tip -->
+          <div v-if="!isLoggedIn" class="login-prompt">
+            <el-icon :size="32" color="#e6a23c"><Lock /></el-icon>
+            <p>请先在页面右上角登录，只有登录用户才能上传分享文件。</p>
+          </div>
 
-    <!-- 高级安全选项（折叠面板） -->
-    <el-collapse class="security-panel" accordion>
-      <el-collapse-item title="🔒 高级安全选项" name="security">
-        <el-form label-position="top" size="small">
-          <el-form-item label="访问密码（留空则公开下载）">
-            <el-input
-              v-model="security.password"
-              type="password"
-              show-password
-              placeholder="留空则公开下载"
-              clearable
-            />
-          </el-form-item>
-          <el-form-item label="下载次数限制">
-            <el-input-number
-              v-model="security.maxDownloads"
-              :min="0"
-              :max="100"
-              :step="1"
-            />
-            <span class="form-hint">次（0 或空 = 不限次数, 1 = 阅后即焚）</span>
-          </el-form-item>
-          <el-form-item label="到期自动销毁">
-            <el-select v-model="security.expireTime" style="width: 100%">
-              <el-option
-                v-for="opt in expireOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </el-select>
-          </el-form-item>
-        </el-form>
-      </el-collapse-item>
-    </el-collapse>
+          <template v-else>
+            <!-- 拖拽上传区域 -->
+            <el-upload
+              drag
+              multiple
+              :auto-upload="false"
+              :show-file-list="true"
+              :on-change="handleFileChange"
+              :on-remove="handleRemove"
+              :on-exceed="handleExceed"
+              :limit="5"
+              :file-list="files"
+            >
+              <el-icon class="upload-icon" :size="48"><UploadFilled /></el-icon>
+              <div class="upload-text">
+                拖拽文件到此处，或 <em>点击选择</em>
+              </div>
+              <template #tip>
+                <div class="upload-tip">最多 5 个文件，总大小不超过 2GB</div>
+              </template>
+            </el-upload>
 
-    <!-- 生成按钮 -->
-    <el-button
-      type="primary"
-      size="large"
-      :loading="uploading"
-      :disabled="files.length === 0"
-      class="submit-btn"
-      @click="handleUpload"
-    >
-      <el-icon><Link /></el-icon>
-      {{ uploading ? '生成中…' : '生成闪传链接' }}
-    </el-button>
+            <!-- 高级安全选项（折叠面板） -->
+            <el-collapse class="security-panel" accordion>
+              <el-collapse-item title="🔒 高级安全选项" name="security">
+                <el-form label-position="top" size="small">
+                  <el-form-item label="访问密码（留空则公开下载）">
+                    <el-input
+                      v-model="security.password"
+                      type="password"
+                      show-password
+                      placeholder="留空则公开下载"
+                      clearable
+                    />
+                  </el-form-item>
+                  <el-form-item label="下载次数限制">
+                    <el-input-number
+                      v-model="security.maxDownloads"
+                      :min="0"
+                      :max="100"
+                      :step="1"
+                    />
+                    <span class="form-hint">次（0 或空 = 不限次数, 1 = 阅后即焚）</span>
+                  </el-form-item>
+                  <el-form-item label="到期自动销毁">
+                    <el-select v-model="security.expireTime" style="width: 100%">
+                      <el-option
+                        v-for="opt in expireOptions"
+                        :key="opt.value"
+                        :label="opt.label"
+                        :value="opt.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-form>
+              </el-collapse-item>
+            </el-collapse>
+
+            <!-- 生成按钮 -->
+            <el-button
+              type="primary"
+              size="large"
+              :loading="uploading"
+              :disabled="files.length === 0"
+              class="submit-btn"
+              @click="handleUpload"
+            >
+              <el-icon><Link /></el-icon>
+              {{ uploading ? '生成中…' : '生成闪传链接' }}
+            </el-button>
+          </template>
+        </div>
+      </el-tab-pane>
+
+      <!-- History Tab -->
+      <el-tab-pane label="📜 我的分享历史" name="history">
+        <div class="tab-pane-content">
+          <div v-if="!isLoggedIn" class="login-prompt">
+            <el-icon :size="32" color="#e6a23c"><Lock /></el-icon>
+            <p>请先登录您的账号以管理您的分享记录。</p>
+          </div>
+
+          <div v-else v-loading="loadingHistory" class="history-container">
+            <div v-if="historyList.length === 0" class="empty-history">
+              <el-icon :size="40" color="#555"><Document /></el-icon>
+              <p>暂无任何分享记录</p>
+            </div>
+
+            <div v-else class="history-list">
+              <div v-for="item in historyList" :key="item.code" class="history-item" :class="{ 'is-expired': item.isExpired }">
+                <div class="item-header">
+                  <span class="item-code" @click="copyRowCode(item.code)">
+                    提取码: <strong>{{ item.code }}</strong>
+                    <el-icon class="copy-icon"><CopyDocument /></el-icon>
+                  </span>
+                  <el-tag :type="item.isExpired ? 'danger' : 'success'" size="small">
+                    {{ item.isExpired ? '已失效' : '有效' }}
+                  </el-tag>
+                </div>
+
+                <div class="item-body">
+                  <div class="item-files">
+                    <div v-for="(name, idx) in item.fileNames" :key="idx" class="filename-row">
+                      📄 {{ name }}
+                    </div>
+                  </div>
+                  <div class="item-meta">
+                    <div>大小: {{ formatSize(item.totalSize) }}</div>
+                    <div>下载次数: {{ getDownloadsStr(item) }}</div>
+                    <div>过期时间: {{ formatTime(item.expireTime) }}</div>
+                  </div>
+                </div>
+
+                <div class="item-actions">
+                  <el-button
+                    type="primary"
+                    size="small"
+                    text
+                    :disabled="item.isExpired"
+                    @click="copyRowLink(item.code)"
+                  >
+                    <el-icon><Link /></el-icon>复制链接
+                  </el-button>
+                  <el-button
+                    type="warning"
+                    size="small"
+                    text
+                    :disabled="item.isExpired"
+                    @click="handleEditCode(item)"
+                  >
+                    <el-icon><Edit /></el-icon>修改提取码
+                  </el-button>
+                  <el-button
+                    type="danger"
+                    size="small"
+                    text
+                    @click="handleDelete(item)"
+                  >
+                    <el-icon><Delete /></el-icon>删除
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- 结果弹窗 -->
     <el-dialog
@@ -224,6 +418,35 @@ async function copyLink() {
   gap: 16px;
 }
 
+.custom-tabs :deep(.el-tabs__item) {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.custom-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--accent-blue);
+  font-weight: 500;
+}
+
+.custom-tabs :deep(.el-tabs__active-bar) {
+  background-color: var(--accent-blue);
+}
+
+.tab-pane-content {
+  padding-top: 12px;
+}
+
+.login-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
 .upload-icon {
   margin-bottom: 8px;
 }
@@ -248,6 +471,8 @@ async function copyLink() {
 .security-panel {
   --el-collapse-header-bg-color: transparent;
   --el-collapse-content-bg-color: transparent;
+  margin-top: 8px;
+  margin-bottom: 8px;
 }
 
 .form-hint {
@@ -260,8 +485,131 @@ async function copyLink() {
   width: 100%;
   font-size: 1rem;
   letter-spacing: 1px;
+  margin-top: 8px;
 }
 
+/* 历史列表样式 */
+.history-container {
+  min-height: 200px;
+}
+
+.empty-history {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 48px 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 500px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.history-item {
+  background: var(--bg-ctrl);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.2s, opacity 0.2s;
+}
+
+.history-item:hover {
+  border-color: color-mix(in srgb, var(--accent-blue) 30%, var(--border-color));
+}
+
+.history-item.is-expired {
+  opacity: 0.6;
+}
+
+.item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.item-code {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.item-code strong {
+  color: #f0c040;
+  font-family: 'Courier New', monospace;
+  font-size: 1.1rem;
+  letter-spacing: 1px;
+}
+
+.copy-icon {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.item-code:hover .copy-icon {
+  color: var(--accent-blue);
+}
+
+.item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: color-mix(in srgb, var(--bg-card) 60%, transparent);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.item-files {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.filename-row {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-color);
+  padding-top: 6px;
+  margin-top: 4px;
+}
+
+.item-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px dashed var(--border-color);
+  padding-top: 8px;
+}
+
+.item-actions :deep(.el-button) {
+  padding: 4px 8px;
+  font-size: 0.78rem;
+}
+
+/* 结果弹窗 */
 .result-card {
   text-align: center;
   padding: 8px 0;

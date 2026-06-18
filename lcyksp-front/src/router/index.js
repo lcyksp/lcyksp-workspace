@@ -18,8 +18,20 @@ import PdfExtractTextView from '../views/PdfExtractTextView.vue'
 import PdfPageEditorView from '../views/PdfPageEditorView.vue'
 import PdfWatermarkView from '../views/PdfWatermarkView.vue'
 import PdfSignView from '../views/PdfSignView.vue'
+import PdfToWordView from '../views/PdfToWordView.vue'
 import VideoDownloadView from '../views/VideoDownloadView.vue'
+import TvDownloadView from '../views/TvDownloadView.vue'
 import MembershipView from '../views/MembershipView.vue'
+import ScreenRecordingView from '../views/ScreenRecordingView.vue'
+import PhotopeaView from '../views/PhotopeaView.vue'
+import IpLookupView from '../views/IpLookupView.vue'
+import IdPhotoView from '../views/IdPhotoView.vue'
+import FakeUpdateView from '../views/FakeUpdateView.vue'
+import RollCallView from '../views/RollCallView.vue'
+import WatermarkView from '../views/WatermarkView.vue'
+import ZipToolView from '../views/ZipToolView.vue'
+import ImageUpscaleView from '../views/ImageUpscaleView.vue'
+import WeatherView from '../views/WeatherView.vue'
 
 function readCurrentUser() {
   try {
@@ -46,6 +58,7 @@ const routes = [
   { path: '/gallery', name: 'gallery', component: GalleryView },
   { path: '/pixel-art', name: 'pixel-art', component: PixelArtView },
   { path: '/obfuscate', name: 'obfuscate', component: ObfuscateView },
+  { path: '/watermark', name: 'watermark', component: WatermarkView },
   { path: '/pdf-merge', name: 'pdf-merge', component: PdfMergeView },
   { path: '/pdf-split', name: 'pdf-split', component: PdfSplitView },
   { path: '/img-to-pdf', name: 'img-to-pdf', component: ImgToPdfView },
@@ -54,8 +67,19 @@ const routes = [
   { path: '/pdf-page-editor', name: 'pdf-page-editor', component: PdfPageEditorView },
   { path: '/pdf-watermark', name: 'pdf-watermark', component: PdfWatermarkView },
   { path: '/pdf-sign', name: 'pdf-sign', component: PdfSignView },
+  { path: '/pdf-to-word', name: 'pdf-to-word', component: PdfToWordView },
   { path: '/video-download', name: 'video-download', component: VideoDownloadView },
+  { path: '/tv-download', name: 'tv-download', component: TvDownloadView },
+  { path: '/screen-recording', name: 'screen-recording', component: ScreenRecordingView },
+  { path: '/photopea', name: 'photopea', component: PhotopeaView },
+  { path: '/ip-lookup', name: 'ip-lookup', component: IpLookupView },
+  { path: '/id-photo', name: 'id-photo', component: IdPhotoView },
+  { path: '/win-update', name: 'win-update', component: FakeUpdateView },
+  { path: '/roll-call', name: 'roll-call', component: RollCallView },
   { path: '/membership', name: 'membership', component: MembershipView },
+  { path: '/zip-tool', name: 'zip-tool', component: ZipToolView },
+  { path: '/image-upscale', name: 'image-upscale', component: ImageUpscaleView },
+  { path: '/weather', name: 'weather', component: WeatherView },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
 ]
 

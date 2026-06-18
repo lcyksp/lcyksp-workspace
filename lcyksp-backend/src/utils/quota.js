@@ -132,8 +132,14 @@ export async function consumeQuota({ subjectType, subjectKey, action, amount = 1
   }
 }
 
-export function buildQuotaExceededMessage() {
-  return '??????????/????????????????????????'
+export function buildQuotaExceededMessage(subjectType) {
+  if (subjectType === 'guest') {
+    return '当前时段体验次数已用完，请注册登录获得更多次数或稍后再试'
+  }
+  if (subjectType === 'free') {
+    return '当前时段免费次数已用完，请购买高级账户获得更多次数或稍后再试'
+  }
+  return '当前时段次数已用完，如需更多次数请联系管理员'
 }
 
 export async function recordRegistrationAttempt(ipAddress) {

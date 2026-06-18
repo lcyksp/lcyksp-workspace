@@ -189,6 +189,30 @@ export async function initDb() {
     ')',
   )
 
+  await run(
+    'CREATE TABLE IF NOT EXISTS download_logs (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'user_id INTEGER DEFAULT NULL REFERENCES users(id),' +
+      'username VARCHAR(64) DEFAULT NULL,' +
+      'ip_address TEXT NOT NULL,' +
+      'download_type TEXT NOT NULL,' +
+      'resource_title TEXT NOT NULL,' +
+      'resource_url TEXT DEFAULT \'\',' +
+      'file_size INTEGER DEFAULT 0,' +
+      'created_at TEXT NOT NULL DEFAULT (datetime(\'now\'))' +
+      ')',
+  )
+  await run('CREATE INDEX IF NOT EXISTS idx_download_logs_created_at ON download_logs(created_at)').catch(() => {})
+
+  await run(
+    'CREATE TABLE IF NOT EXISTS user_cookies (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),' +
+      'cookie_json TEXT NOT NULL,' +
+      "updated_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+      ')',
+  ).catch(() => {})
+
   await run("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'").catch(() => {})
   await run("ALTER TABLE users ADD COLUMN quota_plan TEXT NOT NULL DEFAULT 'free'").catch(() => {})
   await run('ALTER TABLE users ADD COLUMN premium_expires_at TEXT DEFAULT NULL').catch(() => {})
