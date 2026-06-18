@@ -641,7 +641,7 @@ function precipLevel(mm) {
 .weather-container {
   padding: 24px;
   min-height: calc(100vh - 120px);
-  color: #ffffff;
+  color: var(--text-primary);
 }
 
 .header-section {
@@ -659,14 +659,14 @@ function precipLevel(mm) {
 
 .subtitle {
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-secondary);
   margin: 0;
 }
 
 .glass-card {
-  background: rgba(22, 22, 42, 0.6) !important;
+  background: var(--bg-card) !important;
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid var(--border-color) !important;
   border-radius: 16px !important;
 }
 
@@ -690,7 +690,7 @@ function precipLevel(mm) {
 }
 
 .search-prefix-icon {
-  color: #38bdf8;
+  color: var(--accent-blue);
   flex-shrink: 0;
 }
 
@@ -699,17 +699,17 @@ function precipLevel(mm) {
 }
 
 .city-search-input :deep(.el-input__wrapper) {
-  background: rgba(255, 255, 255, 0.04) !important;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1) inset !important;
+  background: var(--bg-input) !important;
+  box-shadow: 0 0 0 1px var(--border-color) inset !important;
   border-radius: 10px;
 }
 
 .city-search-input :deep(.el-input__inner) {
-  color: #ffffff !important;
+  color: var(--text-primary) !important;
 }
 
 .city-search-input :deep(.el-input__inner::placeholder) {
-  color: rgba(255, 255, 255, 0.35) !important;
+  color: var(--text-placeholder) !important;
 }
 
 .search-btn {
@@ -727,6 +727,7 @@ function precipLevel(mm) {
   gap: 8px;
   padding: 4px 0;
   font-size: 13px;
+  color: var(--text-primary);
 }
 
 .selected-info {
@@ -745,9 +746,9 @@ function precipLevel(mm) {
 }
 
 .mode-toggle-row :deep(.el-radio-button__inner) {
-  background: rgba(255, 255, 255, 0.04) !important;
-  color: rgba(255, 255, 255, 0.7) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  background: var(--bg-ctrl) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border-color) !important;
   border-radius: 8px !important;
   margin-right: 8px;
   padding: 8px 16px;
@@ -790,7 +791,7 @@ function precipLevel(mm) {
 
 .coord-label {
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--text-primary);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -798,8 +799,8 @@ function precipLevel(mm) {
 .coord-input-wrap {
   display: flex;
   align-items: center;
-  background: rgba(255, 255, 255, 0.04) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border-color) !important;
   border-radius: 10px;
   height: 42px;
   padding-left: 8px;
@@ -807,7 +808,7 @@ function precipLevel(mm) {
 }
 
 .coord-input-wrap:focus-within {
-  border-color: #38bdf8 !important;
+  border-color: var(--accent-blue) !important;
   box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
 }
 
@@ -822,13 +823,13 @@ function precipLevel(mm) {
 }
 
 .coord-input :deep(.el-input__inner) {
-  color: #ffffff !important;
+  color: var(--text-primary) !important;
   font-size: 14px;
   border: none !important;
 }
 
 .coord-input :deep(.el-input__inner::placeholder) {
-  color: rgba(255, 255, 255, 0.3) !important;
+  color: var(--text-placeholder) !important;
 }
 
 /* Hide input number spinners */
@@ -848,18 +849,18 @@ function precipLevel(mm) {
 .coord-dir-select :deep(.el-select__wrapper) {
   background: transparent !important;
   box-shadow: none !important;
-  border-left: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-left: 1px solid var(--border-color) !important;
   border-radius: 0 10px 10px 0 !important;
-  color: #ffffff !important;
+  color: var(--text-primary) !important;
   height: 42px;
 }
 
 .coord-dir-select :deep(.el-select__placeholder) {
-  color: #ffffff !important;
+  color: var(--text-primary) !important;
 }
 
 .coord-dir-select :deep(.el-select__caret) {
-  color: rgba(255, 255, 255, 0.5) !important;
+  color: var(--text-secondary) !important;
 }
 
 .coord-search-btn {
@@ -872,9 +873,9 @@ function precipLevel(mm) {
 }
 
 .format-toggle-row :deep(.el-radio-button__inner) {
-  background: rgba(255, 255, 255, 0.03) !important;
-  color: rgba(255, 255, 255, 0.5) !important;
-  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  background: var(--bg-ctrl) !important;
+  color: var(--text-muted) !important;
+  border: 1px solid var(--border-subtle) !important;
   border-radius: 6px !important;
   margin-right: 6px;
   padding: 6px 12px;
@@ -882,9 +883,9 @@ function precipLevel(mm) {
 }
 
 .format-toggle-row :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: rgba(255, 255, 255, 0.1) !important;
-  color: #ffffff !important;
-  border-color: rgba(255, 255, 255, 0.2) !important;
+  background: var(--bg-hover) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
   box-shadow: none !important;
 }
 
@@ -892,8 +893,8 @@ function precipLevel(mm) {
 .dms-input-wrap {
   display: flex;
   align-items: center;
-  background: rgba(255, 255, 255, 0.04) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border-color) !important;
   border-radius: 10px;
   height: 42px;
   padding-left: 6px;
@@ -901,7 +902,7 @@ function precipLevel(mm) {
 }
 
 .dms-input-wrap:focus-within {
-  border-color: #38bdf8 !important;
+  border-color: var(--accent-blue) !important;
   box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
 }
 
@@ -916,7 +917,7 @@ function precipLevel(mm) {
 }
 
 .dms-input :deep(.el-input__inner) {
-  color: #ffffff !important;
+  color: var(--text-primary) !important;
   text-align: center;
   font-size: 14px;
   border: none !important;
@@ -924,7 +925,7 @@ function precipLevel(mm) {
 }
 
 .dms-input :deep(.el-input__inner::placeholder) {
-  color: rgba(255, 255, 255, 0.25) !important;
+  color: var(--text-placeholder) !important;
 }
 
 /* Hide input number spinners */
@@ -939,7 +940,7 @@ function precipLevel(mm) {
 
 .dms-symbol {
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-secondary);
   margin: 0 2px;
   user-select: none;
 }
@@ -951,7 +952,7 @@ function precipLevel(mm) {
   align-items: center;
   gap: 14px;
   padding: 60px 0;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-muted);
   font-size: 14px;
 }
 
@@ -968,13 +969,13 @@ function precipLevel(mm) {
 .section-title {
   font-size: 18px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--text-heading);
   margin: 0;
 }
 
 .date-range {
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--text-muted);
 }
 
 .summary-grid {
@@ -997,8 +998,8 @@ function precipLevel(mm) {
 }
 
 .stat-card {
-  background: rgba(22, 22, 42, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
   border-radius: 14px;
   padding: 18px;
   display: flex;
@@ -1008,7 +1009,7 @@ function precipLevel(mm) {
 }
 
 .stat-card:hover {
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: var(--accent-blue);
   transform: translateY(-2px);
 }
 
@@ -1020,7 +1021,7 @@ function precipLevel(mm) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-ctrl);
   border-radius: 12px;
 }
 
@@ -1032,19 +1033,19 @@ function precipLevel(mm) {
 .stat-value {
   font-size: 24px;
   font-weight: 700;
-  color: #ffffff;
+  color: var(--text-heading);
   line-height: 1.2;
 }
 
 .stat-unit {
   font-size: 13px;
   font-weight: 400;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-muted);
 }
 
 .stat-label {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -1072,19 +1073,19 @@ function precipLevel(mm) {
   text-align: left;
   padding: 10px 12px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-ctrl);
 }
 
 .weather-table td {
   padding: 10px 12px;
-  color: rgba(255, 255, 255, 0.85);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .weather-table tr:hover td {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-hover);
 }
 
 .date-cell {
@@ -1136,7 +1137,7 @@ function precipLevel(mm) {
 
 .bar-value {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-secondary);
   margin-bottom: 6px;
   font-weight: 500;
 }
@@ -1149,7 +1150,7 @@ function precipLevel(mm) {
   align-items: flex-end;
   border-radius: 6px 6px 0 0;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-ctrl);
 }
 
 .bar-fill {
@@ -1161,13 +1162,13 @@ function precipLevel(mm) {
 
 .bar-label {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-secondary);
   margin-top: 8px;
 }
 
 .bar-weekday {
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-muted);
   margin-top: 2px;
 }
 
@@ -1175,7 +1176,7 @@ function precipLevel(mm) {
 .data-source {
   text-align: center;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.3);
+  color: var(--text-muted);
   padding: 12px 0 4px 0;
 }
 
