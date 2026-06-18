@@ -1,4 +1,4 @@
-﻿import jwt from 'jsonwebtoken'
+import jwt from 'jsonwebtoken'
 import { getDb } from '../config/db.js'
 import { normalizeRole, roleToPlan } from '../utils/quota.js'
 
@@ -72,13 +72,18 @@ export function signToken(payload) {
 }
 
 export async function authMiddleware(req, res, next) {
+  let token = null
   const authHeader = req.headers.authorization
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7)
+  } else if (req.query.token) {
+    token = req.query.token
+  }
+
+  if (!token) {
     req.user = null
     return next()
   }
-
-  const token = authHeader.slice(7)
   try {
     const decoded = jwt.verify(token, JWT_SECRET)
     const user = await normalizeUserAccess(decoded.userId)

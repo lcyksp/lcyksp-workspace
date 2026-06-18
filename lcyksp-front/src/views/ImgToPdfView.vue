@@ -117,6 +117,11 @@ onUnmounted(() => {
         </div>
       </el-col>
     </el-row>
+
+    <el-dialog v-model="isPreviewActive" fullscreen :close-on-click-modal="false" :show-close="true" @close="handleClosePreview" class="mobile-preview-dialog" destroy-on-close>
+      <template #header><span style="color:#c0c0e0; font-size:0.95rem; letter-spacing:1px;">PDF 预览</span></template>
+      <iframe v-if="previewUrl" :src="previewUrl" class="mobile-preview-iframe" title="PDF 预览" />
+    </el-dialog>
   </div>
 </template>
 
@@ -149,4 +154,15 @@ onUnmounted(() => {
 .preview-box { max-height: 450px; width: 100%; overflow: hidden; background: var(--bg-canvas); border-radius: 8px; min-height: 200px; display: flex; justify-content: center; align-items: center; }
 .preview-iframe { width: 100%; height: 450px; border: none; border-radius: 8px; }
 .preview-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 80px; color: var(--text-dim); }
+
+:deep(.mobile-preview-dialog .el-dialog__body) { padding: 0; background: var(--bg-canvas); height: calc(100vh - 110px); }
+:deep(.mobile-preview-dialog .el-dialog) { background: var(--bg-canvas); }
+:deep(.mobile-preview-dialog .el-dialog__header) { background: var(--bg-card); border-bottom: 1px solid var(--bg-hover); padding: 14px 20px; margin: 0; }
+:deep(.mobile-preview-dialog .el-dialog__headerbtn) { top: 14px; right: 16px; }
+.mobile-preview-iframe { width: 100%; height: 100%; border: none; display: block; }
+
+@media (max-width: 768px) {
+  .img-to-pdf-view { padding: 12px 8px 30px; }
+  .empty-card { padding: 24px 14px; }
+}
 </style>

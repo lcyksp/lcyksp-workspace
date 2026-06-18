@@ -2,6 +2,10 @@ import { Router } from 'express';
 import multer from 'multer';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { spawn } from 'child_process';
 
 const router = Router();
 
@@ -116,6 +120,90 @@ router.post('/image', upload.single('image'), async (req, res, next) => {
     }
   } catch (err) {
     next(err);
+  }
+});
+
+// ========== POST /pdf-to-docx ==========
+router.post('/pdf-to-docx', upload.single('pdf'), async (req, res, next) => {
+  let tempDir = '';
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: '请上传 PDF 文件' });
+    }
+
+    // 创建临时工作目录
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf2docx-'));
+    const inputPath = path.join(tempDir, 'input.pdf');
+    const outputPath = path.join(tempDir, 'output.docx');
+
+    // 将上传的 buffer 写入临时文件
+    fs.writeFileSync(inputPath, req.file.buffer);
+
+    // 解析分页选项
+    // start and end are 1-based page indices from client, but pdf2docx expects 0-based index
+    const startPage = req.body.start ? Math.max(0, parseInt(req.body.start, 10) - 1) : 0;
+    const endPage = req.body.end ? parseInt(req.body.end, 10) : null;
+
+    const args = ['convert', inputPath, '--docx_file=' + outputPath];
+    if (startPage > 0) {
+      args.push('--start=' + startPage);
+    }
+    if (endPage !== null) {
+      args.push('--end=' + endPage);
+    }
+
+    // 运行 /usr/local/bin/pdf2docx 或者全局 pdf2docx 命令
+    // 在 Windows 上是 pdf2docx.exe，在 Linux 上是 /usr/local/bin/pdf2docx
+    const cmd = os.platform() === 'win32' ? 'pdf2docx' : '/usr/local/bin/pdf2docx';
+
+    await new Promise((resolve, reject) => {
+      const proc = spawn(cmd, args);
+      let stderr = '';
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('error', (err) => {
+        if (err.code === 'ENOENT') {
+          reject(new Error('系统未安装 pdf2docx 工具，请联系管理员。'));
+        } else {
+          reject(err);
+        }
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(stderr.trim() || `转换失败 (错误码 ${code})`));
+        }
+      });
+    });
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('未生成输出的 Word 文档');
+    }
+
+    const docxBuffer = fs.readFileSync(outputPath);
+    const originalName = req.file.originalname.replace(/\.[^.]+$/, '') || 'document';
+
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(originalName)}.docx"`);
+    res.send(docxBuffer);
+
+  } catch (err) {
+    console.error('[PDF2DOCX]', err);
+    res.status(500).json({ error: err.message || 'PDF 转换失败，请重试' });
+  } finally {
+    // 递归清理临时目录
+    if (tempDir && fs.existsSync(tempDir)) {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (cleanErr) {
+        console.error('[PDF2DOCX Cleanup Error]', cleanErr);
+      }
+    }
   }
 });
 
