@@ -135,10 +135,13 @@ const menuItems = reactive([
     children: [
       { name: '图片压缩', path: '/compress' },
       { name: '格式转换', path: '/convert' },
+      { name: '图片无损放大', path: '/image-upscale' },
+      { name: '长图拼接', path: '/stitch' },
+      { name: '水印生成器', path: '/watermark' },
       { name: '像素画转换', path: '/pixel-art' },
       { name: '图片解混淆', path: '/obfuscate' },
-      { name: '水印生成器', path: '/watermark' },
-      { name: '图片无损放大', path: '/image-upscale' },
+      { name: '证件照制作', path: '/id-photo' },
+      { name: '在线PS', path: '/photopea' },
     ],
     isOpen: false,
   },
@@ -173,15 +176,27 @@ const menuItems = reactive([
     children: [
       { name: '赛博菜谱', path: '/recipe' },
       { name: '共享相册', path: '/gallery' },
-      { name: '音视频下载', path: '/video-download' },
-      { name: '电视剧/电影观看', path: '/tv-download' },
-      { name: '屏幕录制', path: '/screen-recording' },
-      { name: '在线PS', path: '/photopea' },
-      { name: 'IP归属地查询', path: '/ip-lookup' },
-      { name: '证件照制作', path: '/id-photo' },
-      { name: '系统更新模拟', path: '/win-update' },
-      { name: '随机小助手', path: '/roll-call' },
-      { name: '气象数据查询', path: '/weather' },
+      {
+        name: '影音娱乐',
+        isFolder: true,
+        isOpen: false,
+        children: [
+          { name: '音视频下载', path: '/video-download' },
+          { name: '电视剧/电影观看', path: '/tv-download' },
+          { name: '屏幕录制', path: '/screen-recording' },
+        ],
+      },
+      {
+        name: '日常与查询',
+        isFolder: true,
+        isOpen: false,
+        children: [
+          { name: '气象数据查询', path: '/weather' },
+          { name: 'IP归属地查询', path: '/ip-lookup' },
+          { name: '随机小助手', path: '/roll-call' },
+          { name: '系统更新模拟', path: '/win-update' },
+        ],
+      },
     ],
     isOpen: false,
   },
@@ -1123,6 +1138,55 @@ onUnmounted(() => {
   font-size: 0.85rem;
 }
 
+.folder-header {
+  display: flex !important;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+}
+
+.folder-header .menu-arrow {
+  margin-left: auto;
+  transition: transform 0.25s ease;
+  display: flex;
+  align-items: center;
+}
+
+.folder-header .menu-arrow.rotated {
+  transform: rotate(180deg);
+}
+
+.sub-submenu {
+  padding-left: 12px;
+  background: rgba(0, 0, 0, 0.15);
+  border-left: 2px solid rgba(255, 255, 255, 0.05);
+  margin-left: 44px;
+  margin-bottom: 4px;
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.sub-submenu-item {
+  height: 36px !important;
+  padding-left: 16px !important;
+  font-size: 0.8rem !important;
+  color: rgba(255, 255, 255, 0.6) !important;
+  border-radius: 4px !important;
+  margin: 2px 4px 2px 0 !important;
+}
+
+.sub-submenu-item:hover {
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+.sub-submenu-item.active {
+  color: #38bdf8 !important;
+  background: rgba(56, 189, 248, 0.08) !important;
+  font-weight: 500;
+}
+
 .slide-enter-active,
 .slide-leave-active {
   transition: all 0.25s ease;
@@ -1139,7 +1203,7 @@ onUnmounted(() => {
 .slide-enter-to,
 .slide-leave-from {
   opacity: 1;
-  max-height: 300px;
+  max-height: 800px;
 }
 
 .sidebar-overlay {
