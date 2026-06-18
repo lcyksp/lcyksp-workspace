@@ -99,9 +99,15 @@ onUnmounted(() => {
         <p class="disclaimer">
           本网站仅供个人学习、研究与效率辅助使用，请勿用于商业用途、批量爬取、侵权传播或任何违法违规场景。因用户自行使用本网站产生的任何风险、纠纷或损失，与本站无关。
         </p>
-        <p class="icp-record">
-          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2026075435号-1</a>
-        </p>
+        <div class="records-wrapper">
+          <p class="icp-record">
+            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2026075435号-1</a>
+          </p>
+          <p class="gongan-record">
+            <img src="/gongan.png" class="gongan-icon" />
+            <a href="https://beian.mps.gov.cn/#/query/webSearch?code=44130202001617" rel="noreferrer" target="_blank">粤公网安备44130202001617号</a>
+          </p>
+        </div>
       </div>
     </div>
 
@@ -251,8 +257,16 @@ onUnmounted(() => {
   opacity: 0.78;
 }
 
+.records-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
 .icp-record {
-  margin: 8px 0 0;
+  margin: 0;
   font-size: 0.72rem;
 }
 
@@ -266,6 +280,32 @@ onUnmounted(() => {
 .icp-record a:hover {
   color: var(--accent-blue);
   opacity: 1;
+}
+
+.gongan-record {
+  margin: 0;
+  font-size: 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.gongan-record a {
+  color: var(--text-dim);
+  text-decoration: none;
+  opacity: 0.78;
+  transition: color 0.18s ease, opacity 0.18s ease;
+}
+
+.gongan-record a:hover {
+  color: var(--accent-blue);
+  opacity: 1;
+}
+
+.gongan-icon {
+  width: 15px;
+  height: 15px;
+  vertical-align: middle;
 }
 
 .support-dialog {
@@ -370,7 +410,7 @@ onUnmounted(() => {
     font-size: 0.68rem;
   }
 
-  .icp-record {
+  .icp-record, .gongan-record {
     font-size: 0.68rem;
   }
 

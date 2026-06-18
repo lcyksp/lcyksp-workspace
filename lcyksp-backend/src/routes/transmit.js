@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { getDb } from '../config/db.js';
-import { authMiddleware } from '../middleware/auth.js';
+import { authMiddleware, requireAuth } from '../middleware/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -92,7 +92,7 @@ function cleanUpRecord(db, record) {
 }
 
 // ========== 接口 1: POST /upload ==========
-router.post('/upload', upload.array('files', 5), async (req, res, next) => {
+router.post('/upload', requireAuth, upload.array('files', 5), async (req, res, next) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: '请上传至少一个文件' });
@@ -310,6 +310,7 @@ router.get('/download/:id', async (req, res, next) => {
     // 下载完成或断开时的处理
     res.on('finish', () => {
       if (unlimited) return;
+      if (fileIndex !== fileCount - 1) return;
 
       db.run(
         'UPDATE transfers SET current_downloads = current_downloads + 1 WHERE id = ?',
@@ -336,6 +337,109 @@ router.get('/download/:id', async (req, res, next) => {
         },
       );
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ========== 接口 4: GET /history ==========
+router.get('/history', requireAuth, async (req, res, next) => {
+  try {
+    const db = getDb();
+    const rows = await new Promise((resolve, reject) => {
+      db.all(
+        'SELECT id, file_name, file_size, max_downloads, current_downloads, expire_time, created_at FROM transfers WHERE owner_id = ? ORDER BY created_at DESC',
+        [req.user.userId],
+        (err, rows) => err ? reject(err) : resolve(rows)
+      );
+    });
+    
+    const history = rows.map(row => {
+      let fileNames = [];
+      try {
+        fileNames = JSON.parse(row.file_name);
+      } catch {
+        fileNames = [row.file_name];
+      }
+      return {
+        code: row.id,
+        fileNames,
+        totalSize: row.file_size,
+        maxDownloads: row.max_downloads,
+        currentDownloads: row.current_downloads,
+        expireTime: row.expire_time,
+        createdAt: row.created_at,
+        isExpired: new Date() > new Date(row.expire_time) || (row.max_downloads !== -1 && row.current_downloads >= row.max_downloads)
+      };
+    });
+    
+    res.json({ success: true, history });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ========== 接口 5: POST /update-code ==========
+router.post('/update-code', requireAuth, async (req, res, next) => {
+  try {
+    const { oldCode, newCode } = req.body;
+    if (!oldCode || !newCode) return res.status(400).json({ error: '原提取码和新提取码不能为空' });
+    
+    const cleanNewCode = String(newCode).trim().toUpperCase();
+    if (!/^[A-Z2-9]{4,16}$/.test(cleanNewCode)) {
+      return res.status(400).json({ error: '新提取码只能包含 4-16 位大写字母或数字（排除易混淆字符 I/O/0/1）' });
+    }
+    
+    const db = getDb();
+    const record = await new Promise((res, rej) =>
+      db.get('SELECT id, owner_id, expire_time FROM transfers WHERE id = ?', [oldCode], (e, r) => e ? rej(e) : res(r)),
+    );
+    
+    if (!record) return res.status(404).json({ error: '原文件记录不存在或已失效' });
+    
+    const expired = new Date() > new Date(record.expire_time);
+    if (expired) return res.status(400).json({ error: '该分享已过期，无法修改提取码' });
+    
+    const isAdmin = req.user.role === 'admin';
+    if (record.owner_id !== req.user.userId && !isAdmin) {
+      return res.status(403).json({ error: '您无权修改此提取码' });
+    }
+    
+    const exists = await new Promise((res, rej) =>
+      db.get('SELECT 1 FROM transfers WHERE id = ?', [cleanNewCode], (e, r) => e ? rej(e) : res(!!r)),
+    );
+    if (exists) return res.status(409).json({ error: '该新提取码已被占用，请使用其他提取码' });
+    
+    await new Promise((res, rej) => {
+      db.run('UPDATE transfers SET id = ? WHERE id = ?', [cleanNewCode, oldCode], (err) => err ? rej(err) : res());
+    });
+    
+    res.json({ success: true, message: '提取码修改成功', code: cleanNewCode });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ========== 接口 6: DELETE /delete/:code ==========
+router.delete('/delete/:code', requireAuth, async (req, res, next) => {
+  try {
+    const { code } = req.params;
+    const db = getDb();
+    
+    const record = await new Promise((res, rej) =>
+      db.get('SELECT id, file_path, owner_id FROM transfers WHERE id = ?', [code], (e, r) => e ? rej(e) : res(r)),
+    );
+    
+    if (!record) return res.status(404).json({ error: '分享记录不存在' });
+    
+    const isAdmin = req.user.role === 'admin';
+    if (record.owner_id !== req.user.userId && !isAdmin) {
+      return res.status(403).json({ error: '您无权删除此分享记录' });
+    }
+    
+    cleanUpRecord(db, record);
+    
+    res.json({ success: true, message: '已成功删除分享记录并物理清除文件' });
   } catch (err) {
     next(err);
   }

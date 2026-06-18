@@ -10,6 +10,7 @@ import recipeRouter from './routes/recipe.js';
 import videoRouter from './routes/video.js';
 import feedbackRouter from './routes/feedback.js';
 import membershipRouter from './routes/membership.js';
+import tvRouter from './routes/tv.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
@@ -44,6 +45,75 @@ app.use('/api/recipe', recipeRouter);
 app.use('/api/video', videoRouter);
 app.use('/api/feedback', feedbackRouter);
 app.use('/api/membership', membershipRouter);
+app.use('/api/tv', tvRouter);
+
+// IP归属地查询接口
+app.get('/api/ip-lookup', async (req, res) => {
+  try {
+    let queryIp = req.query.ip || '';
+    if (!queryIp) {
+      const xForwardedFor = req.headers['x-forwarded-for'];
+      if (xForwardedFor) {
+        queryIp = xForwardedFor.split(',')[0].trim();
+      } else {
+        queryIp = req.headers['x-real-ip'] || req.socket.remoteAddress || '';
+      }
+    }
+    
+    if (queryIp.startsWith('::ffff:')) {
+      queryIp = queryIp.substring(7);
+    }
+    
+    if (queryIp === '::1' || queryIp === '127.0.0.1' || queryIp === 'localhost') {
+      return res.json({
+        ipAddress: queryIp,
+        ipVersion: 4,
+        countryName: '本地局域网',
+        regionName: '环回地址',
+        cityName: '-',
+        zipCode: '-',
+        asnOrg: '-',
+        latitude: 0,
+        longitude: 0,
+        isProxy: false
+      });
+    }
+
+    const response = await fetch(`http://ip-api.com/json/${queryIp}?lang=zh-CN`);
+    const data = await response.json();
+
+    if (data.status === 'fail') {
+      return res.json({
+        ipAddress: queryIp,
+        ipVersion: queryIp.includes(':') ? 6 : 4,
+        countryName: '未知物理位置',
+        regionName: '-',
+        cityName: '-',
+        zipCode: '-',
+        asnOrg: '-',
+        latitude: 0,
+        longitude: 0,
+        isProxy: false
+      });
+    }
+
+    res.json({
+      ipAddress: data.query,
+      ipVersion: data.query.includes(':') ? 6 : 4,
+      countryName: data.country || '-',
+      regionName: data.regionName || '-',
+      cityName: data.city || '-',
+      zipCode: data.zip || '-',
+      asnOrg: data.isp || data.org || '-',
+      latitude: data.lat || 0,
+      longitude: data.lon || 0,
+      isProxy: false
+    });
+  } catch (err) {
+    console.error('IP lookup error:', err);
+    res.status(500).json({ error: 'IP归属地查询失败' });
+  }
+});
 
 // 健康检查
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));

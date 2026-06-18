@@ -10,10 +10,14 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
+    "@tensorflow/tfjs": "^4.11.0",
+    "@upscalerjs/esrgan-slim": "^1.0.0",
     "axios": "^1.17.0",
     "element-plus": "^2.14.1",
+    "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.624",
+    "upscaler": "^1.0.0",
     "vue": "^3.5.12",
     "vue-router": "^4.6.4"
   },
