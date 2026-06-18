@@ -11,6 +11,7 @@ import videoRouter from './routes/video.js';
 import feedbackRouter from './routes/feedback.js';
 import membershipRouter from './routes/membership.js';
 import tvRouter from './routes/tv.js';
+import stitchRouter from './routes/stitch.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
@@ -46,6 +47,7 @@ app.use('/api/video', videoRouter);
 app.use('/api/feedback', feedbackRouter);
 app.use('/api/membership', membershipRouter);
 app.use('/api/tv', tvRouter);
+app.use('/api/stitch', stitchRouter);
 
 // IP归属地查询接口
 app.get('/api/ip-lookup', async (req, res) => {
