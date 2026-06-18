@@ -31,6 +31,7 @@ import RollCallView from '../views/RollCallView.vue'
 import WatermarkView from '../views/WatermarkView.vue'
 import ZipToolView from '../views/ZipToolView.vue'
 import ImageUpscaleView from '../views/ImageUpscaleView.vue'
+import StitchView from '../views/StitchView.vue'
 import WeatherView from '../views/WeatherView.vue'
 
 function readCurrentUser() {
@@ -79,6 +80,7 @@ const routes = [
   { path: '/membership', name: 'membership', component: MembershipView },
   { path: '/zip-tool', name: 'zip-tool', component: ZipToolView },
   { path: '/image-upscale', name: 'image-upscale', component: ImageUpscaleView },
+  { path: '/stitch', name: 'stitch', component: StitchView },
   { path: '/weather', name: 'weather', component: WeatherView },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
 ]
