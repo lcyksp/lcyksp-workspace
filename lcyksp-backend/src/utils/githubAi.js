@@ -41,23 +41,31 @@ export async function reviewGithubRepository(repository) {
     '语言：' + (repository.language || '未知'),
     'Topics：' + repository.topics,
     'Star：' + repository.stars,
+    '仓库根目录：' + (repository.rootEntries || ''),
+    'README 摘要：' + String(repository.readme || '').slice(0, 18000),
   ].join('\n')
+  async function callModel(url, key, model) {
+    const response = await fetch(url.endsWith('/chat/completions') ? url : url + '/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: JSON.stringify({ model, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }) })
+    const data = response.ok ? await response.json() : null
+    const content = data?.choices?.[0]?.message?.content || ''
+    return { response, content, parsed: parseJsonResponse(content) }
+  }
+
   let provider = 'openai-compatible'
   let model = config.model
-  let response = await fetch(targetUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.key }, body: JSON.stringify({ model, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }) })
-  if ((!response.ok || response.status >= 400) && config.fallback?.key && config.fallback.url && config.fallback.model) {
+  let result = await callModel(targetUrl, config.key, model)
+  if ((!result.response.ok || !result.parsed || Number(result.parsed.confidence) < 0.55) && config.fallback?.key && config.fallback.url && config.fallback.model) {
     provider = 'fallback'
     model = config.fallback.model
-    const fallbackUrl = config.fallback.url.endsWith('/chat/completions') ? config.fallback.url : config.fallback.url + '/chat/completions'
-    response = await fetch(fallbackUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.fallback.key }, body: JSON.stringify({ model, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }) })
+    result = await callModel(config.fallback.url, config.fallback.key, model)
   }
+  const response = result.response
   if (!response.ok) throw new Error('AI HTTP ' + response.status)
-  const data = await response.json()
-  const content = data?.choices?.[0]?.message?.content || ''
-  const parsed = parseJsonResponse(content)
+  const content = result.content
+  const parsed = result.parsed
   if (!parsed) throw new Error('AI 返回格式无法解析')
   const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0))
-  const result = await dbRun('INSERT INTO github_ai_reviews (repository_id, provider, model, category, summary, confidence, worth_push, raw_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [repository.id, provider, model, String(parsed.category || '').slice(0, 40), String(parsed.summary || '').slice(0, 180), confidence, parsed.worthPush ? 1 : 0, content.slice(0, 10000)])
-  await dbRun('UPDATE github_repositories SET last_ai_review_id = ?, updated_at = ? WHERE id = ?', [result.lastID, new Date().toISOString(), repository.id])
-  return { id: result.lastID, worthPush: Boolean(parsed.worthPush), category: parsed.category || '', summary: parsed.summary || '', confidence }
+  const review = await dbRun('INSERT INTO github_ai_reviews (repository_id, provider, model, category, summary, confidence, worth_push, raw_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [repository.id, provider, model, String(parsed.category || '').slice(0, 40), String(parsed.summary || '').slice(0, 180), confidence, parsed.worthPush ? 1 : 0, content.slice(0, 10000)])
+  await dbRun('UPDATE github_repositories SET last_ai_review_id = ?, updated_at = ? WHERE id = ?', [review.lastID, new Date().toISOString(), repository.id])
+  return { id: review.lastID, worthPush: Boolean(parsed.worthPush), category: parsed.category || '', summary: parsed.summary || '', confidence }
 }
