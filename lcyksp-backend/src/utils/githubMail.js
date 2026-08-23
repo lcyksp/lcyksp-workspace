@@ -59,7 +59,7 @@ function dotStuff(value) {
   return value.split(/\r?\n/).map((line) => (line.startsWith('.') ? `.${line}` : line)).join('\r\n')
 }
 
-export async function sendGithubTestEmail(to) {
+async function sendSmtpMessage({ to, subject, body, contentType = 'text/plain' }) {
   const config = await getGithubMailConfig()
   if (!config.password) throw new Error('尚未配置 Outlook SMTP 密码')
   const socket = net.createConnection({ host: config.host, port: config.port })
@@ -79,19 +79,12 @@ export async function sendGithubTestEmail(to) {
     await command(secureSocket, `MAIL FROM:<${config.user}>`, [250])
     await command(secureSocket, `RCPT TO:<${to}>`, [250, 251])
     await command(secureSocket, 'DATA', [354])
-    const subject = 'GitHub 项目订阅测试邮件'
-    const body = [
-      '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。',
-      '',
-      '如果您已经收到此邮件，请返回网站开启订阅。',
-      '如果暂未收到，请检查垃圾邮件目录，稍后重试，或联系客服。',
-    ].join('\n')
     const message = [
       `From: ${config.from}`,
       `To: ${to}`,
       `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
       'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=UTF-8',
+      `Content-Type: ${contentType}; charset=UTF-8`,
       'Content-Transfer-Encoding: 8bit',
       '',
       body,
@@ -103,6 +96,23 @@ export async function sendGithubTestEmail(to) {
   } finally {
     socket.destroy()
   }
+}
+
+export async function sendGithubTestEmail(to) {
+  return sendSmtpMessage({
+    to,
+    subject: 'GitHub 项目订阅测试邮件',
+    body: [
+      '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。',
+      '',
+      '如果您已经收到此邮件，请返回网站开启订阅。',
+      '如果暂未收到，请检查垃圾邮件目录，稍后重试，或联系客服。',
+    ].join('\n'),
+  })
+}
+
+export async function sendGithubDigestEmail(to, subject, html) {
+  return sendSmtpMessage({ to, subject, body: html, contentType: 'text/html' })
 }
 
 export async function smtpConfigured() {
