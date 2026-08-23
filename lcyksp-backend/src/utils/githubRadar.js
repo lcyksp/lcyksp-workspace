@@ -27,7 +27,8 @@ async function githubFetch(path, params = {}) {
 
 export async function discoverGithubRepositories({ query = '', categoryKeywords = [], language = '', limit = 30 } = {}) {
   const terms = [...new Set([query, ...categoryKeywords].map((item) => String(item || '').trim()).filter(Boolean))]
-  const q = [...terms.map((item) => '\"' + item + '\"'), language ? 'language:' + language : '', 'stars:>=20'].filter(Boolean).join(' ')
+  const termQuery = terms.length > 1 ? '(' + terms.map((item) => '\"' + item + '\"').join(' OR ') + ')' : terms.map((item) => '\"' + item + '\"').join(' ')
+  const q = [termQuery, 'in:name,description,readme', language ? 'language:' + language : '', 'stars:>=20'].filter(Boolean).join(' ')
   if (!q) return []
   const data = await githubFetch('/search/repositories', { q, sort: 'stars', order: 'desc', per_page: Math.min(limit, 100) })
   return (data.items || []).map((item) => ({
@@ -39,6 +40,31 @@ export async function discoverGithubRepositories({ query = '', categoryKeywords 
     stars: item.stargazers_count || 0,
     forks: item.forks_count || 0,
   }))
+}
+
+export async function discoverEmergingGithubRepositories({ keywords = [], limit = 30 } = {}) {
+  const terms = [...new Set(keywords.map((item) => String(item || '').trim()).filter(Boolean))]
+  const termQuery = terms.length ? '(' + terms.map((item) => '\"' + item + '\"').join(' OR ') + ')' : ''
+  const since = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10)
+  const q = [termQuery, 'in:name,description,readme', 'created:>=' + since, 'stars:>=10'].filter(Boolean).join(' ')
+  if (!q) return []
+  const data = await githubFetch('/search/repositories', { q, sort: 'updated', order: 'desc', per_page: Math.min(limit, 100) })
+  return (data.items || []).map((item) => ({ fullName: item.full_name, url: item.html_url, description: item.description || '', language: item.language || '', topics: item.topics || [], stars: item.stargazers_count || 0, forks: item.forks_count || 0 }))
+}
+
+export async function fetchGithubRepositoryContext(fullName) {
+  const repo = await githubFetch('/repos/' + fullName)
+  let readme = ''
+  try {
+    const data = await githubFetch('/repos/' + fullName + '/readme')
+    readme = Buffer.from(data.content || '', 'base64').toString('utf8').slice(0, 18000)
+  } catch {}
+  let rootEntries = []
+  try {
+    const data = await githubFetch('/repos/' + fullName + '/contents')
+    rootEntries = (Array.isArray(data) ? data : []).slice(0, 80).map((item) => item.name)
+  } catch {}
+  return { ...repo, readme, rootEntries }
 }
 
 async function upsertRepository(item, capturedAt) {

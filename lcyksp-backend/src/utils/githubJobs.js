@@ -1,5 +1,5 @@
 import { getDb } from '../config/db.js'
-import { getRepositoryCandidatesForSubscription, saveGithubSnapshot } from './githubRadar.js'
+import { discoverEmergingGithubRepositories, fetchGithubRepositoryContext, getRepositoryCandidatesForSubscription, saveGithubSnapshot } from './githubRadar.js'
 import { reviewGithubRepository } from './githubAi.js'
 
 function dbAll(sql, params = []) {
@@ -37,12 +37,21 @@ export async function discoverActiveGithubSubscriptions() {
       console.error('[GitHub Radar] subscription', subscription.id, 'failed:', error.message)
     }
   }
+  const globalKeywords = ['AI', 'agent', 'developer tools', 'automation', 'robotics', 'materials science', 'mechanical engineering']
+  try {
+    const emerging = await discoverEmergingGithubRepositories({ keywords: globalKeywords, limit: 50 })
+    for (const item of emerging) await saveGithubSnapshot(item)
+    discovered += emerging.length
+  } catch (error) {
+    console.error('[GitHub Radar] emerging discovery failed:', error.message)
+  }
   const reviewQueue = await dbAll(
     'SELECT r.* FROM github_repositories r LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id WHERE a.id IS NULL ORDER BY r.last_seen_at DESC LIMIT 20',
   )
   for (const repository of reviewQueue) {
     try {
-      await reviewGithubRepository(repository)
+      const context = await fetchGithubRepositoryContext(repository.full_name)
+      await reviewGithubRepository({ ...repository, ...context })
     } catch (error) {
       console.error('[GitHub Radar] AI review failed:', repository.full_name, error.message)
     }
