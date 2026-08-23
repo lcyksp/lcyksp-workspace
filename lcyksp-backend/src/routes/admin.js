@@ -506,6 +506,9 @@ router.get('/config/github-radar', async function (req, res, next) {
       smtpPort: Number(values.github_smtp_port || 587),
       smtpUser: values.github_smtp_user || 'lcyksp.xyz@outlook.com',
       smtpFrom: values.github_smtp_from || values.github_smtp_user || 'lcyksp.xyz@outlook.com',
+      aiFallbackUrl: values.github_ai_fallback_url || '',
+      aiFallbackModel: values.github_ai_fallback_model || '',
+      aiFallbackConfigured: Boolean(values.github_ai_fallback_key),
     })
   } catch (err) {
     next(err)
@@ -521,17 +524,53 @@ router.post('/config/github-radar', async function (req, res, next) {
       ['github_smtp_port', String(req.body?.smtpPort || 587)],
       ['github_smtp_user', req.body?.smtpUser || 'lcyksp.xyz@outlook.com'],
       ['github_smtp_from', req.body?.smtpFrom || req.body?.smtpUser || 'lcyksp.xyz@outlook.com'],
+      ['github_ai_fallback_url', req.body?.aiFallbackUrl],
+      ['github_ai_fallback_model', req.body?.aiFallbackModel],
+      ['github_ai_fallback_key', req.body?.aiFallbackKey],
     ]
     const db = getDb()
     for (const [key, value] of values) {
       if (value === undefined || value === null || String(value).trim() === '') continue
-      const encrypted = ['github_token', 'github_smtp_password'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
+      const encrypted = ['github_token', 'github_smtp_password', 'github_ai_fallback_key'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
       await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [key, encrypted], (err) => err ? reject(err) : resolve()))
     }
     res.json({ message: 'GitHub 趋势配置已保存' })
   } catch (err) {
     next(err)
   }
+})
+
+router.get('/github-radar/categories', async function (req, res, next) {
+  try {
+    const db = getDb()
+    const rows = await new Promise((resolve, reject) => db.all('SELECT id, name, description, keywords, languages, enabled FROM github_categories ORDER BY id DESC', (err, result) => err ? reject(err) : resolve(result || [])))
+    res.json({ categories: rows.map((row) => ({ ...row, keywords: JSON.parse(row.keywords || '[]'), languages: JSON.parse(row.languages || '[]') })) })
+  } catch (err) { next(err) }
+})
+
+router.post('/github-radar/categories', async function (req, res, next) {
+  try {
+    const name = String(req.body?.name || '').trim().slice(0, 64)
+    const description = String(req.body?.description || '').trim().slice(0, 240)
+    const keywords = Array.isArray(req.body?.keywords) ? req.body.keywords : String(req.body?.keywords || '').split(/[,，\n]/)
+    const languages = Array.isArray(req.body?.languages) ? req.body.languages : String(req.body?.languages || '').split(/[,，\n]/)
+    const clean = (items, max) => [...new Set(items.map((item) => String(item || '').trim()).filter(Boolean))].slice(0, max)
+    if (!name || !clean(keywords, 30).length) return res.status(400).json({ error: '方向名称和关键词不能为空' })
+    const db = getDb()
+    await new Promise((resolve, reject) => db.run('INSERT INTO github_categories (name, description, keywords, languages) VALUES (?, ?, ?, ?)', [name, description, JSON.stringify(clean(keywords, 30)), JSON.stringify(clean(languages, 20))], (err) => err ? reject(err) : resolve()))
+    res.json({ message: '预设方向已创建' })
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT') return res.status(409).json({ error: '方向名称已存在' })
+    next(err)
+  }
+})
+
+router.delete('/github-radar/categories/:id', async function (req, res, next) {
+  try {
+    const db = getDb()
+    await new Promise((resolve, reject) => db.run('DELETE FROM github_categories WHERE id = ?', [req.params.id], (err) => err ? reject(err) : resolve()))
+    res.json({ message: '预设方向已删除' })
+  } catch (err) { next(err) }
 })
 
 router.get('/config/llm', async function (req, res, next) {

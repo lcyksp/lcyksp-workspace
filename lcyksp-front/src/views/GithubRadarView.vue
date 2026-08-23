@@ -92,7 +92,7 @@ onMounted(loadData)
     <section class="hero-card">
       <div>
         <span class="eyebrow">GITHUB TREND RADAR</span>
-        <h1>GitHub 技术趋势雷达</h1>
+        <h1>GitHub日报</h1>
         <p>持续发现新项目和快速升温的技术，以简短新闻邮件推送给你。</p>
       </div>
       <div class="schedule-note">北京时间 08:00 推送</div>

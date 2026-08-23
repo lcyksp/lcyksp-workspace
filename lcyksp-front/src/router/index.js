@@ -91,7 +91,7 @@ const routes = [
   { path: '/weather', name: 'weather', component: WeatherView },
   { path: '/web-capture', name: 'web-capture', component: WebCaptureView },
   { path: '/apex', name: 'apex', component: ApexView },
-  { path: '/github-radar', name: 'github-radar', component: GithubRadarView, meta: { requiresPremium: true } },
+  { path: '/github-radar', name: 'GitHub日报', component: GithubRadarView, meta: { requiresPremium: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
 ]
 
@@ -125,7 +125,7 @@ router.beforeEach((to) => {
       return { name: 'home' }
     }
     if (!['admin', 'premium', 'pro'].includes(user.role)) {
-      ElMessage.warning('GitHub 技术趋势雷达仅对高级用户开放')
+      ElMessage.warning('GitHub日报仅对高级用户开放')
       return { name: 'membership' }
     }
   }
