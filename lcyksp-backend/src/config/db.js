@@ -377,11 +377,10 @@ export async function initDb() {
   ).catch(() => {})
   await run(
     `INSERT OR IGNORE INTO github_categories (name, description, keywords, languages) VALUES
-      ('AI / 大模型', 'LLM、Agent、RAG、本地推理与生成式 AI', '["AI","LLM","Agent","RAG","MCP","大模型","推理"]', '["Python","TypeScript","Rust"]'),
-      ('开发者工具', '编程助手、代码搜索、自动化与工程效率工具', '["developer tools","coding assistant","代码助手","CLI","开发工具"]', '["TypeScript","Go","Rust","Python"]'),
-      ('基础设施 / 云原生', '数据库、容器、云原生和分布式系统', '["cloud native","Kubernetes","database","分布式","云原生"]', '["Go","Rust","C++","Java"]'),
-      ('嵌入式 / 硬件', '嵌入式、物联网、机器人和边缘计算', '["embedded","IoT","robotics","STM32","ESP32","机器人"]', '["C","C++","Rust","Python"]')`,
+      ('AI应用/大模型应用/AI开发编程', '关注 AI 应用、LLM 应用、Agent、编程助手和开发工具，不以算法研究为主', '["AI application","LLM application","AI agent","developer tools","coding assistant","RAG","MCP","skill","AI应用","大模型应用","AI开发编程"]', '["Python","TypeScript","JavaScript","Go","Rust"]'),
+      ('机械、材料', '关注机械工程、机器人、CAD/CAE、材料科学和制造技术', '["mechanical engineering","robotics","CAD","CAE","materials science","manufacturing","机械","材料","机器人"]', '["Python","C++","Rust","C","MATLAB"]')`,
   ).catch(() => {})
+  await run("UPDATE github_categories SET enabled = 0 WHERE name IN ('AI / 大模型', '开发者工具', '基础设施 / 云原生', '嵌入式 / 硬件')").catch(() => {})
 
   await run("UPDATE users SET role = 'admin', quota_plan = 'admin' WHERE id = 1").catch(() => {})
 
