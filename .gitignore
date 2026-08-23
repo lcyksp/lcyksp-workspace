@@ -4,6 +4,8 @@ dist/
 *.tar.gz
 lcyksp-backend/data/db/
 lcyksp-backend/data/uploads/
+lcyksp-backend/data/cookies*.txt
+**/dist-codex/
 *.log
 .DS_Store
 Thumbs.db
