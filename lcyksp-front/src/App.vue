@@ -177,6 +177,7 @@ const menuItems = reactive([
     children: [
       { name: '赛博菜谱', path: '/recipe' },
       { name: '共享相册', path: '/gallery' },
+      { name: 'GitHub 技术趋势', path: '/github-radar' },
       {
         name: '影音娱乐',
         isFolder: true,
@@ -309,13 +310,15 @@ function canAccessPremiumFeature(path) {
     }
   }
 
-  if (path === '/recipe') {
+  if (path === '/recipe' || path === '/github-radar') {
     if (['admin', 'premium', 'pro'].includes(currentUser.value.role)) {
       return { allowed: true, message: '' }
     }
     return {
       allowed: false,
-      message: '当前用户仅对高级用户开放。捐赠成为高级用户后即可使用赛博菜谱。',
+      message: path === '/github-radar'
+        ? 'GitHub 技术趋势雷达仅对高级用户开放。'
+        : '当前用户仅对高级用户开放。捐赠成为高级用户后即可使用赛博菜谱。',
     }
   }
 
@@ -377,7 +380,7 @@ function handleMenuNavigate(path) {
     return
   }
 
-  if (path === '/recipe' || path === '/gallery') {
+  if (path === '/recipe' || path === '/gallery' || path === '/github-radar') {
     const access = canAccessPremiumFeature(path)
     if (!access.allowed) {
       ElMessage.warning(access.message)

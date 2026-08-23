@@ -272,6 +272,117 @@ export async function initDb() {
      WHERE quota_plan IS NULL OR quota_plan = '' OR quota_plan = 'user'`,
   ).catch(() => {})
 
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_categories (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'name TEXT NOT NULL UNIQUE,' +
+      'description TEXT DEFAULT \'\',' +
+      'keywords TEXT NOT NULL DEFAULT \'[]\',' +
+      'languages TEXT NOT NULL DEFAULT \'[]\',' +
+      'enabled INTEGER NOT NULL DEFAULT 1,' +
+      "created_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+    ')',
+  ).catch(() => {})
+
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_subscriptions (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      'email TEXT NOT NULL,' +
+      'category_ids TEXT NOT NULL DEFAULT \'[]\',' +
+      'keywords TEXT NOT NULL DEFAULT \'[]\',' +
+      'frequencies TEXT NOT NULL DEFAULT \'["daily"]\',' +
+      'status TEXT NOT NULL DEFAULT \'pending\',' +
+      'last_test_sent_at TEXT DEFAULT NULL,' +
+      'created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),' +
+      'updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),' +
+      'UNIQUE(user_id, email)' +
+    ')',
+  ).catch(() => {})
+
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_email_delivery_logs (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'subscription_id INTEGER REFERENCES github_subscriptions(id) ON DELETE SET NULL,' +
+      'user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      'email TEXT NOT NULL,' +
+      'kind TEXT NOT NULL,' +
+      'status TEXT NOT NULL,' +
+      'error_message TEXT DEFAULT \'\',' +
+      "created_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+    ')',
+  ).catch(() => {})
+
+  await run('CREATE INDEX IF NOT EXISTS idx_github_subscriptions_user ON github_subscriptions(user_id, status)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_github_email_logs_lookup ON github_email_delivery_logs(user_id, kind, created_at)').catch(() => {})
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_repositories (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'full_name TEXT NOT NULL UNIQUE,' +
+      'url TEXT NOT NULL,' +
+      'description TEXT DEFAULT \'\',' +
+      'language TEXT DEFAULT \'\',' +
+      'topics TEXT NOT NULL DEFAULT \'[]\',' +
+      'stars INTEGER NOT NULL DEFAULT 0,' +
+      'forks INTEGER NOT NULL DEFAULT 0,' +
+      'first_seen_at TEXT NOT NULL,' +
+      'last_seen_at TEXT NOT NULL,' +
+      'last_ai_review_id INTEGER DEFAULT NULL,' +
+      'updated_at TEXT NOT NULL' +
+    ')',
+  ).catch(() => {})
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_star_snapshots (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'repository_id INTEGER NOT NULL REFERENCES github_repositories(id) ON DELETE CASCADE,' +
+      'stars INTEGER NOT NULL,' +
+      'captured_at TEXT NOT NULL,' +
+      'UNIQUE(repository_id, captured_at)' +
+    ')',
+  ).catch(() => {})
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_ai_reviews (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'repository_id INTEGER NOT NULL REFERENCES github_repositories(id) ON DELETE CASCADE,' +
+      'provider TEXT NOT NULL,' +
+      'model TEXT NOT NULL,' +
+      'category TEXT DEFAULT \'\',' +
+      'summary TEXT DEFAULT \'\',' +
+      'confidence REAL DEFAULT 0,' +
+      'worth_push INTEGER NOT NULL DEFAULT 0,' +
+      'raw_output TEXT DEFAULT \'\',' +
+      "created_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+    ')',
+  ).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_github_snapshots_repo_time ON github_star_snapshots(repository_id, captured_at)').catch(() => {})
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_subscription_repositories (' +
+      'subscription_id INTEGER NOT NULL REFERENCES github_subscriptions(id) ON DELETE CASCADE,' +
+      'repository_id INTEGER NOT NULL REFERENCES github_repositories(id) ON DELETE CASCADE,' +
+      'first_matched_at TEXT NOT NULL,' +
+      'last_matched_at TEXT NOT NULL,' +
+      'PRIMARY KEY(subscription_id, repository_id)' +
+    ')',
+  ).catch(() => {})
+  await run(
+    'CREATE TABLE IF NOT EXISTS github_job_runs (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'job_key TEXT NOT NULL UNIQUE,' +
+      'job_type TEXT NOT NULL,' +
+      'status TEXT NOT NULL,' +
+      'details TEXT DEFAULT \'\',' +
+      'started_at TEXT NOT NULL,' +
+      'finished_at TEXT DEFAULT NULL' +
+    ')',
+  ).catch(() => {})
+  await run(
+    `INSERT OR IGNORE INTO github_categories (name, description, keywords, languages) VALUES
+      ('AI / 大模型', 'LLM、Agent、RAG、本地推理与生成式 AI', '["AI","LLM","Agent","RAG","MCP","大模型","推理"]', '["Python","TypeScript","Rust"]'),
+      ('开发者工具', '编程助手、代码搜索、自动化与工程效率工具', '["developer tools","coding assistant","代码助手","CLI","开发工具"]', '["TypeScript","Go","Rust","Python"]'),
+      ('基础设施 / 云原生', '数据库、容器、云原生和分布式系统', '["cloud native","Kubernetes","database","分布式","云原生"]', '["Go","Rust","C++","Java"]'),
+      ('嵌入式 / 硬件', '嵌入式、物联网、机器人和边缘计算', '["embedded","IoT","robotics","STM32","ESP32","机器人"]', '["C","C++","Rust","Python"]')`,
+  ).catch(() => {})
+
   await run("UPDATE users SET role = 'admin', quota_plan = 'admin' WHERE id = 1").catch(() => {})
 
   console.log('[DB] Schema ready')
