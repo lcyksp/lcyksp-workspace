@@ -28,7 +28,7 @@ GitHub 日报采集器需要访问 `api.github.com`、仓库 README 和内容接
 
 ```bash
 # HTTP/HTTPS 代理，例如 http://127.0.0.1:7890
-# SOCKS5 代理，例如 socks5://127.0.0.1:1080
+# 若使用 SOCKS5，请先由服务器上的代理软件转换为 HTTP/HTTPS 本地端口，或直接使用 VPN 网络层
 GITHUB_PROXY_URL=http://127.0.0.1:7890
 GITHUB_REQUEST_TIMEOUT_MS=20000
 ```
