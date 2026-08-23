@@ -2,7 +2,7 @@ node_modules/
 dist/
 .env
 *.tar.gz
-lcyksp-backend/data/db/database.db*
+lcyksp-backend/data/db/
 lcyksp-backend/data/uploads/
 *.log
 .DS_Store
