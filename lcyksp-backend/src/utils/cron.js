@@ -3,9 +3,11 @@ import { getDb } from '../config/db.js';
 import { fetchBilibiliHot } from './trends/bilibili.js';
 import { fetchDouyinHot } from './trends/douyin.js';
 import { discoverActiveGithubSubscriptions } from './githubJobs.js';
+import { runGithubDigests } from './githubDigest.js';
 
 const INTERVAL_MS = 60 * 60 * 1000;
 let timer = null;
+let digestTimer = null;
 let lastGithubRadarRun = 0;
 
 async function cleanExpiredRecords() {
@@ -86,10 +88,16 @@ export function startCron() {
     // snapshotTrends(); // 已下架
   }, INTERVAL_MS);
   if (timer.unref) timer.unref();
+  runGithubDigests().catch((error) => console.error('[GitHub Radar] digest check failed:', error.message));
+  digestTimer = setInterval(() => {
+    runGithubDigests().catch((error) => console.error('[GitHub Radar] digest check failed:', error.message));
+  }, 60 * 1000);
+  if (digestTimer.unref) digestTimer.unref();
 }
 
 export function stopCron() {
   if (timer) { clearInterval(timer); timer = null; console.log('[清道夫] 定时任务已停止'); }
+  if (digestTimer) { clearInterval(digestTimer); digestTimer = null; }
 }
 
 export default { startCron, stopCron };
