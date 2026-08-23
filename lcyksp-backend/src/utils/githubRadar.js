@@ -1,8 +1,12 @@
 import { getDb } from '../config/db.js'
 import { decrypt } from './crypto.js'
+import { ProxyAgent } from 'undici'
 
 const GITHUB_API = process.env.GITHUB_API_URL || 'https://api.github.com'
 const USER_AGENT = 'lcyksp-github-trend-radar'
+const GITHUB_TIMEOUT_MS = Number(process.env.GITHUB_REQUEST_TIMEOUT_MS || 20000)
+const GITHUB_PROXY_URL = String(process.env.GITHUB_PROXY_URL || '').trim()
+const githubDispatcher = GITHUB_PROXY_URL ? new ProxyAgent(GITHUB_PROXY_URL) : undefined
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
@@ -14,15 +18,26 @@ async function githubFetch(path, params = {}) {
   const token = process.env.GITHUB_TOKEN || (tokenRow?.value ? decrypt(tokenRow.value) : '')
   const url = new URL(path, GITHUB_API)
   Object.entries(params).forEach(([key, value]) => value !== undefined && url.searchParams.set(key, value))
-  const response = await fetch(url, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': USER_AGENT,
-      ...(token ? { Authorization: 'Bearer ' + token } : {}),
-    },
-  })
-  if (!response.ok) throw new Error('GitHub API ' + response.status + ': ' + await response.text())
-  return response.json()
+  let lastError
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': USER_AGENT,
+          ...(token ? { Authorization: 'Bearer ' + token } : {}),
+        },
+        ...(githubDispatcher ? { dispatcher: githubDispatcher } : {}),
+        signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+      })
+      if (!response.ok) throw new Error('GitHub API ' + response.status + ': ' + await response.text())
+      return response.json()
+    } catch (error) {
+      lastError = error
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+    }
+  }
+  throw lastError
 }
 
 export async function discoverGithubRepositories({ query = '', categoryKeywords = [], language = '', limit = 30 } = {}) {
