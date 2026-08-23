@@ -15,6 +15,7 @@ import {
   Edit,
   Upload,
   KnifeFork,
+  Reading,
   Star,
   Moon,
   Sunny,
@@ -177,7 +178,6 @@ const menuItems = reactive([
     children: [
       { name: '赛博菜谱', path: '/recipe' },
       { name: '共享相册', path: '/gallery' },
-      { name: 'GitHub 技术趋势', path: '/github-radar' },
       {
         name: '影音娱乐',
         isFolder: true,
@@ -202,6 +202,14 @@ const menuItems = reactive([
           { name: 'Apex 战绩查询', path: '/apex' },
         ],
       },
+    ],
+    isOpen: false,
+  },
+  {
+    name: '学习助手',
+    icon: Reading,
+    children: [
+      { name: 'GitHub日报', path: '/github-radar' },
     ],
     isOpen: false,
   },
