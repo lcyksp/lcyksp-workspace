@@ -494,6 +494,46 @@ router.post('/config/llm/history', async function (req, res, next) {
 //  大模型配置管理（当前活跃配置）
 // ===================================================================
 
+router.get('/config/github-radar', async function (req, res, next) {
+  try {
+    const db = getDb()
+    const rows = await new Promise((resolve, reject) => db.all("SELECT key, value FROM system_config WHERE key LIKE 'github_%'", (err, result) => err ? reject(err) : resolve(result || [])))
+    const values = Object.fromEntries(rows.map((row) => [row.key, row.value]))
+    res.json({
+      githubTokenConfigured: Boolean(values.github_token),
+      smtpConfigured: Boolean(values.github_smtp_password),
+      smtpHost: values.github_smtp_host || 'smtp-mail.outlook.com',
+      smtpPort: Number(values.github_smtp_port || 587),
+      smtpUser: values.github_smtp_user || 'lcyksp.xyz@outlook.com',
+      smtpFrom: values.github_smtp_from || values.github_smtp_user || 'lcyksp.xyz@outlook.com',
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+router.post('/config/github-radar', async function (req, res, next) {
+  try {
+    const values = [
+      ['github_token', req.body?.githubToken],
+      ['github_smtp_password', req.body?.smtpPassword],
+      ['github_smtp_host', req.body?.smtpHost || 'smtp-mail.outlook.com'],
+      ['github_smtp_port', String(req.body?.smtpPort || 587)],
+      ['github_smtp_user', req.body?.smtpUser || 'lcyksp.xyz@outlook.com'],
+      ['github_smtp_from', req.body?.smtpFrom || req.body?.smtpUser || 'lcyksp.xyz@outlook.com'],
+    ]
+    const db = getDb()
+    for (const [key, value] of values) {
+      if (value === undefined || value === null || String(value).trim() === '') continue
+      const encrypted = ['github_token', 'github_smtp_password'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
+      await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [key, encrypted], (err) => err ? reject(err) : resolve()))
+    }
+    res.json({ message: 'GitHub 趋势配置已保存' })
+  } catch (err) {
+    next(err)
+  }
+})
+
 router.get('/config/llm', async function (req, res, next) {
   try {
     var db = getDb();

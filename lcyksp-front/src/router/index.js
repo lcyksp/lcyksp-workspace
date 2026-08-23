@@ -37,6 +37,7 @@ import TrendsView from '../views/TrendsView.vue'
 import WeatherView from '../views/WeatherView.vue'
 import WebCaptureView from '../views/WebCaptureView.vue'
 import ApexView from '../views/ApexView.vue'
+import GithubRadarView from '../views/GithubRadarView.vue'
 
 function readCurrentUser() {
   try {
@@ -90,6 +91,7 @@ const routes = [
   { path: '/weather', name: 'weather', component: WeatherView },
   { path: '/web-capture', name: 'web-capture', component: WebCaptureView },
   { path: '/apex', name: 'apex', component: ApexView },
+  { path: '/github-radar', name: 'github-radar', component: GithubRadarView, meta: { requiresPremium: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
 ]
 
@@ -114,6 +116,17 @@ router.beforeEach((to) => {
     if (user.role !== 'admin') {
       ElMessage.warning('当前页面仅管理员可访问')
       return { name: 'home' }
+    }
+  }
+
+  if (to.meta?.requiresPremium) {
+    if (!user) {
+      ElMessage.warning('请先登录高级用户账号')
+      return { name: 'home' }
+    }
+    if (!['admin', 'premium', 'pro'].includes(user.role)) {
+      ElMessage.warning('GitHub 技术趋势雷达仅对高级用户开放')
+      return { name: 'membership' }
     }
   }
 
