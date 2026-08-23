@@ -28,9 +28,11 @@ const dragTarget = ref(null)
 const dragOffset = ref({ x: 0, y: 0 })
 const resizeTarget = ref(null)
 const resizeCorner = ref('')
+const resizeStart = ref({ x: 0, y: 0, itemX: 0, itemY: 0, itemW: 0, itemH: 0 })
 const rotateTarget = ref(null)
 const rotateStart = ref({ angle: 0, startAngle: 0 })
 const canvasRef = ref(null)
+const canvasOuterRef = ref(null)
 const canvasScale = ref(1)
 
 const hasImages = computed(() => images.value.length > 0)
@@ -148,69 +150,106 @@ function recalcCanvas() {
 }
 
 function updateCanvasScale() {
-  if (!canvasRef.value) return
-  const container = canvasRef.value.parentElement
-  if (!container) return
-  const maxW = container.clientWidth - 40
+  if (!canvasOuterRef.value) return
+  const wrapper = canvasOuterRef.value.parentElement
+  if (!wrapper) return
+  const maxW = wrapper.clientWidth - 40
   canvasScale.value = Math.min(1, maxW / canvasWidth.value)
 }
 
 onMounted(() => { updateCanvasScale() })
 watch([canvasWidth, canvasHeight], () => { nextTick(updateCanvasScale) })
 
-function onCanvasMouseDown(e, item, type) {
+function canvasMousePos(e) {
+  const el = canvasOuterRef.value || canvasRef.value
+  if (!el) return { x: 0, y: 0 }
+  const rect = el.getBoundingClientRect()
+  const scale = canvasScale.value
+  return {
+    x: (e.clientX - rect.left) / scale,
+    y: (e.clientY - rect.top) / scale,
+  }
+}
+
+function onCanvasPointerDown(e, item, type) {
   e.preventDefault()
   e.stopPropagation()
-  const rect = canvasRef.value.getBoundingClientRect()
-  const scale = canvasScale.value
+  e.target.setPointerCapture?.(e.pointerId)
 
   if (type === 'move') {
+    const pos = canvasMousePos(e)
     dragTarget.value = item
     dragOffset.value = {
-      x: (e.clientX - rect.left) / scale - item.x,
-      y: (e.clientY - rect.top) / scale - item.y,
+      x: pos.x - item.x,
+      y: pos.y - item.y,
     }
   } else if (type === 'resize') {
     resizeTarget.value = item
-    resizeCorner.value = e.target.dataset.corner || 'se'
+    const handle = e.target.closest('[data-corner]')
+    resizeCorner.value = handle ? handle.dataset.corner : 'se'
+    const pos = canvasMousePos(e)
+    resizeStart.value = {
+      x: pos.x,
+      y: pos.y,
+      itemX: item.x,
+      itemY: item.y,
+      itemW: item.width,
+      itemH: item.height,
+    }
   } else if (type === 'rotate') {
     rotateTarget.value = item
+    const pos = canvasMousePos(e)
     const cx = item.x + (item.width || 0) / 2
     const cy = item.y + (item.height || 0) / 2
-    const mx = (e.clientX - rect.left) / scale
-    const my = (e.clientY - rect.top) / scale
     rotateStart.value = {
       angle: item.rotation,
-      startAngle: Math.atan2(my - cy, mx - cx) * (180 / Math.PI),
+      startAngle: Math.atan2(pos.y - cy, pos.x - cx) * (180 / Math.PI),
     }
   }
 }
 
-function onDocMouseMove(e) {
-  if (!canvasRef.value) return
-  const rect = canvasRef.value.getBoundingClientRect()
-  const scale = canvasScale.value
-  const mx = (e.clientX - rect.left) / scale
-  const my = (e.clientY - rect.top) / scale
+function onDocPointerMove(e) {
+  if (!dragTarget.value && !resizeTarget.value && !rotateTarget.value) return
+  const pos = canvasMousePos(e)
 
   if (dragTarget.value) {
-    dragTarget.value.x = Math.max(0, Math.round(mx - dragOffset.value.x))
-    dragTarget.value.y = Math.max(0, Math.round(my - dragOffset.value.y))
+    dragTarget.value.x = Math.max(0, Math.round(pos.x - dragOffset.value.x))
+    dragTarget.value.y = Math.max(0, Math.round(pos.y - dragOffset.value.y))
   }
 
   if (resizeTarget.value) {
     const item = resizeTarget.value
     const corner = resizeCorner.value
-    let newW = Math.max(40, Math.round(mx - item.x))
-    let newH = Math.max(40, Math.round(my - item.y))
-    if (item.originalWidth > 0) {
-      const ratio = item.originalHeight / item.originalWidth
-      if (corner === 'se' || corner === 'sw') {
-        newH = Math.round(newW * ratio)
-      } else {
-        newW = Math.round(newH / ratio)
-      }
+    const start = resizeStart.value
+    const dx = pos.x - start.x
+    const dy = pos.y - start.y
+    const ratio = item.originalWidth > 0 ? item.originalHeight / item.originalWidth : 0
+
+    let newW = start.itemW
+    let newH = start.itemH
+    let newX = start.itemX
+    let newY = start.itemY
+
+    if (corner === 'se') {
+      newW = Math.max(40, Math.round(start.itemW + dx))
+      newH = ratio > 0 ? Math.round(newW * ratio) : Math.max(40, Math.round(start.itemH + dy))
+    } else if (corner === 'sw') {
+      newW = Math.max(40, Math.round(start.itemW - dx))
+      newH = ratio > 0 ? Math.round(newW * ratio) : Math.max(40, Math.round(start.itemH + dy))
+      newX = Math.round(start.itemX + start.itemW - newW)
+    } else if (corner === 'ne') {
+      newW = Math.max(40, Math.round(start.itemW + dx))
+      newH = ratio > 0 ? Math.round(newW * ratio) : Math.max(40, Math.round(start.itemH - dy))
+      newY = Math.round(start.itemY + start.itemH - newH)
+    } else if (corner === 'nw') {
+      newW = Math.max(40, Math.round(start.itemW - dx))
+      newH = ratio > 0 ? Math.round(newW * ratio) : Math.max(40, Math.round(start.itemH - dy))
+      newX = Math.round(start.itemX + start.itemW - newW)
+      newY = Math.round(start.itemY + start.itemH - newH)
     }
+
+    item.x = newX
+    item.y = newY
     item.width = newW
     item.height = newH
   }
@@ -219,12 +258,12 @@ function onDocMouseMove(e) {
     const item = rotateTarget.value
     const cx = item.x + (item.width || 0) / 2
     const cy = item.y + (item.height || 0) / 2
-    const angle = Math.atan2(my - cy, mx - cx) * (180 / Math.PI)
+    const angle = Math.atan2(pos.y - cy, pos.x - cx) * (180 / Math.PI)
     item.rotation = Math.round(rotateStart.value.angle + (angle - rotateStart.value.startAngle))
   }
 }
 
-function onDocMouseUp() {
+function onDocPointerUp() {
   if (resizeTarget.value) recalcCanvas()
   dragTarget.value = null
   resizeTarget.value = null
@@ -232,12 +271,12 @@ function onDocMouseUp() {
 }
 
 onMounted(() => {
-  document.addEventListener('mousemove', onDocMouseMove)
-  document.addEventListener('mouseup', onDocMouseUp)
+  document.addEventListener('pointermove', onDocPointerMove, { passive: false })
+  document.addEventListener('pointerup', onDocPointerUp)
 })
 onUnmounted(() => {
-  document.removeEventListener('mousemove', onDocMouseMove)
-  document.removeEventListener('mouseup', onDocMouseUp)
+  document.removeEventListener('pointermove', onDocPointerMove)
+  document.removeEventListener('pointerup', onDocPointerUp)
   imageUrls.value.forEach(u => URL.revokeObjectURL(u))
   if (bgImageUrl.value) URL.revokeObjectURL(bgImageUrl.value)
 })
@@ -415,7 +454,7 @@ function parseColor(hex) {
 
         <!-- 画布预览 -->
         <div class="canvas-wrapper">
-          <div class="canvas-container" :style="{ width: canvasWidth * canvasScale + 'px', height: canvasHeight * canvasScale + 'px' }">
+          <div ref="canvasOuterRef" class="canvas-outer" :style="{ width: canvasWidth * canvasScale + 'px', height: canvasHeight * canvasScale + 'px' }">
             <div ref="canvasRef" class="stitch-canvas" :style="{
               width: canvasWidth + 'px',
               height: canvasHeight + 'px',
@@ -433,16 +472,16 @@ function parseColor(hex) {
                 transform: `rotate(${item.rotation}deg)`,
                 zIndex: customItems.indexOf(item) + 1,
               }">
-                <img :src="imageUrls[item.index]" class="canvas-item-img" @mousedown.stop="onCanvasMouseDown($event, item, 'move')">
-                <div class="resize-handle se" data-corner="se" @mousedown.stop="onCanvasMouseDown($event, item, 'resize')"></div>
-                <div class="resize-handle sw" data-corner="sw" @mousedown.stop="onCanvasMouseDown($event, item, 'resize')"></div>
-                <div class="resize-handle ne" data-corner="ne" @mousedown.stop="onCanvasMouseDown($event, item, 'resize')"></div>
-                <div class="resize-handle nw" data-corner="nw" @mousedown.stop="onCanvasMouseDown($event, item, 'resize')"></div>
-                <div class="rotate-handle" @mousedown.stop="onCanvasMouseDown($event, item, 'rotate')">↻</div>
+                <img :src="imageUrls[item.index]" class="canvas-item-img" draggable="false" @pointerdown.stop="onCanvasPointerDown($event, item, 'move')">
+                <div class="resize-handle se" data-corner="se" @pointerdown.stop="onCanvasPointerDown($event, item, 'resize')"></div>
+                <div class="resize-handle sw" data-corner="sw" @pointerdown.stop="onCanvasPointerDown($event, item, 'resize')"></div>
+                <div class="resize-handle ne" data-corner="ne" @pointerdown.stop="onCanvasPointerDown($event, item, 'resize')"></div>
+                <div class="resize-handle nw" data-corner="nw" @pointerdown.stop="onCanvasPointerDown($event, item, 'resize')"></div>
+                <div class="rotate-handle" @pointerdown.stop="onCanvasPointerDown($event, item, 'rotate')">↻</div>
                 <div class="item-toolbar">
-                  <button @click.stop="moveItemZIndex(item, 'up')" title="上移一层">↑</button>
-                  <button @click.stop="moveItemZIndex(item, 'down')" title="下移一层">↓</button>
-                  <button @click.stop="removeImage(item.index)" title="删除" class="item-del">✕</button>
+                  <button @pointerdown.stop @click.stop="moveItemZIndex(item, 'up')" title="上移一层">↑</button>
+                  <button @pointerdown.stop @click.stop="moveItemZIndex(item, 'down')" title="下移一层">↓</button>
+                  <button @pointerdown.stop @click.stop="removeImage(item.index)" title="删除" class="item-del">✕</button>
                 </div>
               </div>
             </div>
@@ -742,12 +781,15 @@ function parseColor(hex) {
   background: var(--bg-secondary, #f0f0f0);
   padding: 20px;
 }
-.canvas-container {
+.canvas-outer {
   margin: 0 auto;
   position: relative;
+  overflow: hidden;
 }
 .stitch-canvas {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
   overflow: hidden;
   box-shadow: 0 4px 20px rgba(0,0,0,0.15);
 }
@@ -756,14 +798,17 @@ function parseColor(hex) {
   cursor: move;
   border: 2px solid transparent;
   transition: border-color 0.15s;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 .canvas-item:hover { border-color: var(--accent-blue); }
 .canvas-item-img {
   width: 100%;
   height: 100%;
   object-fit: fill;
-  pointer-events: none;
   display: block;
+  pointer-events: auto;
 }
 .resize-handle {
   position: absolute;
@@ -802,6 +847,8 @@ function parseColor(hex) {
   gap: 2px;
   opacity: 0;
   transition: opacity 0.15s;
+  z-index: 9999;
+  pointer-events: auto;
 }
 .canvas-item:hover .item-toolbar { opacity: 1; }
 .item-toolbar button {
@@ -816,6 +863,7 @@ function parseColor(hex) {
   display: flex;
   align-items: center;
   justify-content: center;
+  pointer-events: auto;
 }
 .item-toolbar button:hover { background: rgba(0,0,0,0.8); }
 .item-del:hover { background: #e74c3c !important; }

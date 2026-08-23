@@ -37,6 +37,7 @@ export async function initDb() {
   })
 
   await run('PRAGMA journal_mode=WAL;')
+  await run('PRAGMA busy_timeout=5000;')
   await run('PRAGMA foreign_keys=ON;')
 
   await run(
@@ -233,6 +234,32 @@ export async function initDb() {
   await run('CREATE INDEX IF NOT EXISTS idx_membership_orders_provider_order ON membership_orders(provider, order_id)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_usage_counters_lookup ON usage_counters(subject_type, subject_key, action, window_start)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_registration_attempts_lookup ON registration_attempts(ip_address, window_start)').catch(() => {})
+
+  await run(
+    'CREATE TABLE IF NOT EXISTS trend_snapshots (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'platform TEXT NOT NULL,' +
+      'keyword TEXT NOT NULL,' +
+      'rank INTEGER DEFAULT 0,' +
+      'score INTEGER DEFAULT 0,' +
+      "extra TEXT DEFAULT '{}'," +
+      "created_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+    ')',
+  ).catch(() => {})
+
+  await run('CREATE INDEX IF NOT EXISTS idx_trend_snapshots_platform ON trend_snapshots(platform, created_at)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_trend_snapshots_keyword ON trend_snapshots(keyword, platform)').catch(() => {})
+
+  await run(
+    'CREATE TABLE IF NOT EXISTS trend_keywords (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'keyword TEXT NOT NULL,' +
+      'platform TEXT NOT NULL,' +
+      'user_id INTEGER DEFAULT NULL,' +
+      "created_at TEXT NOT NULL DEFAULT (datetime('now'))," +
+      'UNIQUE(keyword, platform, user_id)' +
+    ')',
+  ).catch(() => {})
 
   await run(
     `UPDATE users

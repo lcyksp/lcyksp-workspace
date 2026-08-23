@@ -42,11 +42,8 @@ function normalizeImportedMembershipCode(value) {
   if (!input) return '';
 
   var redeemMatch = input.match(/\/redeem\/([A-Za-z0-9_-]+)/i);
-  if (redeemMatch && redeemMatch[1]) {
-    return redeemMatch[1];
-  }
-
-  return input;
+  var token = (redeemMatch && redeemMatch[1]) ? redeemMatch[1] : input;
+  return token.toUpperCase();
 }
 
 function maskMembershipDisplayCode(value) {
@@ -119,8 +116,30 @@ router.put('/files/:code', async function (req, res, next) {
 
     var expireTime = req.body.expireTime;
     var maxDownloads = req.body.maxDownloads;
+    var fileName = typeof req.body.fileName === 'string' ? req.body.fileName.trim() : '';
+    var newCode = typeof req.body.newCode === 'string' ? req.body.newCode.trim() : '';
+
     var setClauses = [];
     var params = [];
+
+    if (fileName) {
+      setClauses.push('file_name = ?');
+      params.push(fileName);
+    }
+
+    if (newCode && newCode !== code) {
+      var exists = await new Promise(function (resolve, reject) {
+        db.get('SELECT id FROM transfers WHERE id = ?', [newCode], function (err, row) {
+          if (err) return reject(err);
+          resolve(row);
+        });
+      });
+      if (exists) {
+        return res.status(400).json({ error: '该提取码已被占用，请使用其他提取码' });
+      }
+      setClauses.push('id = ?');
+      params.push(newCode);
+    }
 
     if (expireTime !== undefined) {
       if (expireTime === 'permanent') {
@@ -644,7 +663,7 @@ router.get('/config/membership', async function (req, res, next) {
     var db = getDb();
     var rows = await new Promise(function (resolve, reject) {
       db.all(
-        'SELECT key, value FROM system_config WHERE key IN (\'membership_afdian_url\', \'membership_notice\', \'membership_afdian_user_id\', \'membership_afdian_token\', \'membership_afdian_webhook_token\', \'membership_plan_id_monthly\', \'membership_plan_id_quarterly\', \'membership_plan_id_yearly\')',
+        'SELECT key, value FROM system_config WHERE key IN (\'membership_afdian_url\', \'membership_notice\', \'membership_afdian_user_id\', \'membership_afdian_token\', \'membership_afdian_webhook_token\', \'membership_plan_id_monthly\', \'membership_plan_id_quarterly\', \'membership_plan_id_yearly\', \'membership_afdian_reply_template\')',
         function (err, rows) {
           if (err) return reject(err);
           resolve(rows);
@@ -666,6 +685,7 @@ router.get('/config/membership', async function (req, res, next) {
       planIdMonthly: config.membership_plan_id_monthly || '',
       planIdQuarterly: config.membership_plan_id_quarterly || '',
       planIdYearly: config.membership_plan_id_yearly || '',
+      afdianReplyTemplate: config.membership_afdian_reply_template || '',
       plans: MEMBERSHIP_PLANS,
     });
   } catch (err) {
@@ -683,6 +703,7 @@ router.post('/config/membership', async function (req, res, next) {
     var planIdMonthly = typeof req.body.planIdMonthly === 'string' ? req.body.planIdMonthly.trim() : '';
     var planIdQuarterly = typeof req.body.planIdQuarterly === 'string' ? req.body.planIdQuarterly.trim() : '';
     var planIdYearly = typeof req.body.planIdYearly === 'string' ? req.body.planIdYearly.trim() : '';
+    var afdianReplyTemplate = typeof req.body.afdianReplyTemplate === 'string' ? req.body.afdianReplyTemplate.trim() : '';
     var db = getDb();
 
     await new Promise(function (resolve, reject) {
@@ -729,6 +750,12 @@ router.post('/config/membership', async function (req, res, next) {
     });
     await new Promise(function (resolve, reject) {
       db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_plan_id_yearly', planIdYearly], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_afdian_reply_template', afdianReplyTemplate], function (err) {
         if (err) return reject(err);
         resolve();
       });

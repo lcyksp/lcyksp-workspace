@@ -1,4 +1,4 @@
-﻿import { Router } from 'express'
+import { Router } from 'express'
 import crypto from 'crypto'
 import { getDb } from '../config/db.js'
 import { authMiddleware, buildFreshUserPayload, requireAuth } from '../middleware/auth.js'
@@ -42,6 +42,7 @@ const MEMBERSHIP_CONFIG_KEYS = [
   'membership_plan_id_monthly',
   'membership_plan_id_quarterly',
   'membership_plan_id_yearly',
+  'membership_afdian_reply_template',
 ]
 
 function dbGet(sql, params = []) {
@@ -178,7 +179,48 @@ async function loadMembershipRuntimeConfig() {
       quarterly: map.membership_plan_id_quarterly || '',
       yearly: map.membership_plan_id_yearly || '',
     },
+    afdianReplyTemplate: map.membership_afdian_reply_template || '',
   }
+}
+
+function generateAfdianCardCode() {
+  const raw = crypto.randomBytes(10).toString('hex').toUpperCase()
+  return [raw.slice(0, 4), raw.slice(4, 8), raw.slice(8, 12), raw.slice(12, 16)].join('-')
+}
+
+async function sendAfdianPrivateMessage(config, recipientUserId, content) {
+  if (!config.afdianUserId || !config.afdianToken) {
+    throw new Error('爱发电 user_id 或 token 未配置')
+  }
+
+  const params = JSON.stringify({ recipient: recipientUserId, content: content })
+  const ts = Math.floor(Date.now() / 1000)
+  const sign = buildAfdianSignature({
+    token: config.afdianToken,
+    userId: config.afdianUserId,
+    params,
+    ts,
+  })
+
+  const response = await fetch('https://afdian.net/api/open/send-msg', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: config.afdianUserId,
+      params,
+      ts,
+      sign,
+    }),
+  })
+
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error(`爱发电发送私信失败：HTTP ${response.status}`)
+  }
+  if (!data || data.ec !== 200) {
+    throw new Error(data?.em || '爱发电发送私信失败')
+  }
+  return data
 }
 
 function detectPlanKeyByOrder(order, config) {
@@ -296,41 +338,67 @@ async function applyMembershipForAfdianOrder(order, config) {
     return { ok: false, reason: '未能识别爱发电订单对应的会员档位', status: 'failed' }
   }
 
-  const { username, user, reason } = await resolveUserByRemark(order?.remark)
-  if (!user) {
-    await upsertMembershipOrder(order, planKey, 'failed', order)
-    return { ok: false, reason, status: 'failed', username }
+  // Generate unique card code
+  let cardCode = ''
+  let codeExists = true
+  while (codeExists) {
+    cardCode = generateAfdianCardCode()
+    const exists = await dbGet('SELECT id FROM membership_cards WHERE code = ?', [cardCode])
+    if (!exists) codeExists = false
   }
 
-  const now = new Date()
-  let baseDate = now
-  if (user.premium_expires_at) {
-    const currentExpire = new Date(user.premium_expires_at)
-    if (!Number.isNaN(currentExpire.getTime()) && currentExpire.getTime() > now.getTime()) {
-      baseDate = currentExpire
+  const { username, user } = await resolveUserByRemark(order?.remark)
+
+  const isSimulated = orderId.startsWith('SIM-')
+  const recipientUserId = order?.user_id
+
+  if (user) {
+    const now = new Date()
+    let baseDate = now
+    if (user.premium_expires_at) {
+      const currentExpire = new Date(user.premium_expires_at)
+      if (!Number.isNaN(currentExpire.getTime()) && currentExpire.getTime() > now.getTime()) {
+        baseDate = currentExpire
+      }
     }
-  }
+    const nextExpire = buildPremiumExpiry(baseDate, plan.durationDays)
 
-  const nextExpire = buildPremiumExpiry(baseDate, plan.durationDays)
+    await dbRun('BEGIN TRANSACTION')
+    try {
+      await dbRun(
+        "UPDATE users SET role = 'premium', quota_plan = 'premium', premium_expires_at = ? WHERE id = ?",
+        [nextExpire, user.id],
+      )
 
-  await dbRun('BEGIN TRANSACTION')
-  try {
-    await dbRun(
-      "UPDATE users SET role = 'premium', quota_plan = 'premium', premium_expires_at = ? WHERE id = ?",
-      [nextExpire, user.id],
-    )
+      await dbRun(
+        "INSERT INTO membership_cards (code, plan_key, duration_days, status, source, source_order_id, note, used_by, used_at, granted_expires_at) VALUES (?, ?, ?, 'used', 'afdian_webhook', ?, ?, ?, ?, ?)",
+        [
+          cardCode,
+          plan.key,
+          plan.durationDays,
+          orderId,
+          `爱发电自动开通 | 用户名: ${user.username}${order?.remark ? ` | 备注: ${order.remark}` : ''}`,
+          user.id,
+          now.toISOString(),
+          nextExpire,
+        ],
+      )
 
-    const cardCode = await createAfdianMembershipRecord({
-      userId: user.id,
-      orderId,
-      plan,
-      username: user.username,
-      remark: String(order?.remark || '').trim(),
-      nextExpire,
-    })
+      await upsertMembershipOrder(order, plan.key, 'applied', order, { cardCode })
+      await dbRun('COMMIT')
+    } catch (error) {
+      await dbRun('ROLLBACK').catch(() => {})
+      throw error
+    }
 
-    await upsertMembershipOrder(order, plan.key, 'applied', order, { cardCode })
-    await dbRun('COMMIT')
+    if (!isSimulated && recipientUserId && config.afdianUserId && config.afdianToken) {
+      try {
+        const finalMessage = `您的会员已自动激活开通到账号：${user.username}，有效期至 ${nextExpire.slice(0, 19).replace('T', ' ')}。\n\n兑换码（备份）：\n${cardCode}`
+        await sendAfdianPrivateMessage(config, recipientUserId, finalMessage)
+      } catch (err) {
+        console.error('[webhook] 发送爱发电已激活私信失败:', err.message)
+      }
+    }
 
     return {
       ok: true,
@@ -338,10 +406,50 @@ async function applyMembershipForAfdianOrder(order, config) {
       username: user.username,
       planKey: plan.key,
       nextExpire,
+      cardCode,
     }
-  } catch (error) {
-    await dbRun('ROLLBACK').catch(() => {})
-    throw error
+  } else {
+    await dbRun('BEGIN TRANSACTION')
+    try {
+      await dbRun(
+        "INSERT INTO membership_cards (code, plan_key, duration_days, status, source, source_order_id, note) VALUES (?, ?, ?, 'unused', 'afdian_webhook', ?, ?)",
+        [
+          cardCode,
+          plan.key,
+          plan.durationDays,
+          orderId,
+          `爱发电自动发码 | 订单备注: ${String(order?.remark || '').trim()}`,
+        ],
+      )
+
+      await upsertMembershipOrder(order, plan.key, 'applied', order, { cardCode })
+      await dbRun('COMMIT')
+    } catch (error) {
+      await dbRun('ROLLBACK').catch(() => {})
+      throw error
+    }
+
+    if (!isSimulated && recipientUserId && config.afdianUserId && config.afdianToken) {
+      try {
+        const template = config.afdianReplyTemplate || '感谢您的赞助！您的 {plan_name} 兑换码为：\n{code}\n请前往本站会员中心兑换。'
+        const finalMessage = template
+          .replace(/{code}/g, cardCode)
+          .replace(/{plan_name}/g, plan.name)
+          .replace(/{duration_days}/g, plan.durationDays)
+          .replace(/{order_id}/g, orderId)
+        await sendAfdianPrivateMessage(config, recipientUserId, finalMessage)
+      } catch (err) {
+        console.error('[webhook] 发送爱发电卡密私信失败:', err.message)
+      }
+    }
+
+    return {
+      ok: true,
+      status: 'applied',
+      username: '',
+      planKey: plan.key,
+      cardCode,
+    }
   }
 }
 
@@ -430,15 +538,14 @@ router.post('/redeem', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: '管理员账号无需兑换高级用户' })
     }
 
+    const extractedToken = extractedCode.toUpperCase()
     const card = await dbGet(
-      'SELECT id, code, plan_key, duration_days, status FROM membership_cards WHERE code IN (?, ?, ?, ?, ?, ?)',
+      'SELECT id, code, plan_key, duration_days, status FROM membership_cards WHERE UPPER(code) = ? OR UPPER(code) = ? OR UPPER(code) = ? OR UPPER(code) = ?',
       [
-        rawInput,
-        rawCode,
-        extractedCode,
-        extractedUpperCode,
-        extractedCode ? `https://ifdian.net/redeem/${extractedCode}` : '',
-        extractedCode ? `https://ifdian.net/redeem/${extractedUpperCode}` : '',
+        extractedToken,
+        `https://ifdian.net/redeem/${extractedToken}`.toUpperCase(),
+        `https://afdian.net/redeem/${extractedToken}`.toUpperCase(),
+        `https://afdian.com/redeem/${extractedToken}`.toUpperCase()
       ],
     )
 

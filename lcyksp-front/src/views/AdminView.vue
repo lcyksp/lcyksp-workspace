@@ -29,6 +29,7 @@ const fileDialogVisible = ref(false)
 const fileFormLoading = ref(false)
 const fileForm = reactive({
   code: '',
+  newCode: '',
   fileName: '',
   expireTime: '',
   isPermanent: false,
@@ -63,6 +64,7 @@ const membershipConfig = reactive({
   planIdMonthly: '',
   planIdQuarterly: '',
   planIdYearly: '',
+  afdianReplyTemplate: '',
   plans: [],
 })
 const membershipConfigLoading = ref(false)
@@ -256,22 +258,16 @@ async function deleteFile(code, fileName) {
 
 function openEditFile(file) {
   fileForm.code = file.id
+  fileForm.newCode = file.id
   fileForm.fileName = file.fileName
   fileForm.maxDownloads = file.maxDownloads
 
   if (!file.expireTime || String(file.expireTime).includes('2099')) {
-    fileForm.expireTime = 'permanent'
+    fileForm.expireTime = ''
     fileForm.isPermanent = true
   } else {
-    const date = new Date(file.expireTime)
-    if (Number.isNaN(date.getTime())) {
-      fileForm.expireTime = ''
-      fileForm.isPermanent = false
-    } else {
-      const pad = (value) => String(value).padStart(2, '0')
-      fileForm.expireTime = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
-      fileForm.isPermanent = false
-    }
+    fileForm.expireTime = file.expireTime
+    fileForm.isPermanent = false
   }
 
   fileDialogVisible.value = true
@@ -279,6 +275,14 @@ function openEditFile(file) {
 
 async function submitFileForm() {
   const payload = {}
+
+  if (fileForm.fileName.trim()) {
+    payload.fileName = fileForm.fileName.trim()
+  }
+
+  if (fileForm.newCode.trim() && fileForm.newCode.trim() !== fileForm.code) {
+    payload.newCode = fileForm.newCode.trim()
+  }
 
   if (fileForm.isPermanent) {
     payload.expireTime = 'permanent'
@@ -545,6 +549,7 @@ async function loadMembershipConfig() {
     membershipConfig.planIdMonthly = res.data?.planIdMonthly || ''
     membershipConfig.planIdQuarterly = res.data?.planIdQuarterly || ''
     membershipConfig.planIdYearly = res.data?.planIdYearly || ''
+    membershipConfig.afdianReplyTemplate = res.data?.afdianReplyTemplate || ''
     membershipConfig.plans = Array.isArray(res.data?.plans) ? res.data.plans : []
     if (membershipConfig.plans.length && !membershipConfig.plans.some((item) => item.key === membershipCardForm.planKey)) {
       membershipCardForm.planKey = membershipConfig.plans[0].key
@@ -571,6 +576,7 @@ async function saveMembershipConfig() {
       planIdMonthly: membershipConfig.planIdMonthly.trim(),
       planIdQuarterly: membershipConfig.planIdQuarterly.trim(),
       planIdYearly: membershipConfig.planIdYearly.trim(),
+      afdianReplyTemplate: membershipConfig.afdianReplyTemplate.trim(),
     })
     ElMessage.success('会员配置已保存')
     loadMembershipConfig()
@@ -621,6 +627,28 @@ async function generateMembershipCards() {
   } finally {
     membershipCardGenerating.value = false
   }
+}
+
+function copyAllGeneratedCodes() {
+  if (!generatedCardCodes.value.length) return
+  const text = generatedCardCodes.value.join('\n')
+  navigator.clipboard.writeText(text)
+    .then(() => {
+      ElMessage.success('已成功复制全部兑换码')
+    })
+    .catch(() => {
+      ElMessage.error('复制失败，请手动选择复制')
+    })
+}
+
+function copyCardCode(code) {
+  navigator.clipboard.writeText(code)
+    .then(() => {
+      ElMessage.success('已复制卡密: ' + code)
+    })
+    .catch(() => {
+      ElMessage.error('复制失败')
+    })
 }
 
 async function importMembershipCards() {
@@ -971,11 +999,11 @@ onMounted(() => {
               <el-table-column label="创建时间" width="180">
                 <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="170">
+              <el-table-column label="操作" width="170" fixed="right">
                 <template #default="{ row }">
                   <div class="row-actions">
-                    <el-button size="small" type="primary" plain @click="openEditFile(row)">编辑</el-button>
-                    <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+                    <el-button size="small" type="primary" @click="openEditFile(row)">编辑</el-button>
+                    <el-button size="small" type="danger" @click="deleteFile(row.id, row.fileName)">删除</el-button>
                   </div>
                 </template>
               </el-table-column>
@@ -1015,7 +1043,7 @@ onMounted(() => {
             </dl>
             <div class="mobile-card-actions">
               <el-button size="small" type="primary" @click="openEditFile(row)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+              <el-button size="small" type="danger" @click="deleteFile(row.id, row.fileName)">删除</el-button>
             </div>
           </article>
         </div>
@@ -1075,11 +1103,11 @@ onMounted(() => {
               <el-table-column label="注册时间" width="180">
                 <template #default="{ row }">{{ formatTime(row.created_at || row.createdAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="170">
+              <el-table-column label="操作" width="170" fixed="right">
                 <template #default="{ row }">
                   <div class="row-actions">
                     <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
-                    <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+                    <el-button size="small" type="danger" :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
                   </div>
                 </template>
               </el-table-column>
@@ -1147,7 +1175,7 @@ onMounted(() => {
             </dl>
             <div class="mobile-card-actions">
               <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
-              <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+              <el-button size="small" type="danger" :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
             </div>
             <div v-if="row.role === 'admin'" class="mobile-quick-placeholder">
               其他管理员不可在此修改
@@ -1267,6 +1295,16 @@ onMounted(() => {
               <el-form-item label="Webhook 令牌">
                 <el-input v-model="membershipConfig.webhookToken" placeholder="自定义一个回调校验令牌，例如：afdian-hook-2026" clearable />
               </el-form-item>
+              <el-form-item label="自动发货私信回复模板">
+                <el-input
+                  v-model="membershipConfig.afdianReplyTemplate"
+                  type="textarea"
+                  :rows="4"
+                  resize="vertical"
+                  placeholder="赞助支付成功后，自动发给用户的私信模板。支持占位符：{code} (兑换码)、{plan_name} (方案名称)、{duration_days} (有效天数)、{order_id} (订单号)。
+留空则使用默认模板：感谢您的赞助！您的 {plan_name} 兑换码为：\n{code}\n请前往本站兑换。"
+                />
+              </el-form-item>
               <el-form-item label="月卡 plan_id">
                 <el-input v-model="membershipConfig.planIdMonthly" placeholder="没有也可以先留空，系统会按 5 元自动识别" clearable />
               </el-form-item>
@@ -1350,9 +1388,12 @@ onMounted(() => {
             </div>
 
             <div v-if="generatedCardCodes.length" class="generated-cards-box">
-              <div class="generated-cards-title">最新生成</div>
+              <div class="generated-cards-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>最新生成</span>
+                <el-button type="primary" size="small" link @click="copyAllGeneratedCodes">复制全部</el-button>
+              </div>
               <div class="generated-cards-list">
-                <code v-for="code in generatedCardCodes" :key="code">{{ code }}</code>
+                <code v-for="code in generatedCardCodes" :key="code" style="cursor: pointer;" @click="copyCardCode(code)" title="点击复制">{{ code }}</code>
               </div>
             </div>
           </section>
@@ -1380,7 +1421,7 @@ onMounted(() => {
     <div v-loading="membershipCardsLoading" class="membership-card-list">
       <div v-if="filteredPlanCards(plan.key).length === 0" class="feedback-empty" style="padding: 12px 0;">暂无卡密</div>
       <div v-for="card in filteredPlanCards(plan.key)" :key="card.id" class="membership-card-simple">
-        <span class="membership-card-code">{{ card.code }}</span>
+        <span class="membership-card-code" style="cursor: pointer;" @click="copyCardCode(card.code)" title="点击复制">{{ card.code }}</span>
         <el-tag :type="card.status === 'used' ? 'success' : 'warning'" effect="dark" size="small">
           {{ card.status === 'used' ? '已使用' : '未使用' }}
         </el-tag>
@@ -1469,7 +1510,7 @@ onMounted(() => {
                   <h4>{{ item.problemSummary }}</h4>
                   <span>{{ formatTime(item.createdAt) }}</span>
                 </div>
-                <el-button size="small" type="danger" plain :loading="feedbackDeletingId === item.id" @click="deleteFeedback(item.id)">删除</el-button>
+                <el-button size="small" type="danger" :loading="feedbackDeletingId === item.id" @click="deleteFeedback(item.id)">删除</el-button>
               </div>
 
               <dl class="feedback-meta">
@@ -1540,15 +1581,22 @@ onMounted(() => {
     <el-dialog v-model="fileDialogVisible" title="编辑文件属性" width="440px" :close-on-click-modal="false">
       <el-form label-position="top">
         <el-form-item label="文件名">
-          <el-input :model-value="fileForm.fileName" disabled />
+          <el-input v-model="fileForm.fileName" placeholder="修改文件名" clearable />
         </el-form-item>
         <el-form-item label="提取码">
-          <el-input :model-value="fileForm.code" disabled />
+          <el-input v-model="fileForm.newCode" placeholder="修改提取码" clearable />
         </el-form-item>
         <el-form-item label="过期时间">
           <div class="file-edit-time-row">
-            <el-input v-model="fileForm.expireTime" type="datetime-local" :disabled="fileForm.isPermanent" placeholder="选择过期时间" />
-            <el-checkbox v-model="fileForm.isPermanent" @change="(value) => { fileForm.expireTime = value ? 'permanent' : '' }">永久有效</el-checkbox>
+            <el-date-picker
+              v-model="fileForm.expireTime"
+              type="datetime"
+              placeholder="选择过期时间"
+              value-format="YYYY-MM-DDTHH:mm:ss.000Z"
+              :disabled="fileForm.isPermanent"
+              style="flex: 1;"
+            />
+            <el-checkbox v-model="fileForm.isPermanent" @change="(value) => { if (value) { fileForm.expireTime = '' } }">永久有效</el-checkbox>
           </div>
           <div class="form-hint">取消勾选后可手动设置过期时间。</div>
         </el-form-item>
@@ -1606,6 +1654,11 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.row-actions :deep(.el-button) {
+  flex-shrink: 0;
 }
 
 .user-search-wrap {
