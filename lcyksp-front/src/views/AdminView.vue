@@ -121,6 +121,19 @@ const membershipImportSummary = ref(null)
 const llmLoading = ref(false)
 const llmSaving = ref(false)
 const llmTesting = ref(false)
+const githubRadarLoading = ref(false)
+const githubRadarSaving = ref(false)
+const githubCategoryLoading = ref(false)
+const githubCategorySaving = ref(false)
+const githubCategories = ref([])
+const githubRadarConfig = reactive({
+  githubToken: '', githubTokenConfigured: false,
+  smtpPassword: '', smtpConfigured: false,
+  smtpHost: 'smtp-mail.outlook.com', smtpPort: 587,
+  smtpUser: 'lcyksp.xyz@outlook.com', smtpFrom: 'lcyksp.xyz@outlook.com',
+  aiFallbackUrl: '', aiFallbackModel: '', aiFallbackKey: '', aiFallbackConfigured: false,
+})
+const githubCategoryForm = reactive({ name: '', description: '', keywords: '', languages: '' })
 const quickActionLoadingId = ref(null)
 
 const MAX_HISTORY = 5
@@ -535,6 +548,58 @@ async function saveLlmConfig() {
   } finally {
     llmSaving.value = false
   }
+}
+
+async function loadGithubRadarConfig() {
+  githubRadarLoading.value = true
+  try {
+    const [configRes, categoryRes] = await Promise.all([
+      axios.get('/api/admin/config/github-radar'),
+      axios.get('/api/admin/github-radar/categories'),
+    ])
+    Object.assign(githubRadarConfig, {
+      ...githubRadarConfig,
+      ...configRes.data,
+      githubToken: '', smtpPassword: '', aiFallbackKey: '',
+    })
+    githubCategories.value = categoryRes.data?.categories || []
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载 GitHub日报配置失败')
+  } finally { githubRadarLoading.value = false }
+}
+
+async function saveGithubRadarConfig() {
+  githubRadarSaving.value = true
+  try {
+    await axios.post('/api/admin/config/github-radar', { ...githubRadarConfig })
+    ElMessage.success('GitHub日报配置已保存')
+    await loadGithubRadarConfig()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存 GitHub日报配置失败')
+  } finally { githubRadarSaving.value = false }
+}
+
+async function createGithubCategory() {
+  githubCategorySaving.value = true
+  try {
+    await axios.post('/api/admin/github-radar/categories', { ...githubCategoryForm })
+    Object.assign(githubCategoryForm, { name: '', description: '', keywords: '', languages: '' })
+    ElMessage.success('预设方向已创建')
+    await loadGithubRadarConfig()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '创建预设方向失败')
+  } finally { githubCategorySaving.value = false }
+}
+
+async function deleteGithubCategory(category) {
+  try {
+    await ElMessageBox.confirm(`确定删除“${category.name}”吗？`, '删除预设方向', { type: 'warning' })
+    githubCategoryLoading.value = true
+    await axios.delete(`/api/admin/github-radar/categories/${category.id}`)
+    await loadGithubRadarConfig()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.error || '删除预设方向失败')
+  } finally { githubCategoryLoading.value = false }
 }
 
 async function loadMembershipConfig() {
@@ -953,6 +1018,7 @@ onMounted(() => {
   loadFiles()
   loadUsers()
   loadLlmConfig()
+  loadGithubRadarConfig()
   loadMembershipConfig()
   loadMembershipCards()
   loadFeedback()
@@ -1254,6 +1320,52 @@ onMounted(() => {
             </el-form-item>
           </el-form>
         </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="GitHub日报">
+        <div class="tab-header">
+          <span class="tab-count">配置 GitHub 发现、Outlook 发信、AI 复核和预设学习方向</span>
+          <el-button size="small" :loading="githubRadarLoading" @click="loadGithubRadarConfig"><el-icon><Refresh /></el-icon>刷新</el-button>
+        </div>
+        <div class="membership-admin-grid">
+          <section class="single-panel">
+            <el-form label-position="top" size="large">
+              <el-form-item label="GitHub Token">
+                <el-input v-model="githubRadarConfig.githubToken" type="password" show-password placeholder="留空表示保持现有配置" clearable />
+                <div class="form-hint">状态：{{ githubRadarConfig.githubTokenConfigured ? '已配置' : '未配置' }}。建议使用权限最小的 GitHub Token。</div>
+              </el-form-item>
+              <el-form-item label="Outlook SMTP 主机"><el-input v-model="githubRadarConfig.smtpHost" /></el-form-item>
+              <el-form-item label="SMTP 端口"><el-input-number v-model="githubRadarConfig.smtpPort" :min="1" :max="65535" /></el-form-item>
+              <el-form-item label="发件邮箱"><el-input v-model="githubRadarConfig.smtpUser" /></el-form-item>
+              <el-form-item label="SMTP 密码 / 应用密码">
+                <el-input v-model="githubRadarConfig.smtpPassword" type="password" show-password placeholder="留空表示保持现有配置" clearable />
+                <div class="form-hint">状态：{{ githubRadarConfig.smtpConfigured ? '已配置' : '未配置' }}。个人 Outlook 默认使用 smtp-mail.outlook.com:587 + STARTTLS。</div>
+              </el-form-item>
+              <el-form-item label="显示发件人"><el-input v-model="githubRadarConfig.smtpFrom" /></el-form-item>
+              <el-form-item label="第二模型 API URL"><el-input v-model="githubRadarConfig.aiFallbackUrl" placeholder="可选，OpenAI 兼容接口" /></el-form-item>
+              <el-form-item label="第二模型名称"><el-input v-model="githubRadarConfig.aiFallbackModel" placeholder="例如 grok-..." /></el-form-item>
+              <el-form-item label="第二模型 API Key"><el-input v-model="githubRadarConfig.aiFallbackKey" type="password" show-password placeholder="留空表示保持现有配置" clearable /><div class="form-hint">状态：{{ githubRadarConfig.aiFallbackConfigured ? '已配置' : '未配置' }}。当前先保存配置，后续用于低置信度复核。</div></el-form-item>
+              <el-button type="primary" :loading="githubRadarSaving" @click="saveGithubRadarConfig">保存 GitHub日报配置</el-button>
+            </el-form>
+          </section>
+          <section class="single-panel">
+            <h3>预设学习方向</h3>
+            <div class="form-hint">用户会在 GitHub日报页面选择这些方向。关键词支持中英文，语言用于 GitHub Search 过滤。</div>
+            <el-form label-position="top">
+              <el-form-item label="方向名称"><el-input v-model="githubCategoryForm.name" placeholder="例如：AI / 大模型" /></el-form-item>
+              <el-form-item label="方向说明"><el-input v-model="githubCategoryForm.description" placeholder="一句话说明关注范围" /></el-form-item>
+              <el-form-item label="关键词"><el-input v-model="githubCategoryForm.keywords" type="textarea" :rows="3" placeholder="AI, LLM, Agent, RAG" /></el-form-item>
+              <el-form-item label="编程语言"><el-input v-model="githubCategoryForm.languages" placeholder="Python, TypeScript, Rust" /></el-form-item>
+              <el-button type="primary" :loading="githubCategorySaving" @click="createGithubCategory">新增方向</el-button>
+            </el-form>
+            <div class="category-admin-list" v-loading="githubCategoryLoading">
+              <div v-for="category in githubCategories" :key="category.id" class="category-admin-item">
+                <div><strong>{{ category.name }}</strong><small>{{ category.description }}</small><small>{{ category.keywords.join(' · ') }}</small></div>
+                <el-button link type="danger" @click="deleteGithubCategory(category)">删除</el-button>
+              </div>
+            </div>
+          </section>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="会员配置">
@@ -2112,6 +2224,31 @@ onMounted(() => {
 .llm-action-item {
   margin-bottom: 0;
 }
+
+.category-admin-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.category-admin-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-ctrl);
+}
+
+.category-admin-item > div {
+  display: grid;
+  gap: 4px;
+}
+
+.category-admin-item strong { color: var(--text-heading); }
+.category-admin-item small { color: var(--text-muted); line-height: 1.4; }
 
 :deep(.el-tabs--border-card) {
   background: var(--bg-card);
