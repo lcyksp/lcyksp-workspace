@@ -1,0 +1,112 @@
+import net from 'net'
+import tls from 'tls'
+import { getDb } from '../config/db.js'
+import { decrypt } from './crypto.js'
+
+const DEFAULT_HOST = process.env.GITHUB_SMTP_HOST || 'smtp-mail.outlook.com'
+const DEFAULT_PORT = Number(process.env.GITHUB_SMTP_PORT || 587)
+
+function dbGet(sql, params = []) {
+  const db = getDb()
+  return new Promise((resolve, reject) => db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row))))
+}
+
+export async function getGithubMailConfig() {
+  const rows = await new Promise((resolve, reject) => {
+    getDb().all(
+      "SELECT key, value FROM system_config WHERE key IN ('github_smtp_host', 'github_smtp_port', 'github_smtp_user', 'github_smtp_password', 'github_smtp_from')",
+      (err, result) => (err ? reject(err) : resolve(result || [])),
+    )
+  })
+  const config = Object.fromEntries(rows.map((row) => [row.key, row.value]))
+  const encryptedPassword = config.github_smtp_password || ''
+  return {
+    host: config.github_smtp_host || DEFAULT_HOST,
+    port: Number(config.github_smtp_port || DEFAULT_PORT),
+    user: config.github_smtp_user || process.env.GITHUB_SMTP_USER || 'lcyksp.xyz@outlook.com',
+    password: encryptedPassword ? decrypt(encryptedPassword) : (process.env.GITHUB_SMTP_PASSWORD || ''),
+    from: config.github_smtp_from || process.env.GITHUB_SMTP_FROM || config.github_smtp_user || process.env.GITHUB_SMTP_USER || 'lcyksp.xyz@outlook.com',
+  }
+}
+
+function readResponse(socket) {
+  return new Promise((resolve, reject) => {
+    let buffer = ''
+    const onData = (chunk) => {
+      buffer += chunk.toString()
+      const lines = buffer.split(/\r?\n/)
+      const last = lines.filter(Boolean).at(-1) || ''
+      if (/^\d{3} /.test(last)) {
+        socket.off('data', onData)
+        resolve({ code: Number(last.slice(0, 3)), text: buffer.trim() })
+      }
+    }
+    socket.on('data', onData)
+    socket.once('error', reject)
+  })
+}
+
+async function command(socket, value, expected = []) {
+  socket.write(`${value}\r\n`)
+  const response = await readResponse(socket)
+  if (expected.length && !expected.includes(response.code)) {
+    throw new Error(`SMTP ${response.code}: ${response.text}`)
+  }
+  return response
+}
+
+function dotStuff(value) {
+  return value.split(/\r?\n/).map((line) => (line.startsWith('.') ? `.${line}` : line)).join('\r\n')
+}
+
+export async function sendGithubTestEmail(to) {
+  const config = await getGithubMailConfig()
+  if (!config.password) throw new Error('尚未配置 Outlook SMTP 密码')
+  const socket = net.createConnection({ host: config.host, port: config.port })
+  socket.setTimeout(30000)
+  try {
+    await readResponse(socket)
+    await command(socket, `EHLO lcyksp.xyz`, [220, 250])
+    await command(socket, 'STARTTLS', [220])
+    const secureSocket = await new Promise((resolve, reject) => {
+      const upgraded = tls.connect({ socket, host: config.host, servername: config.host }, () => resolve(upgraded))
+      upgraded.once('error', reject)
+    })
+    await command(secureSocket, 'EHLO lcyksp.xyz', [250])
+    await command(secureSocket, 'AUTH LOGIN', [334])
+    await command(secureSocket, Buffer.from(config.user).toString('base64'), [334])
+    await command(secureSocket, Buffer.from(config.password).toString('base64'), [235])
+    await command(secureSocket, `MAIL FROM:<${config.user}>`, [250])
+    await command(secureSocket, `RCPT TO:<${to}>`, [250, 251])
+    await command(secureSocket, 'DATA', [354])
+    const subject = 'GitHub 项目订阅测试邮件'
+    const body = [
+      '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。',
+      '',
+      '如果您已经收到此邮件，请返回网站开启订阅。',
+      '如果暂未收到，请检查垃圾邮件目录，稍后重试，或联系客服。',
+    ].join('\n')
+    const message = [
+      `From: ${config.from}`,
+      `To: ${to}`,
+      `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      body,
+    ].join('\r\n')
+    secureSocket.write(`${dotStuff(message)}\r\n.\r\n`)
+    await readResponse(secureSocket)
+    await command(secureSocket, 'QUIT', [221])
+    secureSocket.end()
+  } finally {
+    socket.destroy()
+  }
+}
+
+export async function smtpConfigured() {
+  const config = await getGithubMailConfig()
+  const row = await dbGet("SELECT value FROM system_config WHERE key = 'github_smtp_password'")
+  return Boolean(config.password || row?.value)
+}

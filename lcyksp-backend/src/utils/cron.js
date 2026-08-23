@@ -2,9 +2,11 @@ import fs from 'fs';
 import { getDb } from '../config/db.js';
 import { fetchBilibiliHot } from './trends/bilibili.js';
 import { fetchDouyinHot } from './trends/douyin.js';
+import { discoverActiveGithubSubscriptions } from './githubJobs.js';
 
 const INTERVAL_MS = 60 * 60 * 1000;
 let timer = null;
+let lastGithubRadarRun = 0;
 
 async function cleanExpiredRecords() {
   let db;
@@ -72,9 +74,15 @@ export function startCron() {
   if (timer) return;
   console.log('[清道夫] 定时任务已启动（每 60 分钟轮询，已下架热点趋势快照）');
   cleanExpiredRecords();
+  discoverActiveGithubSubscriptions().catch((error) => console.error('[GitHub Radar] initial run failed:', error.message));
+  lastGithubRadarRun = Date.now();
   // snapshotTrends(); // 已下架
   timer = setInterval(() => {
     cleanExpiredRecords();
+    if (Date.now() - lastGithubRadarRun >= 4 * 60 * 60 * 1000) {
+      lastGithubRadarRun = Date.now();
+      discoverActiveGithubSubscriptions().catch((error) => console.error('[GitHub Radar] scheduled run failed:', error.message));
+    }
     // snapshotTrends(); // 已下架
   }, INTERVAL_MS);
   if (timer.unref) timer.unref();

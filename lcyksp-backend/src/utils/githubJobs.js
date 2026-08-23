@@ -1,0 +1,51 @@
+import { getDb } from '../config/db.js'
+import { getRepositoryCandidatesForSubscription, saveGithubSnapshot } from './githubRadar.js'
+import { reviewGithubRepository } from './githubAi.js'
+
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => getDb().all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || []))))
+}
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(err) {
+    if (err) return reject(err)
+    resolve({ lastID: this.lastID, changes: this.changes })
+  }))
+}
+
+async function linkRepository(subscriptionId, repositoryId, now) {
+  await dbRun(
+    'INSERT INTO github_subscription_repositories (subscription_id, repository_id, first_matched_at, last_matched_at) VALUES (?, ?, ?, ?) ON CONFLICT(subscription_id, repository_id) DO UPDATE SET last_matched_at = excluded.last_matched_at',
+    [subscriptionId, repositoryId, now, now],
+  )
+}
+
+export async function discoverActiveGithubSubscriptions() {
+  const subscriptions = await dbAll(
+    "SELECT * FROM github_subscriptions WHERE status = 'active'",
+  )
+  let discovered = 0
+  for (const subscription of subscriptions) {
+    try {
+      const candidates = await getRepositoryCandidatesForSubscription(subscription)
+      for (const item of candidates) {
+        const repository = await saveGithubSnapshot(item)
+        await linkRepository(subscription.id, repository.id, new Date().toISOString())
+        discovered += 1
+      }
+      console.log('[GitHub Radar] subscription', subscription.id, 'candidates:', candidates.length)
+    } catch (error) {
+      console.error('[GitHub Radar] subscription', subscription.id, 'failed:', error.message)
+    }
+  }
+  const reviewQueue = await dbAll(
+    'SELECT r.* FROM github_repositories r LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id WHERE a.id IS NULL ORDER BY r.last_seen_at DESC LIMIT 20',
+  )
+  for (const repository of reviewQueue) {
+    try {
+      await reviewGithubRepository(repository)
+    } catch (error) {
+      console.error('[GitHub Radar] AI review failed:', repository.full_name, error.message)
+    }
+  }
+  return { subscriptions: subscriptions.length, discovered }
+}
