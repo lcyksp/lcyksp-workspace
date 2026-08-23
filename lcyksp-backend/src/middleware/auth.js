@@ -80,6 +80,8 @@ export async function authMiddleware(req, res, next) {
     token = req.query.token
   }
 
+  console.log('[Auth] token present:', !!token, 'path:', req.path)
+
   if (!token) {
     req.user = null
     return next()
@@ -102,7 +104,9 @@ export async function authMiddleware(req, res, next) {
       isBanned: user.isBanned,
       bannedReason: user.bannedReason,
     }
-  } catch {
+    console.log('[Auth] user:', user.username, 'role:', user.role)
+  } catch (err) {
+    console.log('[Auth] token verify failed:', err.message)
     req.user = null
   }
   next()

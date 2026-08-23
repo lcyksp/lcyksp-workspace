@@ -224,15 +224,19 @@ router.post('/verify', async (req, res, next) => {
     let filePaths = [];
     let fileSizes = [];
     try {
-      fileNames = JSON.parse(record.file_name);
-      filePaths = JSON.parse(record.file_path);
-      fileSizes = JSON.parse(record.file_size || '[]');
+      const parsedNames = JSON.parse(record.file_name);
+      const parsedPaths = JSON.parse(record.file_path);
+      const parsedSizes = JSON.parse(record.file_size || '[]');
+      fileNames = Array.isArray(parsedNames) ? parsedNames : [record.file_name];
+      filePaths = Array.isArray(parsedPaths) ? parsedPaths : [record.file_path];
+      fileSizes = Array.isArray(parsedSizes) ? parsedSizes : [Number(parsedSizes) || 0];
     } catch {
       fileNames = [record.file_name];
       filePaths = [record.file_path];
-      fileSizes = [record.file_size];
+      fileSizes = [Number(record.file_size) || 0];
     }
-    const totalSize = fileSizes.reduce((s, n) => s + (n || 0), 0);
+    if (!Array.isArray(fileSizes)) fileSizes = [Number(fileSizes) || 0];
+    const totalSize = fileSizes.reduce((s, n) => s + (Number(n) || 0), 0);
 
     res.json({
       valid: true,
@@ -415,6 +419,49 @@ router.post('/update-code', requireAuth, async (req, res, next) => {
     });
     
     res.json({ success: true, message: '提取码修改成功', code: cleanNewCode });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ========== 接口 5.5: POST /update-expire ==========
+router.post('/update-expire', requireAuth, async (req, res, next) => {
+  try {
+    const { code, expireTime } = req.body;
+    if (!code || !expireTime) return res.status(400).json({ error: '取件码和过期时间不能为空' });
+
+    const db = getDb();
+    const record = await new Promise((res, rej) =>
+      db.get('SELECT id, owner_id, expire_time FROM transfers WHERE id = ?', [code], (e, r) => e ? rej(e) : res(r)),
+    );
+
+    if (!record) return res.status(404).json({ error: '分享记录不存在或已失效' });
+
+    const isAdmin = req.user.role === 'admin';
+    if (record.owner_id !== req.user.userId && !isAdmin) {
+      return res.status(403).json({ error: '您无权修改此分享的过期时间' });
+    }
+
+    let expireTimeIso;
+    if (expireTime === 'permanent') {
+      expireTimeIso = '2099-12-31T23:59:59.000Z';
+    } else {
+      try {
+        expireTimeIso = parseExpireTime(expireTime);
+      } catch {
+        const d = new Date(expireTime);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ error: '过期时间格式无效，可使用 1h, 12h, 24h, 7d, permanent 或标准日期时间' });
+        }
+        expireTimeIso = d.toISOString();
+      }
+    }
+
+    await new Promise((res, rej) => {
+      db.run('UPDATE transfers SET expire_time = ? WHERE id = ?', [expireTimeIso, code], (err) => err ? rej(err) : res());
+    });
+
+    res.json({ success: true, message: '过期时间修改成功', expireTime: expireTimeIso });
   } catch (err) {
     next(err);
   }
