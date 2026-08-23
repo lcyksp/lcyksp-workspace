@@ -130,7 +130,7 @@ const githubRadarConfig = reactive({
   githubToken: '', githubTokenConfigured: false,
   smtpPassword: '', smtpConfigured: false,
   smtpHost: 'smtp-mail.outlook.com', smtpPort: 587,
-  smtpUser: 'lcyksp.xyz@outlook.com', smtpFrom: 'lcyksp.xyz@outlook.com',
+  smtpUser: '', smtpFrom: '',
   aiFallbackUrl: '', aiFallbackModel: '', aiFallbackKey: '', aiFallbackConfigured: false,
 })
 const githubCategoryForm = reactive({ name: '', description: '', keywords: '', languages: '' })

@@ -23,9 +23,9 @@ export async function getGithubMailConfig() {
   return {
     host: config.github_smtp_host || DEFAULT_HOST,
     port: Number(config.github_smtp_port || DEFAULT_PORT),
-    user: config.github_smtp_user || process.env.GITHUB_SMTP_USER || 'lcyksp.xyz@outlook.com',
+    user: config.github_smtp_user || process.env.GITHUB_SMTP_USER || '',
     password: encryptedPassword ? decrypt(encryptedPassword) : (process.env.GITHUB_SMTP_PASSWORD || ''),
-    from: config.github_smtp_from || process.env.GITHUB_SMTP_FROM || config.github_smtp_user || process.env.GITHUB_SMTP_USER || 'lcyksp.xyz@outlook.com',
+    from: config.github_smtp_from || process.env.GITHUB_SMTP_FROM || config.github_smtp_user || process.env.GITHUB_SMTP_USER || '',
   }
 }
 
