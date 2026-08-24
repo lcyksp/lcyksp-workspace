@@ -80,14 +80,14 @@ const cardDetail = ref(null)
 const cardDetailVisible = ref(false)
 
 function planCardStats(planKey) {
-  const cards = membershipCards.value.filter(c => c.plan_key === planKey)
+  const cards = membershipCards.value.filter(c => c.planKey === planKey)
   const stats = { total: cards.length, unused: 0, used: 0 }
   cards.forEach(c => { if (c.status === 'used') stats.used += 1; else stats.unused += 1 })
   return stats
 }
 
 function filteredPlanCards(planKey) {
-  let cards = membershipCards.value.filter(c => c.plan_key === planKey)
+  let cards = membershipCards.value.filter(c => c.planKey === planKey)
   if (planKey !== membershipCardFilterPlan.value) return []
   if (membershipCardStatusFilter.value === 'unused') return cards.filter(c => c.status !== 'used' && c.status !== 'invalid')
   if (membershipCardStatusFilter.value === 'used') return cards.filter(c => c.status === 'used')
