@@ -4,6 +4,18 @@ import { ProxyAgent } from 'undici'
 
 const aiProxy = String(process.env.GITHUB_PROXY_URL || '').trim()
 const dispatcher = aiProxy ? new ProxyAgent(aiProxy) : undefined
+const rpmWindows = new Map()
+async function acquireModelSlot(model) {
+  if (!/gpt-5\.6-luna/i.test(String(model || ''))) return
+  while (true) {
+    const now = Date.now()
+    const recent = (rpmWindows.get(model) || []).filter((time) => now - time < 60000)
+    if (recent.length < 10) { recent.push(now); rpmWindows.set(model, recent); return }
+    const waitMs = Math.max(250, 60000 - (now - recent[0]) + 25)
+    console.log(`[GitHub Radar] RPM limit waiting model=${model} waitMs=${waitMs}`)
+    await new Promise((resolve) => setTimeout(resolve, waitMs))
+  }
+}
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
 function dbRun(sql, params = []) { return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(e) { e ? reject(e) : resolve({ lastID: this.lastID }) })) }
 async function loadConfig() {
@@ -13,6 +25,7 @@ async function loadConfig() {
 }
 function parse(value) { const text = String(value || '').trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim(); try { return JSON.parse(text) } catch { return null } }
 async function callModel(url, key, model, prompt) {
+  await acquireModelSlot(model)
   const endpoint = url.endsWith('/chat/completions') ? url : url + '/chat/completions'
   const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: JSON.stringify({ model, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }), ...(dispatcher ? { dispatcher } : {}), signal: AbortSignal.timeout(45000) })
   const data = response.ok ? await response.json() : null
