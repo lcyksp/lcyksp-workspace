@@ -34,6 +34,7 @@ async function githubFetch(path, params = {}) {
       return response.json()
     } catch (error) {
       lastError = error
+      if (String(error?.message || '').includes('GitHub API 401') || String(error?.message || '').includes('GitHub API 403')) throw error
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
     }
   }
@@ -42,7 +43,7 @@ async function githubFetch(path, params = {}) {
 
 export async function discoverGithubRepositories({ query = '', categoryKeywords = [], language = '', limit = 30 } = {}) {
   const terms = [...new Set([query, ...categoryKeywords].map((item) => String(item || '').trim()).filter(Boolean))]
-  const groups = terms.length ? terms.slice(0, 12).map((term) => [term]) : [[]]
+  const groups = terms.length ? terms.slice(0, 4).map((term) => [term]) : [[]]
   const results = []
   for (const group of groups) {
     const termQuery = group.length > 1 ? '(' + group.map((item) => '\"' + item + '\"').join(' OR ') + ')' : group.map((item) => '\"' + item + '\"').join(' ')
@@ -66,7 +67,7 @@ export async function discoverEmergingGithubRepositories({ keywords = [], limit 
   const terms = [...new Set(keywords.map((item) => String(item || '').trim()).filter(Boolean))]
   const since = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10)
   const results = []
-  for (const group of (terms.length ? terms.slice(0, 12) : ['']).map((term) => [term])) {
+  for (const group of (terms.length ? terms.slice(0, 4) : ['']).map((term) => [term])) {
     const termQuery = group.filter(Boolean).map((item) => item.replace(/[\"']/g, '')).join(' ')
     const q = [termQuery, 'in:name,description,readme', 'created:>=' + since, 'stars:>=10'].filter(Boolean).join(' ')
     const data = await githubFetch('/search/repositories', { q, sort: 'updated', order: 'desc', per_page: Math.min(limit, 100) })
@@ -136,7 +137,7 @@ export async function getRepositoryCandidatesForSubscription(subscription) {
   const categoryKeywords = categories.flatMap((row) => parseJson(row.keywords, []))
   const languages = categories.flatMap((row) => parseJson(row.languages, []))
   const results = []
-  for (const language of [...new Set(['', ...languages])].slice(0, 5)) {
+  for (const language of [...new Set(['', ...languages])].slice(0, 3)) {
     results.push(...await discoverGithubRepositories({ query: keywords[0] || '', categoryKeywords: [...keywords.slice(1), ...categoryKeywords], language, limit: 20 }))
   }
   return [...new Map(results.map((item) => [item.fullName, item])).values()]
