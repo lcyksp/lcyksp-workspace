@@ -38,8 +38,8 @@ PY
     exit 1
   fi
   ready=0
-  for _ in $(seq 1 12); do
-    if curl -fsS --max-time 5 -H "Authorization: Bearer $SECRET" http://127.0.0.1:9090/providers/proxies >/dev/null 2>&1; then ready=1; break; fi
+  for _ in $(seq 1 30); do
+    if curl -fsS --max-time 5 -H "Authorization: Bearer $SECRET" http://127.0.0.1:9090/providers/proxies/airport | grep -q '"proxies"'; then ready=1; break; fi
     sleep 2
   done
   if [[ "$ready" != 1 ]]; then
@@ -50,7 +50,8 @@ PY
 fi
 export SECRET
 if ! result="$(python3 - "$ACTION" <<'PY'
-import json, os, sys, time, urllib.request
+import json, os, sys, urllib.request, urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 action = sys.argv[1]
 base = 'http://127.0.0.1:9090'
 headers = {'Authorization': 'Bearer ' + os.environ.get('SECRET',''), 'Content-Type':'application/json'}
@@ -60,11 +61,30 @@ def call(path, method='GET', payload=None):
     with urllib.request.urlopen(req, timeout=30) as r: return json.loads(r.read() or b'{}')
 data = call('/providers/proxies/airport')
 healthy = []
+untested = []
 for proxy in data.get('proxies', []):
+    name = proxy.get('name','')
+    delay = 0
     for item in reversed(proxy.get('history') or []):
         try: delay = int(item.get('delay', 0))
         except: delay = 0
-        if delay > 0: healthy.append((delay, proxy.get('name',''))); break
+        if delay > 0: break
+    if delay > 0:
+        healthy.append((delay, name))
+    elif name:
+        untested.append(name)
+def probe(name):
+    try:
+        result = call('/proxies/' + urllib.parse.quote(name, safe='') + '/delay?url=' + urllib.parse.quote('https://api.github.com', safe='') + '&timeout=5000')
+        return int(result.get('delay', 0)), name
+    except Exception:
+        return 0, name
+if untested:
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(probe, name) for name in untested]
+        for future in as_completed(futures):
+            delay, name = future.result()
+            if delay > 0: healthy.append((delay, name))
 if not healthy: raise SystemExit('no healthy github proxy nodes')
 healthy.sort(key=lambda x: x[0])
 delay, name = healthy[0]
