@@ -1187,4 +1187,12 @@ router.post('/github-radar/simulation', async function (req, res, next) {
   } catch (err) { next(err) }
 })
 
+router.get('/github-radar/simulation', async function (req, res, next) {
+  try { res.json({ tasks: await dbAllAsync('SELECT id,job_key,to_email,job_type,run_at,status,details,created_at,finished_at FROM github_simulation_tasks ORDER BY id DESC LIMIT 20') }) } catch (err) { next(err) }
+})
+
+router.delete('/github-radar/simulation/:id', async function (req, res, next) {
+  try { const result = await dbRunAsync('DELETE FROM github_simulation_tasks WHERE id=?', [Number(req.params.id)]); if (!result.changes) return res.status(404).json({ error: '模拟任务不存在' }); res.json({ success: true }) } catch (err) { next(err) }
+})
+
 export default router;
