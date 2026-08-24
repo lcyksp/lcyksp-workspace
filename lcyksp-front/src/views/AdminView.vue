@@ -136,7 +136,23 @@ const githubRadarConfig = reactive({
   proxySubscription: '', proxyConfigured: false, proxyStatus: '未检测', proxyNode: '', proxyCheckedAt: '',
 })
 const githubCategoryForm = reactive({ name: '', description: '', keywords: '', languages: '' })
+const githubAdminSubscriptions = ref([])
+const githubAdminSubscriptionsLoading = ref(false)
+const githubAdminSubscriptionForm = reactive({ id: null, userId: '', email: '', categoryIds: [], keywords: '', frequencies: ['daily'], status: 'active' })
 const quickActionLoadingId = ref(null)
+
+async function loadGithubAdminSubscriptions() {
+  githubAdminSubscriptionsLoading.value = true
+  try { const res = await axios.get('/api/admin/github-radar/subscriptions'); githubAdminSubscriptions.value = res.data?.subscriptions || [] } catch (error) { ElMessage.error(error.response?.data?.error || '加载订阅失败') } finally { githubAdminSubscriptionsLoading.value = false }
+}
+function editGithubAdminSubscription(row) { Object.assign(githubAdminSubscriptionForm, { id: row.id, userId: row.userId, email: row.email, categoryIds: row.categoryIds || [], keywords: (row.keywords || []).join(', '), frequencies: row.frequencies || ['daily'], status: row.status }) }
+function resetGithubAdminSubscription() { Object.assign(githubAdminSubscriptionForm, { id: null, userId: '', email: '', categoryIds: [], keywords: '', frequencies: ['daily'], status: 'active' }) }
+async function saveGithubAdminSubscription() {
+  const payload = { userId: Number(githubAdminSubscriptionForm.userId), email: githubAdminSubscriptionForm.email, categoryIds: githubAdminSubscriptionForm.categoryIds, keywords: githubAdminSubscriptionForm.keywords.split(/[,，\n]/).map(v => v.trim()).filter(Boolean), frequencies: githubAdminSubscriptionForm.frequencies, status: githubAdminSubscriptionForm.status }
+  try { if (githubAdminSubscriptionForm.id) await axios.put(`/api/admin/github-radar/subscriptions/${githubAdminSubscriptionForm.id}`, payload); else await axios.post('/api/admin/github-radar/subscriptions', payload); ElMessage.success('订阅已保存'); resetGithubAdminSubscription(); await loadGithubAdminSubscriptions() } catch (error) { ElMessage.error(error.response?.data?.error || '保存订阅失败') }
+}
+async function deleteGithubAdminSubscription(row) { try { await ElMessageBox.confirm(`确定删除 ${row.email} 的订阅吗？`, '删除订阅', { type: 'warning' }); await axios.delete(`/api/admin/github-radar/subscriptions/${row.id}`); ElMessage.success('订阅已删除'); await loadGithubAdminSubscriptions() } catch (error) { if (error !== 'cancel') ElMessage.error(error.response?.data?.error || '删除失败') } }
+async function scheduleGithubSimulation() { try { const res = await axios.post('/api/admin/github-radar/simulation', { email: '1296757861@qq.com', delayMinutes: 30, type: 'daily' }); ElMessage.success(`模拟日报已安排：${new Date(res.data.runAt).toLocaleString()}`) } catch (error) { ElMessage.error(error.response?.data?.error || '安排模拟日报失败') } }
 
 const MAX_HISTORY = 5
 const HISTORY_KEYS = {
@@ -1034,6 +1050,7 @@ onMounted(() => {
   loadUsers()
   loadLlmConfig()
   loadGithubRadarConfig()
+  loadGithubAdminSubscriptions()
   loadMembershipConfig()
   loadMembershipCards()
   loadFeedback()
@@ -1373,6 +1390,7 @@ onMounted(() => {
               <el-form-item label="第二模型 API Key"><el-input v-model="githubRadarConfig.aiFallbackKey" type="password" show-password placeholder="留空表示保持现有配置" clearable /><div class="form-hint">状态：{{ githubRadarConfig.aiFallbackConfigured ? '已配置' : '未配置' }}。当前先保存配置，后续用于低置信度复核。</div></el-form-item>
               <el-button type="primary" :loading="githubRadarSaving" @click="saveGithubRadarConfig">保存 GitHub日报配置</el-button>
               <el-button :loading="githubRadarSaving" @click="testGithubProxy">测试 GitHub 代理</el-button>
+              <el-button @click="scheduleGithubSimulation">安排 30 分钟后模拟日报</el-button>
             </el-form>
           </section>
           <section class="single-panel">
@@ -1391,6 +1409,23 @@ onMounted(() => {
                 <el-button link type="danger" @click="deleteGithubCategory(category)">删除</el-button>
               </div>
             </div>
+          </section>
+          <section class="single-panel github-admin-subscriptions-panel">
+            <div class="panel-title"><h3>用户订阅管理</h3><p>管理员可以新增、修改或删除用户的接收邮箱、方向、关键词和推送频率。</p></div>
+            <el-form label-position="top" size="small">
+              <el-form-item label="用户 ID"><el-input v-model="githubAdminSubscriptionForm.userId" placeholder="对应用户管理中的 ID" /></el-form-item>
+              <el-form-item label="接收邮箱"><el-input v-model="githubAdminSubscriptionForm.email" /></el-form-item>
+              <el-form-item label="预设方向"><el-select v-model="githubAdminSubscriptionForm.categoryIds" multiple clearable style="width:100%"><el-option v-for="category in githubCategories" :key="category.id" :label="category.name" :value="category.id" /></el-select></el-form-item>
+              <el-form-item label="关键词"><el-input v-model="githubAdminSubscriptionForm.keywords" placeholder="多个关键词用逗号分隔" /></el-form-item>
+              <el-form-item label="推送频率"><el-checkbox-group v-model="githubAdminSubscriptionForm.frequencies"><el-checkbox label="daily">日报</el-checkbox><el-checkbox label="weekly">周报</el-checkbox><el-checkbox label="monthly">月报</el-checkbox></el-checkbox-group></el-form-item>
+              <el-form-item label="状态"><el-select v-model="githubAdminSubscriptionForm.status"><el-option label="待确认" value="pending" /><el-option label="启用" value="active" /><el-option label="暂停" value="paused" /><el-option label="关闭" value="closed" /></el-select></el-form-item>
+              <el-button type="primary" @click="saveGithubAdminSubscription">{{ githubAdminSubscriptionForm.id ? '保存修改' : '新增订阅' }}</el-button><el-button v-if="githubAdminSubscriptionForm.id" @click="resetGithubAdminSubscription">取消编辑</el-button>
+            </el-form>
+            <el-divider />
+            <el-button size="small" :loading="githubAdminSubscriptionsLoading" @click="loadGithubAdminSubscriptions">刷新订阅</el-button>
+            <el-table v-loading="githubAdminSubscriptionsLoading" :data="githubAdminSubscriptions" size="small" style="margin-top:10px" max-height="360">
+              <el-table-column prop="id" label="ID" width="65" /><el-table-column prop="userId" label="用户" width="65" /><el-table-column prop="email" label="邮箱" min-width="190" /><el-table-column prop="status" label="状态" width="75" /><el-table-column label="频率" width="120"><template #default="{row}">{{ (row.frequencies || []).join(' / ') }}</template></el-table-column><el-table-column label="操作" width="125" fixed="right"><template #default="{row}"><el-button link type="primary" @click="editGithubAdminSubscription(row)">编辑</el-button><el-button link type="danger" @click="deleteGithubAdminSubscription(row)">删除</el-button></template></el-table-column>
+            </el-table>
           </section>
         </div>
       </el-tab-pane>

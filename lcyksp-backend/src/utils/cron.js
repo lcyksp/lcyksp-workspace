@@ -3,7 +3,7 @@ import { getDb } from '../config/db.js';
 import { fetchBilibiliHot } from './trends/bilibili.js';
 import { fetchDouyinHot } from './trends/douyin.js';
 import { discoverActiveGithubSubscriptions } from './githubJobs.js';
-import { runGithubDigests } from './githubDigest.js';
+import { runGithubDigests, runPendingGithubSimulations } from './githubDigest.js';
 
 const INTERVAL_MS = 60 * 60 * 1000;
 let timer = null;
@@ -89,8 +89,10 @@ export function startCron() {
   }, INTERVAL_MS);
   if (timer.unref) timer.unref();
   runGithubDigests().catch((error) => console.error('[GitHub Radar] digest check failed:', error.message));
+  runPendingGithubSimulations().catch((error) => console.error('[GitHub Radar] simulation check failed:', error.message));
   digestTimer = setInterval(() => {
     runGithubDigests().catch((error) => console.error('[GitHub Radar] digest check failed:', error.message));
+    runPendingGithubSimulations().catch((error) => console.error('[GitHub Radar] simulation check failed:', error.message));
   }, 60 * 1000);
   if (digestTimer.unref) digestTimer.unref();
 }
