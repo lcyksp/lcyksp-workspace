@@ -50,7 +50,8 @@ async function sendFor(subscription, type, dateKey) {
   try {
     const items = await buildDigest(subscription, type)
     const html = renderGithubDigestHtml(items, type, dateKey)
-    await sendGithubDigestEmail(subscription.email, '【GitHub技术趋势' + title + '】' + dateKey, html)
+    const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
+    await sendGithubDigestEmail(subscription.email, '【GitHub' + title + '】' + dateKey, html)
     await dbRun("UPDATE github_job_runs SET status = 'success', details = ?, finished_at = ? WHERE job_key = ?", [JSON.stringify({ itemCount: items.length, subscriptionId: subscription.id }), new Date().toISOString(), jobKey])
     await dbRun("INSERT INTO github_email_delivery_logs (subscription_id, user_id, email, kind, status) VALUES (?, ?, ?, ?, 'success')", [subscription.id, subscription.user_id, subscription.email, type])
     return true
@@ -66,7 +67,7 @@ export async function sendGithubSimulationDigest(to, type = 'daily', dateKey = '
   const row = await dbGet('SELECT r.*, a.category, a.summary, a.worth_push FROM github_repositories r LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id ORDER BY r.updated_at DESC LIMIT 1')
   const item = row ? [{ row, gain: 1 }] : []
   const html = renderGithubDigestHtml(item, type, dateKey)
-  await sendGithubDigestEmail(to, '【GitHub技术趋势模拟' + (type === 'daily' ? '日报' : '简报') + '】' + dateKey, html)
+  await sendGithubDigestEmail(to, '【GitHub' + (type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报') + '模拟】' + dateKey, html)
   return { itemCount: item.length, repository: row?.full_name || '' }
 }
 
