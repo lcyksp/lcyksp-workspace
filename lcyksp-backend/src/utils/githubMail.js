@@ -16,7 +16,7 @@ function readResponse(socket) { return new Promise((resolve, reject) => { let bu
 async function command(socket, value, expected = []) { socket.write(`${value}\r\n`); const r = await readResponse(socket); if (expected.length && !expected.includes(r.code)) throw new Error(`SMTP ${r.code}: ${r.text}`); return r }
 function dotStuff(value) { return value.split(/\r?\n/).map((line) => line.startsWith('.') ? `.${line}` : line).join('\r\n') }
 
-export async function sendGithubTestEmail(to) { return sendSmtpMessage({ to, subject: 'GitHub 项目订阅测试邮件', body: '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。\n\n如果暂未收到，请检查垃圾邮件目录，稍后重试，或联系客服。' }) }
+export async function sendGithubTestEmail(to) { return sendSmtpMessage({ to, subject: 'GitHub 项目订阅测试邮件', body: '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。\n\n如果您没有主动申请 GitHub 日报订阅，请忽略此邮件。' }) }
 export async function sendGithubDigestEmail(to, subject, html) { return sendSmtpMessage({ to, subject, body: html, contentType: 'text/html' }) }
 export async function smtpConfigured() { const c = await getConfig(); return Boolean(c.user && c.password) }
 export async function getGithubMailConfig() { return getConfig() }

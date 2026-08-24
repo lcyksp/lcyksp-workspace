@@ -6,6 +6,7 @@ function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
 function dbRun(sql, params = []) { return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(e) { e ? reject(e) : resolve({ lastID: this.lastID, changes: this.changes }) })) }
 function esc(value) { return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])) }
+function cleanSummary(value) { return String(value || '').replace(/```[\s\S]*?```/g, '').replace(/[*_#`]/g, '').replace(/\s+/g, ' ').trim().slice(0, 180) }
 
 function beijingParts(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false, weekday: 'short' }).formatToParts(now)
@@ -43,8 +44,8 @@ async function sendFor(subscription, type, dateKey) {
   try {
     const items = await buildDigest(subscription, type)
     const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
-    const htmlItems = items.length ? items.map(({ row, gain }) => `<li><strong>${esc(row.full_name)}</strong> <span>${esc(row.language || '多语言')} · +${gain} ⭐</span><br>${esc(row.summary || row.description || '暂无摘要')}<br><a href="${esc(row.url)}">查看 GitHub 项目</a></li>`).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
-    const html = `<div style="font-family:Arial,sans-serif;line-height:1.7;color:#24243a"><h2>GitHub 技术趋势${title}</h2><p>这是你的订阅简报，重点展示近期 Star 增长较快的项目。</p><ol>${htmlItems}</ol><p style="color:#777;font-size:12px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p></div>`
+    const htmlItems = items.length ? items.map(({ row, gain }) => `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · Star 增长 +${gain}</div><div style="margin-top:5px">${esc(cleanSummary(row.summary || row.description || '暂无摘要'))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>`).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
+    const html = `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub 技术趋势${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p></div>`
     await sendGithubDigestEmail(subscription.email, '【GitHub技术趋势' + title + '】' + dateKey, html)
     await dbRun("UPDATE github_job_runs SET status = 'success', details = ?, finished_at = ? WHERE job_key = ?", [JSON.stringify({ itemCount: items.length, subscriptionId: subscription.id }), new Date().toISOString(), jobKey])
     await dbRun("INSERT INTO github_email_delivery_logs (subscription_id, user_id, email, kind, status) VALUES (?, ?, ?, ?, 'success')", [subscription.id, subscription.user_id, subscription.email, type])
