@@ -123,6 +123,8 @@ const llmSaving = ref(false)
 const llmTesting = ref(false)
 const githubRadarLoading = ref(false)
 const githubRadarSaving = ref(false)
+const graphAuthorizing = ref(false)
+const graphDevice = reactive({ deviceCode: '', userCode: '', verificationUri: '', expiresIn: 0 })
 const githubCategoryLoading = ref(false)
 const githubCategorySaving = ref(false)
 const githubCategories = ref([])
@@ -132,6 +134,7 @@ const githubRadarConfig = reactive({
   smtpPassword: '', smtpConfigured: false,
   smtpHost: 'smtp-mail.outlook.com', smtpPort: 587,
   smtpUser: '', smtpFrom: '',
+  graphClientId: '', graphConfigured: false, graphUser: '',
   aiFallbackUrl: '', aiFallbackModel: '', aiFallbackKey: '', aiFallbackConfigured: false,
   proxySubscription: '', proxyConfigured: false, proxyStatus: '未检测', proxyNode: '', proxyCheckedAt: '',
 })
@@ -592,6 +595,31 @@ async function testGithubProxy() {
     githubRadarConfig.proxyStatus = '失败'
     ElMessage.error(error.response?.data?.error || 'GitHub 代理测试失败')
   } finally { githubRadarSaving.value = false }
+}
+
+async function startGraphAuthorization() {
+  if (!githubRadarConfig.graphClientId.trim()) return ElMessage.warning('请先填写 Azure 应用程序（客户端）ID')
+  graphAuthorizing.value = true
+  try {
+    const res = await axios.post('/api/admin/config/github-radar/graph-device/start', { clientId: githubRadarConfig.graphClientId.trim() })
+    Object.assign(graphDevice, res.data)
+    window.open(res.data.verificationUri, '_blank', 'noopener')
+    ElMessage.success(`请在微软页面输入代码：${res.data.userCode}`)
+  } catch (error) { ElMessage.error(error.response?.data?.error || '启动 Microsoft 授权失败') }
+  finally { graphAuthorizing.value = false }
+}
+
+async function finishGraphAuthorization() {
+  if (!graphDevice.deviceCode) return ElMessage.warning('请先点击开始授权')
+  graphAuthorizing.value = true
+  try {
+    const res = await axios.post('/api/admin/config/github-radar/graph-device/finish', { clientId: githubRadarConfig.graphClientId.trim(), deviceCode: graphDevice.deviceCode })
+    if (res.status === 202) return ElMessage.warning('微软页面尚未完成授权，请完成后再点确认')
+    ElMessage.success(`Microsoft Graph 授权成功：${res.data.user}`)
+    Object.assign(graphDevice, { deviceCode: '', userCode: '', verificationUri: '', expiresIn: 0 })
+    await loadGithubRadarConfig()
+  } catch (error) { ElMessage.error(error.response?.data?.error || '确认 Microsoft 授权失败') }
+  finally { graphAuthorizing.value = false }
 }
 
 async function createGithubCategory() {
@@ -1354,14 +1382,16 @@ onMounted(() => {
                 <div class="form-hint">状态：{{ githubRadarConfig.proxyConfigured ? githubRadarConfig.proxyStatus : '未配置' }}。保存后服务器会自动刷新订阅、检测节点并选择可访问 GitHub 的最低延迟节点。</div>
                 <div v-if="githubRadarConfig.proxyNode" class="form-hint">当前节点：{{ githubRadarConfig.proxyNode }}<span v-if="githubRadarConfig.proxyCheckedAt"> · {{ githubRadarConfig.proxyCheckedAt }}</span></div>
               </el-form-item>
-              <el-form-item label="Outlook SMTP 主机"><el-input v-model="githubRadarConfig.smtpHost" /></el-form-item>
-              <el-form-item label="SMTP 端口"><el-input-number v-model="githubRadarConfig.smtpPort" :min="1" :max="65535" /></el-form-item>
-              <el-form-item label="发件邮箱"><el-input v-model="githubRadarConfig.smtpUser" /></el-form-item>
-              <el-form-item label="SMTP 密码 / 应用密码">
-                <el-input v-model="githubRadarConfig.smtpPassword" type="password" show-password placeholder="留空表示保持现有配置" clearable />
-                <div class="form-hint">状态：{{ githubRadarConfig.smtpConfigured ? '已配置' : '未配置' }}。个人 Outlook 默认使用 smtp-mail.outlook.com:587 + STARTTLS。</div>
+              <el-divider content-position="left">Microsoft Graph 发信</el-divider>
+              <el-form-item label="Azure 应用程序（客户端）ID">
+                <el-input v-model="githubRadarConfig.graphClientId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" clearable />
+                <div class="form-hint">状态：{{ githubRadarConfig.graphConfigured ? `已授权 ${githubRadarConfig.graphUser}` : '未授权' }}。个人 Outlook 使用免费 Graph 委托授权。</div>
               </el-form-item>
-              <el-form-item label="显示发件人"><el-input v-model="githubRadarConfig.smtpFrom" /></el-form-item>
+              <div class="llm-actions">
+                <el-button :loading="graphAuthorizing" @click="startGraphAuthorization">1. 开始微软授权</el-button>
+                <el-button v-if="graphDevice.deviceCode" type="primary" :loading="graphAuthorizing" @click="finishGraphAuthorization">2. 我已完成授权</el-button>
+              </div>
+              <el-alert v-if="graphDevice.userCode" type="info" :closable="false" show-icon style="margin:12px 0">请打开 {{ graphDevice.verificationUri }} 并输入代码 <strong>{{ graphDevice.userCode }}</strong>，登录发件 Outlook 邮箱并同意 Mail.Send 权限。</el-alert>
               <el-divider content-position="left">第一模型：README 初筛</el-divider>
               <el-form-item label="第一模型 API URL"><el-input v-model="githubRadarConfig.primaryAiUrl" placeholder="OpenAI 兼容接口" /></el-form-item>
               <el-form-item label="第一模型名称"><el-input v-model="githubRadarConfig.primaryAiModel" placeholder="例如 gpt-5.6-luna" /></el-form-item>
