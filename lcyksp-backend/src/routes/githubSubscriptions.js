@@ -127,6 +127,7 @@ router.post('/:id/test-email', async (req, res, next) => {
       await dbRun('INSERT INTO github_email_delivery_logs (subscription_id, user_id, email, kind, status) VALUES (?, ?, ?, \'test\', \'success\')', [subscription.id, req.user.userId, subscription.email])
       return res.json({ success: true, message: '测试邮件已发送，请检查收件箱和垃圾邮件目录' })
     } catch (error) {
+      console.error('[GitHub Radar] test email route failed:', String(error?.message || 'unknown').slice(0, 300))
       await dbRun('INSERT INTO github_email_delivery_logs (subscription_id, user_id, email, kind, status, error_message) VALUES (?, ?, ?, \'test\', \'failed\', ?)', [subscription.id, req.user.userId, subscription.email, error.message || 'SMTP 发送失败'])
       return res.status(502).json({ error: '测试邮件发送失败，请稍后重试或联系客服' })
     }

@@ -61,23 +61,36 @@ function dotStuff(value) {
 
 async function sendSmtpMessage({ to, subject, body, contentType = 'text/plain' }) {
   const config = await getGithubMailConfig()
+  const safeTo = String(to || '').replace(/^(.{2}).*(@.*)$/, '$1***$2')
+  console.log(`[GitHub Mail] begin host=${config.host} port=${config.port} user=${safeToAddress(config.user)} to=${safeTo}`)
   if (!config.password) throw new Error('尚未配置 Outlook SMTP 密码')
   const socket = net.createConnection({ host: config.host, port: config.port })
   socket.setTimeout(30000)
+  let stage = 'connect'
   try {
     await readResponse(socket)
+    stage = 'ehlo'
     await command(socket, `EHLO lcyksp.xyz`, [220, 250])
+    stage = 'starttls'
     await command(socket, 'STARTTLS', [220])
+    stage = 'tls'
     const secureSocket = await new Promise((resolve, reject) => {
       const upgraded = tls.connect({ socket, host: config.host, servername: config.host }, () => resolve(upgraded))
       upgraded.once('error', reject)
     })
+    stage = 'ehlo-tls'
     await command(secureSocket, 'EHLO lcyksp.xyz', [250])
+    stage = 'auth-init'
     await command(secureSocket, 'AUTH LOGIN', [334])
+    stage = 'auth-user'
     await command(secureSocket, Buffer.from(config.user).toString('base64'), [334])
+    stage = 'auth-password'
     await command(secureSocket, Buffer.from(config.password).toString('base64'), [235])
+    stage = 'mail-from'
     await command(secureSocket, `MAIL FROM:<${config.user}>`, [250])
+    stage = 'rcpt-to'
     await command(secureSocket, `RCPT TO:<${to}>`, [250, 251])
+    stage = 'data'
     await command(secureSocket, 'DATA', [354])
     const message = [
       `From: ${config.from}`,
@@ -90,12 +103,23 @@ async function sendSmtpMessage({ to, subject, body, contentType = 'text/plain' }
       body,
     ].join('\r\n')
     secureSocket.write(`${dotStuff(message)}\r\n.\r\n`)
-    await readResponse(secureSocket)
+    const deliveryResponse = await readResponse(secureSocket)
+    if (deliveryResponse.code < 200 || deliveryResponse.code >= 400) throw new Error(`SMTP ${deliveryResponse.code}: ${deliveryResponse.text}`)
+    console.log(`[GitHub Mail] sent host=${config.host} to=${safeTo} code=${deliveryResponse.code}`)
+    stage = 'quit'
     await command(secureSocket, 'QUIT', [221])
     secureSocket.end()
+  } catch (error) {
+    console.error(`[GitHub Mail] failed stage=${stage} host=${config.host} port=${config.port} user=${safeToAddress(config.user)} code=${error?.message?.match(/SMTP (\d{3})/)?.[1] || 'n/a'} message=${String(error?.message || 'unknown').slice(0, 240)}`)
+    throw error
   } finally {
     socket.destroy()
   }
+}
+
+function safeToAddress(value) {
+  const text = String(value || '')
+  return text.replace(/^(.{2}).*(@.*)$/, '$1***$2') || '(empty)'
 }
 
 export async function sendGithubTestEmail(to) {
