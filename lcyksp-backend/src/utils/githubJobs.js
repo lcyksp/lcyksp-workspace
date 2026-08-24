@@ -61,10 +61,10 @@ export async function discoverActiveGithubSubscriptions() {
     try {
       console.log('[GitHub Radar] AI review start:', repository.full_name)
       const basicContext = await fetchGithubRepositoryContext(repository.full_name, { includeCode: false })
-      const first = await reviewGithubRepository({ ...repository, ...basicContext }, { codeContext: false })
+      const first = await reviewGithubRepository({ ...basicContext, ...repository, id: repository.id }, { codeContext: false })
       if (!first || first.confidence < 0.55 || !basicContext.readme) {
         const codeContext = await fetchGithubRepositoryContext(repository.full_name, { includeCode: true })
-        await reviewGithubRepository({ ...repository, ...codeContext }, { codeContext: true })
+        await reviewGithubRepository({ ...codeContext, ...repository, id: repository.id }, { codeContext: true })
       }
       await dbRun("UPDATE github_ai_review_attempts SET status='success', last_error='', updated_at=? WHERE repository_id=?", [new Date().toISOString(), repository.id])
     } catch (error) {
