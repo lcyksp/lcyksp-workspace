@@ -132,6 +132,7 @@ const githubRadarConfig = reactive({
   smtpHost: 'smtp-mail.outlook.com', smtpPort: 587,
   smtpUser: '', smtpFrom: '',
   aiFallbackUrl: '', aiFallbackModel: '', aiFallbackKey: '', aiFallbackConfigured: false,
+  proxySubscription: '', proxyConfigured: false, proxyStatus: '未检测', proxyNode: '', proxyCheckedAt: '',
 })
 const githubCategoryForm = reactive({ name: '', description: '', keywords: '', languages: '' })
 const quickActionLoadingId = ref(null)
@@ -576,6 +577,19 @@ async function saveGithubRadarConfig() {
     await loadGithubRadarConfig()
   } catch (error) {
     ElMessage.error(error.response?.data?.error || '保存 GitHub日报配置失败')
+  } finally { githubRadarSaving.value = false }
+}
+
+async function testGithubProxy() {
+  githubRadarSaving.value = true
+  try {
+    const res = await axios.post('/api/admin/config/github-radar/proxy-test')
+    githubRadarConfig.proxyStatus = res.data?.status || '已连接'
+    githubRadarConfig.proxyNode = res.data?.node || githubRadarConfig.proxyNode
+    ElMessage.success(res.data?.message || 'GitHub 代理测试成功')
+  } catch (error) {
+    githubRadarConfig.proxyStatus = '失败'
+    ElMessage.error(error.response?.data?.error || 'GitHub 代理测试失败')
   } finally { githubRadarSaving.value = false }
 }
 
@@ -1334,6 +1348,11 @@ onMounted(() => {
                 <el-input v-model="githubRadarConfig.githubToken" type="password" show-password placeholder="留空表示保持现有配置" clearable />
                 <div class="form-hint">状态：{{ githubRadarConfig.githubTokenConfigured ? '已配置' : '未配置' }}。建议使用权限最小的 GitHub Token。</div>
               </el-form-item>
+              <el-form-item label="机场订阅链接">
+                <el-input v-model="githubRadarConfig.proxySubscription" type="password" show-password placeholder="留空表示保持现有订阅" clearable />
+                <div class="form-hint">状态：{{ githubRadarConfig.proxyConfigured ? githubRadarConfig.proxyStatus : '未配置' }}。保存后服务器会自动刷新订阅、检测节点并选择可访问 GitHub 的最低延迟节点。</div>
+                <div v-if="githubRadarConfig.proxyNode" class="form-hint">当前节点：{{ githubRadarConfig.proxyNode }}<span v-if="githubRadarConfig.proxyCheckedAt"> · {{ githubRadarConfig.proxyCheckedAt }}</span></div>
+              </el-form-item>
               <el-form-item label="Outlook SMTP 主机"><el-input v-model="githubRadarConfig.smtpHost" /></el-form-item>
               <el-form-item label="SMTP 端口"><el-input-number v-model="githubRadarConfig.smtpPort" :min="1" :max="65535" /></el-form-item>
               <el-form-item label="发件邮箱"><el-input v-model="githubRadarConfig.smtpUser" /></el-form-item>
@@ -1346,6 +1365,7 @@ onMounted(() => {
               <el-form-item label="第二模型名称"><el-input v-model="githubRadarConfig.aiFallbackModel" placeholder="例如 grok-..." /></el-form-item>
               <el-form-item label="第二模型 API Key"><el-input v-model="githubRadarConfig.aiFallbackKey" type="password" show-password placeholder="留空表示保持现有配置" clearable /><div class="form-hint">状态：{{ githubRadarConfig.aiFallbackConfigured ? '已配置' : '未配置' }}。当前先保存配置，后续用于低置信度复核。</div></el-form-item>
               <el-button type="primary" :loading="githubRadarSaving" @click="saveGithubRadarConfig">保存 GitHub日报配置</el-button>
+              <el-button :loading="githubRadarSaving" @click="testGithubProxy">测试 GitHub 代理</el-button>
             </el-form>
           </section>
           <section class="single-panel">
