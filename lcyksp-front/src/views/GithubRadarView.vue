@@ -154,8 +154,8 @@ onMounted(loadData)
 
 <style scoped>
 .radar-page { min-height: 100%; padding: 24px; background: var(--bg-deep); display: grid; gap: 18px; }
-.hero-card, .panel { background: #16162a; border: 1px solid var(--border-color); border-radius: 18px; padding: 24px; box-shadow: 0 16px 48px rgba(0,0,0,.18); }
-.hero-card { display: flex; justify-content: space-between; gap: 20px; align-items: center; background: radial-gradient(circle at 85% 15%, rgba(64,158,255,.2), transparent 30%), #16162a; }
+.hero-card, .panel { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 24px; box-shadow: 0 16px 48px rgba(0,0,0,.18); }
+.hero-card { display: flex; justify-content: space-between; gap: 20px; align-items: center; background: var(--bg-card); }
 .eyebrow { color: var(--accent-blue); font-size: 12px; letter-spacing: .18em; }
 h1, h2 { color: var(--text-heading); margin: 7px 0; }
 p { color: var(--text-secondary); margin: 0; line-height: 1.7; }
@@ -165,7 +165,7 @@ p { color: var(--text-secondary); margin: 0; line-height: 1.7; }
 .option-description { color: var(--text-muted); margin-left: 12px; }
 .empty-hint, .test-tip, .frequency-row { color: var(--text-muted); font-size: 13px; margin-top: 8px; }
 .subscription-list { display: grid; gap: 14px; }
-.subscription-card { border: 1px solid var(--border-color); background: var(--bg-ctrl); border-radius: 14px; padding: 18px; }
+.subscription-card { border: 1px solid var(--border-color); background: var(--bg-ctrl); border-radius: 8px; padding: 18px; }
 .subscription-heading, .subscription-heading > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .subscription-heading strong { color: var(--text-heading); }
 .tag-row, .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
