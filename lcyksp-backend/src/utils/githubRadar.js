@@ -42,7 +42,7 @@ async function githubFetch(path, params = {}) {
 
 export async function discoverGithubRepositories({ query = '', categoryKeywords = [], language = '', limit = 30 } = {}) {
   const terms = [...new Set([query, ...categoryKeywords].map((item) => String(item || '').trim()).filter(Boolean))]
-  const groups = terms.length ? terms.reduce((all, term, index) => index % 4 ? all : all.concat([terms.slice(index, index + 4)]), []) : [[]]
+  const groups = terms.length ? terms.slice(0, 12).map((term) => [term]) : [[]]
   const results = []
   for (const group of groups) {
     const termQuery = group.length > 1 ? '(' + group.map((item) => '\"' + item + '\"').join(' OR ') + ')' : group.map((item) => '\"' + item + '\"').join(' ')
@@ -66,8 +66,8 @@ export async function discoverEmergingGithubRepositories({ keywords = [], limit 
   const terms = [...new Set(keywords.map((item) => String(item || '').trim()).filter(Boolean))]
   const since = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10)
   const results = []
-  for (const group of (terms.length ? terms.slice(0, 20) : ['']).reduce((all, term, index, list) => index % 4 ? all : all.concat([list.slice(index, index + 4)]), [])) {
-    const termQuery = group.filter(Boolean).length > 1 ? '(' + group.filter(Boolean).map((item) => '\"' + item + '\"').join(' OR ') + ')' : group.filter(Boolean).map((item) => '\"' + item + '\"').join(' ')
+  for (const group of (terms.length ? terms.slice(0, 12) : ['']).map((term) => [term])) {
+    const termQuery = group.filter(Boolean).map((item) => item.replace(/[\"']/g, '')).join(' ')
     const q = [termQuery, 'in:name,description,readme', 'created:>=' + since, 'stars:>=10'].filter(Boolean).join(' ')
     const data = await githubFetch('/search/repositories', { q, sort: 'updated', order: 'desc', per_page: Math.min(limit, 100) })
     results.push(...(data.items || []))
