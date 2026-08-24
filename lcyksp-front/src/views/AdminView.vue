@@ -127,6 +127,7 @@ const githubCategoryLoading = ref(false)
 const githubCategorySaving = ref(false)
 const githubCategories = ref([])
 const githubRadarConfig = reactive({
+  primaryAiUrl: 'https://api.deepseek.com', primaryAiModel: 'deepseek-chat', primaryAiKey: '', primaryAiConfigured: false,
   githubToken: '', githubTokenConfigured: false,
   smtpPassword: '', smtpConfigured: false,
   smtpHost: 'smtp-mail.outlook.com', smtpPort: 587,
@@ -561,7 +562,7 @@ async function loadGithubRadarConfig() {
     Object.assign(githubRadarConfig, {
       ...githubRadarConfig,
       ...configRes.data,
-      githubToken: '', smtpPassword: '', aiFallbackKey: '',
+      primaryAiKey: '', githubToken: '', smtpPassword: '', aiFallbackKey: '',
     })
     githubCategories.value = categoryRes.data?.categories || []
   } catch (error) {
@@ -1361,6 +1362,11 @@ onMounted(() => {
                 <div class="form-hint">状态：{{ githubRadarConfig.smtpConfigured ? '已配置' : '未配置' }}。个人 Outlook 默认使用 smtp-mail.outlook.com:587 + STARTTLS。</div>
               </el-form-item>
               <el-form-item label="显示发件人"><el-input v-model="githubRadarConfig.smtpFrom" /></el-form-item>
+              <el-divider content-position="left">第一模型：README 初筛</el-divider>
+              <el-form-item label="第一模型 API URL"><el-input v-model="githubRadarConfig.primaryAiUrl" placeholder="OpenAI 兼容接口" /></el-form-item>
+              <el-form-item label="第一模型名称"><el-input v-model="githubRadarConfig.primaryAiModel" placeholder="例如 gpt-5.6-luna" /></el-form-item>
+              <el-form-item label="第一模型 API Key"><el-input v-model="githubRadarConfig.primaryAiKey" type="password" show-password placeholder="留空表示保持现有配置" clearable /><div class="form-hint">状态：{{ githubRadarConfig.primaryAiConfigured ? '已配置' : '未配置' }}。用于 README 和项目信息的首轮筛选。</div></el-form-item>
+              <el-divider content-position="left">第二模型：低置信度复核</el-divider>
               <el-form-item label="第二模型 API URL"><el-input v-model="githubRadarConfig.aiFallbackUrl" placeholder="可选，OpenAI 兼容接口" /></el-form-item>
               <el-form-item label="第二模型名称"><el-input v-model="githubRadarConfig.aiFallbackModel" placeholder="例如 grok-..." /></el-form-item>
               <el-form-item label="第二模型 API Key"><el-input v-model="githubRadarConfig.aiFallbackKey" type="password" show-password placeholder="留空表示保持现有配置" clearable /><div class="form-hint">状态：{{ githubRadarConfig.aiFallbackConfigured ? '已配置' : '未配置' }}。当前先保存配置，后续用于低置信度复核。</div></el-form-item>
