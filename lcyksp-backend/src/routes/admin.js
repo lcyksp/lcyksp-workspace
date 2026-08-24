@@ -8,6 +8,8 @@ import { getDb } from '../config/db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
@@ -24,6 +26,15 @@ router.use(authMiddleware);
 router.use(requireAdmin);
 
 var SALT_ROUNDS = 10;
+var execFileAsync = promisify(execFile);
+
+async function runGithubProxyCommand(action, subscriptionUrl = '') {
+  const helper = process.env.MIHOMO_ADMIN_HELPER || '/usr/local/bin/lcyksp-mihomo-update';
+  const args = [action];
+  if (subscriptionUrl) args.push(subscriptionUrl);
+  const { stdout } = await execFileAsync('sudo', [helper, ...args], { timeout: 90000, maxBuffer: 1024 * 1024 });
+  try { return JSON.parse(stdout); } catch { return { ok: true, output: stdout.slice(-2000) }; }
+}
 
 function generateCardCode() {
   var raw = crypto.randomBytes(10).toString('hex').toUpperCase();
@@ -509,6 +520,10 @@ router.get('/config/github-radar', async function (req, res, next) {
       aiFallbackUrl: values.github_ai_fallback_url || '',
       aiFallbackModel: values.github_ai_fallback_model || '',
       aiFallbackConfigured: Boolean(values.github_ai_fallback_key),
+      proxyConfigured: Boolean(values.github_proxy_subscription),
+      proxyStatus: values.github_proxy_status || '未检测',
+      proxyNode: values.github_proxy_node || '',
+      proxyCheckedAt: values.github_proxy_checked_at || '',
     })
   } catch (err) {
     next(err)
@@ -527,6 +542,7 @@ router.post('/config/github-radar', async function (req, res, next) {
       ['github_ai_fallback_url', req.body?.aiFallbackUrl],
       ['github_ai_fallback_model', req.body?.aiFallbackModel],
       ['github_ai_fallback_key', req.body?.aiFallbackKey],
+      ['github_proxy_subscription', req.body?.proxySubscription],
     ]
     const db = getDb()
     for (const [key, value] of values) {
@@ -534,10 +550,28 @@ router.post('/config/github-radar', async function (req, res, next) {
       const encrypted = ['github_token', 'github_smtp_password', 'github_ai_fallback_key'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
       await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [key, encrypted], (err) => err ? reject(err) : resolve()))
     }
+    if (req.body?.proxySubscription && String(req.body.proxySubscription).trim()) {
+      try {
+        const result = await runGithubProxyCommand('update', String(req.body.proxySubscription).trim())
+        const now = new Date().toISOString()
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_status', result.ok === false ? '失败' : '已连接'], (err) => err ? reject(err) : resolve()))
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_node', String(result.node || '')], (err) => err ? reject(err) : resolve()))
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_checked_at', now], (err) => err ? reject(err) : resolve()))
+      } catch (proxyError) {
+        return res.status(502).json({ error: '机场订阅更新或节点检测失败：' + proxyError.message })
+      }
+    }
     res.json({ message: 'GitHub 趋势配置已保存' })
   } catch (err) {
     next(err)
   }
+})
+
+router.post('/config/github-radar/proxy-test', async function (req, res, next) {
+  try {
+    const result = await runGithubProxyCommand('test')
+    res.json(result)
+  } catch (err) { next(err) }
 })
 
 router.get('/github-radar/categories', async function (req, res, next) {
