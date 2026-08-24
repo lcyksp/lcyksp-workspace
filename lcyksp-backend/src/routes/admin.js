@@ -46,6 +46,12 @@ async function runGithubProxyCommand(action, subscriptionUrl = '') {
   try { return JSON.parse(stdout); } catch { return { ok: true, output: stdout.slice(-2000) }; }
 }
 
+function dbGetAsync(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row)) ) }
+function dbAllAsync(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || [])) ) }
+function dbRunAsync(sql, params = []) { return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(e) { e ? reject(e) : resolve({ lastID: this.lastID, changes: this.changes }) }) ) }
+function parseAdminJson(value, fallback) { try { return JSON.parse(value) } catch { return fallback } }
+function serializeAdminSubscription(row) { return { id: row.id, userId: row.user_id, username: row.username || '', email: row.email, categoryIds: parseAdminJson(row.category_ids, []), keywords: parseAdminJson(row.keywords, []), frequencies: parseAdminJson(row.frequencies, ['daily']), status: row.status, lastTestSentAt: row.last_test_sent_at, createdAt: row.created_at, updatedAt: row.updated_at } }
+
 function generateCardCode() {
   var raw = crypto.randomBytes(10).toString('hex').toUpperCase();
   return [raw.slice(0, 4), raw.slice(4, 8), raw.slice(8, 12), raw.slice(12, 16)].join('-');
@@ -1121,5 +1127,64 @@ router.delete('/feedback/:id', async function (req, res, next) {
     next(err);
   }
 });
+
+// ===================================================================
+// GitHub 日报订阅管理
+// ===================================================================
+router.get('/github-radar/subscriptions', async function (req, res, next) {
+  try {
+    const rows = await dbAllAsync(`SELECT s.*, u.username FROM github_subscriptions s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.updated_at DESC, s.id DESC`)
+    res.json({ subscriptions: rows.map(serializeAdminSubscription) })
+  } catch (err) { next(err) }
+})
+
+router.post('/github-radar/subscriptions', async function (req, res, next) {
+  try {
+    const userId = Number(req.body?.userId)
+    const email = String(req.body?.email || '').trim().toLowerCase()
+    const categoryIds = Array.isArray(req.body?.categoryIds) ? req.body.categoryIds.map(Number).filter(Number.isInteger) : []
+    const keywords = Array.isArray(req.body?.keywords) ? req.body.keywords.map(String).map((v) => v.trim()).filter(Boolean) : []
+    const frequencies = Array.isArray(req.body?.frequencies) ? req.body.frequencies.filter((v) => ['daily', 'weekly', 'monthly'].includes(v)) : ['daily']
+    const status = ['pending', 'active', 'paused', 'closed'].includes(req.body?.status) ? req.body.status : 'active'
+    if (!Number.isInteger(userId) || !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '用户和邮箱格式不正确' })
+    if (!categoryIds.length && !keywords.length) return res.status(400).json({ error: '至少填写一个方向或关键词' })
+    const user = await dbGetAsync('SELECT id FROM users WHERE id = ?', [userId]); if (!user) return res.status(404).json({ error: '用户不存在' })
+    const now = new Date().toISOString()
+    const result = await dbRunAsync('INSERT INTO github_subscriptions (user_id,email,category_ids,keywords,frequencies,status,updated_at) VALUES (?,?,?,?,?,?,?)', [userId, email, JSON.stringify(categoryIds), JSON.stringify(keywords), JSON.stringify(frequencies), status, now])
+    const row = await dbGetAsync('SELECT s.*, u.username FROM github_subscriptions s LEFT JOIN users u ON u.id=s.user_id WHERE s.id=?', [result.lastID])
+    res.status(201).json({ subscription: serializeAdminSubscription(row) })
+  } catch (err) { if (String(err.message).includes('UNIQUE')) return res.status(409).json({ error: '该用户已存在相同邮箱订阅' }); next(err) }
+})
+
+router.put('/github-radar/subscriptions/:id', async function (req, res, next) {
+  try {
+    const id = Number(req.params.id); const existing = await dbGetAsync('SELECT id FROM github_subscriptions WHERE id=?', [id]); if (!existing) return res.status(404).json({ error: '订阅不存在' })
+    const sets = []; const params = []
+    if (req.body?.userId !== undefined) { sets.push('user_id=?'); params.push(Number(req.body.userId)) }
+    if (req.body?.email !== undefined) { const email = String(req.body.email).trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '邮箱格式不正确' }); sets.push('email=?'); params.push(email) }
+    if (Array.isArray(req.body?.categoryIds)) { sets.push('category_ids=?'); params.push(JSON.stringify(req.body.categoryIds.map(Number).filter(Number.isInteger))) }
+    if (Array.isArray(req.body?.keywords)) { sets.push('keywords=?'); params.push(JSON.stringify(req.body.keywords.map(String).map(v => v.trim()).filter(Boolean))) }
+    if (Array.isArray(req.body?.frequencies)) { sets.push('frequencies=?'); params.push(JSON.stringify(req.body.frequencies.filter(v => ['daily','weekly','monthly'].includes(v)))) }
+    if (req.body?.status && ['pending','active','paused','closed'].includes(req.body.status)) { sets.push('status=?'); params.push(req.body.status) }
+    if (!sets.length) return res.status(400).json({ error: '没有可修改的内容' })
+    sets.push('updated_at=?'); params.push(new Date().toISOString()); params.push(id)
+    await dbRunAsync('UPDATE github_subscriptions SET ' + sets.join(',') + ' WHERE id=?', params)
+    const row = await dbGetAsync('SELECT s.*, u.username FROM github_subscriptions s LEFT JOIN users u ON u.id=s.user_id WHERE s.id=?', [id]); res.json({ subscription: serializeAdminSubscription(row) })
+  } catch (err) { if (String(err.message).includes('UNIQUE')) return res.status(409).json({ error: '该用户已存在相同邮箱订阅' }); next(err) }
+})
+
+router.delete('/github-radar/subscriptions/:id', async function (req, res, next) { try { const result = await dbRunAsync('DELETE FROM github_subscriptions WHERE id=?', [Number(req.params.id)]); if (!result.changes) return res.status(404).json({ error: '订阅不存在' }); res.json({ success: true }) } catch (err) { next(err) } })
+
+router.post('/github-radar/simulation', async function (req, res, next) {
+  try {
+    const delayMinutes = Math.max(1, Math.min(180, Number(req.body?.delayMinutes || 30)))
+    const to = String(req.body?.email || '1296757861@qq.com').trim().toLowerCase()
+    const type = ['daily', 'weekly', 'monthly'].includes(req.body?.type) ? req.body.type : 'daily'
+    const runAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
+    const jobKey = 'github-simulation:' + Date.now()
+    await dbRunAsync('INSERT INTO github_simulation_tasks (job_key,to_email,job_type,run_at,status,created_at) VALUES (?,?,?,?,?,?)', [jobKey, to, type, runAt, 'pending', new Date().toISOString()])
+    res.json({ scheduled: true, jobKey, runAt: new Date(runAt).toISOString(), to })
+  } catch (err) { next(err) }
+})
 
 export default router;
