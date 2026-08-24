@@ -1,66 +1,40 @@
+import net from 'net'
+import tls from 'tls'
 import { getDb } from '../config/db.js'
-import { decrypt, encrypt } from './crypto.js'
+import { decrypt } from './crypto.js'
 
-const DEVICE_URL = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode'
-const TOKEN_URL = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token'
-const SCOPE = 'https://graph.microsoft.com/Mail.Send offline_access openid profile'
-
+const DEFAULT_HOST = 'smtp.163.com'
+const DEFAULT_PORT = 465
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
-function dbRun(sql, params = []) { return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(e) { e ? reject(e) : resolve({ changes: this.changes }) })) }
+async function getConfig() {
+  const rows = await dbAll("SELECT key,value FROM system_config WHERE key IN ('github_smtp_host','github_smtp_port','github_smtp_user','github_smtp_password','github_smtp_from')")
+  const c = Object.fromEntries(rows.map((r) => [r.key, r.value]))
+  return { host: c.github_smtp_host || DEFAULT_HOST, port: Number(c.github_smtp_port || DEFAULT_PORT), user: c.github_smtp_user || '', password: c.github_smtp_password ? decrypt(c.github_smtp_password) : '', from: c.github_smtp_from || c.github_smtp_user || '' }
+}
 function safeAddress(value) { const text = String(value || ''); return text.replace(/^(.{2}).*(@.*)$/, '$1***$2') || '(empty)' }
+function readResponse(socket) { return new Promise((resolve, reject) => { let buffer = ''; const onData = (chunk) => { buffer += chunk.toString(); const lines = buffer.split(/\r?\n/); const last = lines.filter(Boolean).at(-1) || ''; if (/^\d{3} /.test(last)) { socket.off('data', onData); resolve({ code: Number(last.slice(0, 3)), text: buffer.trim() }) } }; socket.on('data', onData); socket.once('error', reject) }) }
+async function command(socket, value, expected = []) { socket.write(`${value}\r\n`); const r = await readResponse(socket); if (expected.length && !expected.includes(r.code)) throw new Error(`SMTP ${r.code}: ${r.text}`); return r }
+function dotStuff(value) { return value.split(/\r?\n/).map((line) => line.startsWith('.') ? `.${line}` : line).join('\r\n') }
 
-async function loadConfig() {
-  const rows = await dbAll("SELECT key, value FROM system_config WHERE key IN ('github_graph_client_id','github_graph_refresh_token','github_graph_user')")
-  const config = Object.fromEntries(rows.map((row) => [row.key, row.value]))
-  return {
-    clientId: config.github_graph_client_id || process.env.GITHUB_GRAPH_CLIENT_ID || '',
-    refreshToken: config.github_graph_refresh_token ? decrypt(config.github_graph_refresh_token) : (process.env.GITHUB_GRAPH_REFRESH_TOKEN || ''),
-    user: config.github_graph_user || process.env.GITHUB_GRAPH_USER || '',
-  }
-}
+export async function sendGithubTestEmail(to) { return sendSmtpMessage({ to, subject: 'GitHub 项目订阅测试邮件', body: '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。\n\n如果暂未收到，请检查垃圾邮件目录，稍后重试，或联系客服。' }) }
+export async function sendGithubDigestEmail(to, subject, html) { return sendSmtpMessage({ to, subject, body: html, contentType: 'text/html' }) }
+export async function smtpConfigured() { const c = await getConfig(); return Boolean(c.user && c.password) }
+export async function getGithubMailConfig() { return getConfig() }
 
-async function postToken(body) {
-  const response = await fetch(TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body) })
-  return { response, data: await response.json() }
+async function sendSmtpMessage({ to, subject, body, contentType = 'text/plain' }) {
+  const c = await getConfig(); if (!c.user || !c.password) throw new Error('尚未配置 163 邮箱 SMTP 授权码')
+  const secure = c.port === 465
+  console.log(`[GitHub Mail] begin host=${c.host} port=${c.port} user=${safeAddress(c.user)} to=${safeAddress(to)}`)
+  const socket = secure ? tls.connect({ host: c.host, port: c.port, servername: c.host }) : net.createConnection({ host: c.host, port: c.port })
+  socket.setTimeout(30000); let stage = 'connect'
+  try {
+    await readResponse(socket); stage = 'ehlo'; await command(socket, 'EHLO lcyksp.xyz', [220, 250])
+    let s = socket
+    if (!secure) { stage = 'starttls'; await command(socket, 'STARTTLS', [220]); stage = 'tls'; s = await new Promise((resolve, reject) => { const upgraded = tls.connect({ socket, host: c.host, servername: c.host }, () => resolve(upgraded)); upgraded.once('error', reject) }); await command(s, 'EHLO lcyksp.xyz', [250]) }
+    stage = 'auth'; await command(s, 'AUTH LOGIN', [334]); await command(s, Buffer.from(c.user).toString('base64'), [334]); await command(s, Buffer.from(c.password).toString('base64'), [235])
+    stage = 'mail'; await command(s, `MAIL FROM:<${c.user}>`, [250]); await command(s, `RCPT TO:<${to}>`, [250, 251]); await command(s, 'DATA', [354])
+    const message = [`From: ${c.from}`, `To: ${to}`, `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`, 'MIME-Version: 1.0', `Content-Type: ${contentType}; charset=UTF-8`, 'Content-Transfer-Encoding: 8bit', '', body].join('\r\n')
+    s.write(`${dotStuff(message)}\r\n.\r\n`); const delivered = await readResponse(s); if (delivered.code < 200 || delivered.code >= 400) throw new Error(`SMTP ${delivered.code}: ${delivered.text}`)
+    console.log(`[GitHub Mail] sent host=${c.host} to=${safeAddress(to)} code=${delivered.code}`); await command(s, 'QUIT', [221]); s.end()
+  } catch (error) { console.error(`[GitHub Mail] failed stage=${stage} host=${c.host} port=${c.port} user=${safeAddress(c.user)} message=${String(error?.message || 'unknown').slice(0, 240)}`); throw error } finally { socket.destroy() }
 }
-
-export async function startGraphDeviceLogin(clientId) {
-  const id = String(clientId || '').trim()
-  if (!/^[0-9a-f-]{20,}$/i.test(id)) throw new Error('请输入有效的 Azure 应用程序(客户端) ID')
-  const response = await fetch(DEVICE_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: id, scope: SCOPE }) })
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error_description || data.error || '无法启动 Microsoft 授权')
-  return data
-}
-
-export async function finishGraphDeviceLogin({ clientId, deviceCode }) {
-  const { response, data } = await postToken({ client_id: String(clientId || '').trim(), device_code: String(deviceCode || '').trim(), grant_type: 'urn:ietf:params:oauth:grant-type:device_code' })
-  if (!response.ok) return { pending: ['authorization_pending', 'slow_down'].includes(data.error), message: data.error_description || data.error }
-  const claims = data.id_token ? JSON.parse(Buffer.from(data.id_token.split('.')[1], 'base64url').toString('utf8')) : {}
-  return { pending: false, refreshToken: data.refresh_token, user: claims.preferred_username || claims.email || '' }
-}
-
-async function accessToken(config) {
-  const { response, data } = await postToken({ client_id: config.clientId, grant_type: 'refresh_token', refresh_token: config.refreshToken, scope: SCOPE })
-  if (!response.ok) throw new Error('Microsoft 授权已失效：' + (data.error_description || data.error || 'unknown'))
-  if (data.refresh_token) await dbRun("INSERT OR REPLACE INTO system_config (key,value) VALUES ('github_graph_refresh_token',?)", [encrypt(data.refresh_token)])
-  return data.access_token
-}
-
-async function sendMail({ to, subject, body, contentType }) {
-  const config = await loadConfig()
-  if (!config.clientId || !config.refreshToken || !config.user) throw new Error('请先在管理员后台完成 Microsoft Graph 邮件授权')
-  const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + await accessToken(config), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: { subject, body: { contentType: contentType === 'text/html' ? 'HTML' : 'Text', content: body }, toRecipients: [{ emailAddress: { address: to } }] }, saveToSentItems: true }),
-  })
-  if (!response.ok) throw new Error('Graph 发信失败 HTTP ' + response.status + ': ' + (await response.text()).slice(0, 300))
-  console.log(`[GitHub Mail] Graph sent from=${safeAddress(config.user)} to=${safeAddress(to)}`)
-}
-
-export async function sendGithubTestEmail(to) {
-  return sendMail({ to, subject: 'GitHub 项目订阅测试邮件', body: '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。\n\n如果暂未收到，请检查垃圾邮件目录，稍后重试，或联系客服。', contentType: 'text/plain' })
-}
-export async function sendGithubDigestEmail(to, subject, html) { return sendMail({ to, subject, body: html, contentType: 'text/html' }) }
-export async function smtpConfigured() { const c = await loadConfig(); return Boolean(c.clientId && c.refreshToken && c.user) }

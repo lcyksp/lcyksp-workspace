@@ -10,7 +10,6 @@ import { requireAdmin } from '../middleware/requireAdmin.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { startGraphDeviceLogin, finishGraphDeviceLogin } from '../utils/githubMail.js';
 
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
@@ -527,12 +526,9 @@ router.get('/config/github-radar', async function (req, res, next) {
       primaryAiConfigured: Boolean(values.llm_key),
       githubTokenConfigured: Boolean(values.github_token),
       smtpConfigured: Boolean(values.github_smtp_password),
-      graphClientId: values.github_graph_client_id || '',
-      graphConfigured: Boolean(values.github_graph_refresh_token),
-      graphUser: values.github_graph_user || '',
-      smtpHost: values.github_smtp_host || 'smtp-mail.outlook.com',
-      smtpPort: Number(values.github_smtp_port || 587),
-      smtpUser: values.github_smtp_user || '',
+      smtpHost: values.github_smtp_host || 'smtp.163.com',
+      smtpPort: Number(values.github_smtp_port || 465),
+      smtpUser: values.github_smtp_user || 'lcykspxyz@163.com',
       smtpFrom: values.github_smtp_from || values.github_smtp_user || '',
       aiFallbackUrl: values.github_ai_fallback_url || '',
       aiFallbackModel: values.github_ai_fallback_model || '',
@@ -555,11 +551,10 @@ router.post('/config/github-radar', async function (req, res, next) {
       ['llm_key', req.body?.primaryAiKey],
       ['github_token', req.body?.githubToken],
       ['github_smtp_password', req.body?.smtpPassword],
-      ['github_smtp_host', req.body?.smtpHost || 'smtp-mail.outlook.com'],
-      ['github_smtp_port', String(req.body?.smtpPort || 587)],
+      ['github_smtp_host', req.body?.smtpHost || 'smtp.163.com'],
+      ['github_smtp_port', String(req.body?.smtpPort || 465)],
       ['github_smtp_user', req.body?.smtpUser],
       ['github_smtp_from', req.body?.smtpFrom || req.body?.smtpUser],
-      ['github_graph_client_id', req.body?.graphClientId],
       ['github_ai_fallback_url', req.body?.aiFallbackUrl],
       ['github_ai_fallback_model', req.body?.aiFallbackModel],
       ['github_ai_fallback_key', req.body?.aiFallbackKey],
@@ -597,29 +592,6 @@ router.post('/config/github-radar/proxy-test', async function (req, res, next) {
     await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_node', String(result.node || '')], (err) => err ? reject(err) : resolve()))
     await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_checked_at', now], (err) => err ? reject(err) : resolve()))
     res.json(result)
-  } catch (err) { next(err) }
-})
-
-router.post('/config/github-radar/graph-device/start', async function (req, res, next) {
-  try {
-    const clientId = String(req.body?.clientId || '').trim()
-    const result = await startGraphDeviceLogin(clientId)
-    const db = getDb()
-    await new Promise((resolve, reject) => db.run("INSERT OR REPLACE INTO system_config (key,value) VALUES ('github_graph_client_id',?)", [clientId], (err) => err ? reject(err) : resolve()))
-    res.json({ deviceCode: result.device_code, userCode: result.user_code, verificationUri: result.verification_uri, expiresIn: result.expires_in, interval: result.interval })
-  } catch (err) { next(err) }
-})
-
-router.post('/config/github-radar/graph-device/finish', async function (req, res, next) {
-  try {
-    const clientId = String(req.body?.clientId || '').trim()
-    const result = await finishGraphDeviceLogin({ clientId, deviceCode: req.body?.deviceCode })
-    if (result.pending) return res.status(202).json(result)
-    if (!result.refreshToken || !result.user) return res.status(400).json({ error: result.message || 'Microsoft 授权未完成' })
-    const db = getDb()
-    await new Promise((resolve, reject) => db.run("INSERT OR REPLACE INTO system_config (key,value) VALUES ('github_graph_refresh_token',?)", [encrypt(result.refreshToken)], (err) => err ? reject(err) : resolve()))
-    await new Promise((resolve, reject) => db.run("INSERT OR REPLACE INTO system_config (key,value) VALUES ('github_graph_user',?)", [result.user], (err) => err ? reject(err) : resolve()))
-    res.json({ success: true, user: result.user })
   } catch (err) { next(err) }
 })
 
