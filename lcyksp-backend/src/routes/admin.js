@@ -542,18 +542,18 @@ router.post('/config/github-radar', async function (req, res, next) {
       ['github_ai_fallback_url', req.body?.aiFallbackUrl],
       ['github_ai_fallback_model', req.body?.aiFallbackModel],
       ['github_ai_fallback_key', req.body?.aiFallbackKey],
-      ['github_proxy_subscription', req.body?.proxySubscription],
     ]
     const db = getDb()
     for (const [key, value] of values) {
       if (value === undefined || value === null || String(value).trim() === '') continue
-      const encrypted = ['github_token', 'github_smtp_password', 'github_ai_fallback_key'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
+      const encrypted = ['github_token', 'github_smtp_password', 'github_ai_fallback_key', 'github_proxy_subscription'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
       await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [key, encrypted], (err) => err ? reject(err) : resolve()))
     }
     if (req.body?.proxySubscription && String(req.body.proxySubscription).trim()) {
       try {
         const result = await runGithubProxyCommand('update', String(req.body.proxySubscription).trim())
         const now = new Date().toISOString()
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_subscription', encrypt(String(req.body.proxySubscription).trim())], (err) => err ? reject(err) : resolve()))
         await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_status', result.ok === false ? '失败' : '已连接'], (err) => err ? reject(err) : resolve()))
         await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_node', String(result.node || '')], (err) => err ? reject(err) : resolve()))
         await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_checked_at', now], (err) => err ? reject(err) : resolve()))
@@ -570,6 +570,11 @@ router.post('/config/github-radar', async function (req, res, next) {
 router.post('/config/github-radar/proxy-test', async function (req, res, next) {
   try {
     const result = await runGithubProxyCommand('test')
+    const db = getDb()
+    const now = new Date().toISOString()
+    await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_status', result.ok === false ? '失败' : '已连接'], (err) => err ? reject(err) : resolve()))
+    await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_node', String(result.node || '')], (err) => err ? reject(err) : resolve()))
+    await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_checked_at', now], (err) => err ? reject(err) : resolve()))
     res.json(result)
   } catch (err) { next(err) }
 })
