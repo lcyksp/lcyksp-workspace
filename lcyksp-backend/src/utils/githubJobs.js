@@ -49,7 +49,7 @@ export async function discoverActiveGithubSubscriptions() {
     `SELECT r.* FROM github_repositories r
      INNER JOIN (SELECT DISTINCT repository_id FROM github_subscription_repositories) matched ON matched.repository_id = r.id
      LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id
-     WHERE a.id IS NULL AND (r.updated_at IS NULL OR r.updated_at < datetime('now', '-6 hours'))
+     WHERE a.id IS NULL AND (r.updated_at IS NULL OR datetime(replace(r.updated_at, 'T', ' ')) < datetime('now', '-6 hours'))
      ORDER BY r.last_seen_at DESC LIMIT 5`,
   )
   for (const repository of reviewQueue) {
