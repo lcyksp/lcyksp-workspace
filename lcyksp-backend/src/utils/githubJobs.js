@@ -49,10 +49,15 @@ export async function discoverActiveGithubSubscriptions() {
     `SELECT r.* FROM github_repositories r
      INNER JOIN (SELECT DISTINCT repository_id FROM github_subscription_repositories) matched ON matched.repository_id = r.id
      LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id
-     WHERE a.id IS NULL AND (r.updated_at IS NULL OR datetime(replace(r.updated_at, 'T', ' ')) < datetime('now', '-6 hours'))
+     LEFT JOIN github_ai_review_attempts attempt ON attempt.repository_id = r.id
+     WHERE a.id IS NULL AND (attempt.next_attempt_at IS NULL OR datetime(replace(attempt.next_attempt_at, 'T', ' ')) <= datetime('now'))
      ORDER BY r.last_seen_at DESC LIMIT 5`,
   )
   for (const repository of reviewQueue) {
+    const attemptAt = new Date().toISOString()
+    await dbRun(`INSERT INTO github_ai_review_attempts (repository_id, status, attempts, next_attempt_at, updated_at)
+      VALUES (?, 'running', 1, ?, ?) ON CONFLICT(repository_id) DO UPDATE SET status='running', attempts=attempts+1, next_attempt_at=excluded.next_attempt_at, updated_at=excluded.updated_at`,
+    [repository.id, new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(), attemptAt])
     try {
       console.log('[GitHub Radar] AI review start:', repository.full_name)
       const basicContext = await fetchGithubRepositoryContext(repository.full_name, { includeCode: false })
@@ -61,7 +66,9 @@ export async function discoverActiveGithubSubscriptions() {
         const codeContext = await fetchGithubRepositoryContext(repository.full_name, { includeCode: true })
         await reviewGithubRepository({ ...repository, ...codeContext }, { codeContext: true })
       }
+      await dbRun("UPDATE github_ai_review_attempts SET status='success', last_error='', updated_at=? WHERE repository_id=?", [new Date().toISOString(), repository.id])
     } catch (error) {
+      await dbRun("UPDATE github_ai_review_attempts SET status='failed', last_error=?, updated_at=? WHERE repository_id=?", [String(error.message || 'failed').slice(0, 500), new Date().toISOString(), repository.id])
       console.error('[GitHub Radar] AI review failed:', repository.full_name, error.message)
     }
   }
