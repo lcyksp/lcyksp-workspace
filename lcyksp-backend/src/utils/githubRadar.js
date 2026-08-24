@@ -76,7 +76,7 @@ export async function discoverEmergingGithubRepositories({ keywords = [], limit 
   return [...new Map(results.map((item) => [item.full_name, item])).values()].map((item) => ({ fullName: item.full_name, url: item.html_url, description: item.description || '', language: item.language || '', topics: item.topics || [], stars: item.stargazers_count || 0, forks: item.forks_count || 0 }))
 }
 
-export async function fetchGithubRepositoryContext(fullName) {
+export async function fetchGithubRepositoryContext(fullName, { includeCode = false } = {}) {
   const repo = await githubFetch('/repos/' + fullName)
   let readme = ''
   try {
@@ -89,7 +89,8 @@ export async function fetchGithubRepositoryContext(fullName) {
     const data = await githubFetch('/repos/' + fullName + '/contents')
     const entries = (Array.isArray(data) ? data : []).slice(0, 80)
     rootEntries = entries.map((item) => item.name)
-    const candidates = entries.filter((item) => item.type === 'file' && /\.(js|ts|jsx|tsx|py|go|rs|java|kt|swift|cpp|c|h|cs|php|rb|vue|md)$/i.test(item.name)).slice(0, 4)
+    if (!includeCode) return { ...repo, readme, rootEntries, codeContext: '' }
+    const candidates = entries.filter((item) => item.type === 'file' && /\.(js|ts|jsx|tsx|py|go|rs|java|kt|swift|cpp|c|h|cs|php|rb|vue|md)$/i.test(item.name)).slice(0, 3)
     const snippets = []
     for (const item of candidates) {
       try {
