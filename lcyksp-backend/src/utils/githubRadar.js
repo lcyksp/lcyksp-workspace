@@ -75,11 +75,24 @@ export async function fetchGithubRepositoryContext(fullName) {
     readme = Buffer.from(data.content || '', 'base64').toString('utf8').slice(0, 18000)
   } catch {}
   let rootEntries = []
+  let codeContext = ''
   try {
     const data = await githubFetch('/repos/' + fullName + '/contents')
-    rootEntries = (Array.isArray(data) ? data : []).slice(0, 80).map((item) => item.name)
+    const entries = (Array.isArray(data) ? data : []).slice(0, 80)
+    rootEntries = entries.map((item) => item.name)
+    const candidates = entries.filter((item) => item.type === 'file' && /\.(js|ts|jsx|tsx|py|go|rs|java|kt|swift|cpp|c|h|cs|php|rb|vue|md)$/i.test(item.name)).slice(0, 4)
+    const snippets = []
+    for (const item of candidates) {
+      try {
+        const file = await githubFetch('/repos/' + fullName + '/contents/' + encodeURIComponent(item.name))
+        const text = Buffer.from(file.content || '', 'base64').toString('utf8').slice(0, 3500)
+        if (text) snippets.push('--- ' + item.name + ' ---\n' + text)
+      } catch {}
+      if (snippets.join('\n').length >= 10000) break
+    }
+    codeContext = snippets.join('\n').slice(0, 10000)
   } catch {}
-  return { ...repo, readme, rootEntries }
+  return { ...repo, readme, rootEntries, codeContext }
 }
 
 async function upsertRepository(item, capturedAt) {

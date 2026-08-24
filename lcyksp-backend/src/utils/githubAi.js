@@ -43,6 +43,7 @@ export async function reviewGithubRepository(repository) {
     'Star：' + repository.stars,
     '仓库根目录：' + (repository.rootEntries || ''),
     'README 摘要：' + String(repository.readme || '').slice(0, 18000),
+    '源码片段（仅在需要时参考）：' + String(repository.codeContext || '').slice(0, 10000),
   ].join('\n')
   async function callModel(url, key, model) {
     const response = await fetch(url.endsWith('/chat/completions') ? url : url + '/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: JSON.stringify({ model, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }) })
