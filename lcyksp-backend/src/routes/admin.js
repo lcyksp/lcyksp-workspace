@@ -1006,6 +1006,8 @@ router.post('/membership/cards/import', async function (req, res, next) {
       .map(normalizeImportedMembershipCode)
       .filter(Boolean);
 
+    codes = Array.from(new Set(codes));
+
     if (!codes.length) {
       return res.status(400).json({ error: '请至少输入一条兑换码或兑换链接' });
     }
