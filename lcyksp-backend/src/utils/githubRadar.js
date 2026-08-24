@@ -85,11 +85,11 @@ export async function fetchGithubRepositoryContext(fullName, { includeCode = fal
   } catch {}
   let rootEntries = []
   let codeContext = ''
+  if (!includeCode) return { ...repo, readme, rootEntries, codeContext }
   try {
     const data = await githubFetch('/repos/' + fullName + '/contents')
     const entries = (Array.isArray(data) ? data : []).slice(0, 80)
     rootEntries = entries.map((item) => item.name)
-    if (!includeCode) return { ...repo, readme, rootEntries, codeContext: '' }
     const candidates = entries.filter((item) => item.type === 'file' && /\.(js|ts|jsx|tsx|py|go|rs|java|kt|swift|cpp|c|h|cs|php|rb|vue|md)$/i.test(item.name)).slice(0, 3)
     const snippets = []
     for (const item of candidates) {
