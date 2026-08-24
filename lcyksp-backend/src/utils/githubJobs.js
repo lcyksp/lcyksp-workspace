@@ -47,12 +47,14 @@ export async function discoverActiveGithubSubscriptions() {
   }
   const reviewQueue = await dbAll(
     `SELECT r.* FROM github_repositories r
+     INNER JOIN (SELECT DISTINCT repository_id FROM github_subscription_repositories) matched ON matched.repository_id = r.id
      LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id
      WHERE a.id IS NULL AND (r.updated_at IS NULL OR r.updated_at < datetime('now', '-6 hours'))
      ORDER BY r.last_seen_at DESC LIMIT 5`,
   )
   for (const repository of reviewQueue) {
     try {
+      console.log('[GitHub Radar] AI review start:', repository.full_name)
       const basicContext = await fetchGithubRepositoryContext(repository.full_name, { includeCode: false })
       const first = await reviewGithubRepository({ ...repository, ...basicContext }, { codeContext: false })
       if (!first || first.confidence < 0.55 || !basicContext.readme) {
