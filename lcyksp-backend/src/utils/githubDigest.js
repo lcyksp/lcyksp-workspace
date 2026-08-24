@@ -35,6 +35,12 @@ async function buildDigest(subscription, type) {
   return items.slice(0, 10)
 }
 
+export function renderGithubDigestHtml(items, type = 'daily', dateKey = '') {
+  const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
+  const htmlItems = items.length ? items.map(({ row, gain }) => `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · Star 增长 +${gain}</div><div style="margin-top:5px">${esc(cleanSummary(row.summary || row.description || '暂无摘要'))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>`).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
+  return `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub 技术趋势${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p></div>`
+}
+
 async function sendFor(subscription, type, dateKey) {
   const jobKey = 'github-digest:' + type + ':' + dateKey + ':' + subscription.id
   const existing = await dbGet('SELECT id FROM github_job_runs WHERE job_key = ?', [jobKey])
@@ -43,9 +49,7 @@ async function sendFor(subscription, type, dateKey) {
   await dbRun('INSERT INTO github_job_runs (job_key, job_type, status, started_at) VALUES (?, ?, \'running\', ?)', [jobKey, type, startedAt])
   try {
     const items = await buildDigest(subscription, type)
-    const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
-    const htmlItems = items.length ? items.map(({ row, gain }) => `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · Star 增长 +${gain}</div><div style="margin-top:5px">${esc(cleanSummary(row.summary || row.description || '暂无摘要'))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>`).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
-    const html = `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub 技术趋势${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p></div>`
+    const html = renderGithubDigestHtml(items, type, dateKey)
     await sendGithubDigestEmail(subscription.email, '【GitHub技术趋势' + title + '】' + dateKey, html)
     await dbRun("UPDATE github_job_runs SET status = 'success', details = ?, finished_at = ? WHERE job_key = ?", [JSON.stringify({ itemCount: items.length, subscriptionId: subscription.id }), new Date().toISOString(), jobKey])
     await dbRun("INSERT INTO github_email_delivery_logs (subscription_id, user_id, email, kind, status) VALUES (?, ?, ?, ?, 'success')", [subscription.id, subscription.user_id, subscription.email, type])
@@ -56,6 +60,14 @@ async function sendFor(subscription, type, dateKey) {
     console.error('[GitHub Radar] digest failed:', subscription.email, type, error.message)
     return false
   }
+}
+
+export async function sendGithubSimulationDigest(to, type = 'daily', dateKey = '') {
+  const row = await dbGet('SELECT r.*, a.category, a.summary, a.worth_push FROM github_repositories r LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id ORDER BY r.updated_at DESC LIMIT 1')
+  const item = row ? [{ row, gain: 1 }] : []
+  const html = renderGithubDigestHtml(item, type, dateKey)
+  await sendGithubDigestEmail(to, '【GitHub技术趋势模拟' + (type === 'daily' ? '日报' : '简报') + '】' + dateKey, html)
+  return { itemCount: item.length, repository: row?.full_name || '' }
 }
 
 export async function runGithubDigests(now = new Date()) {
@@ -70,4 +82,21 @@ export async function runGithubDigests(now = new Date()) {
     for (const type of types) if (frequencies.includes(type) && await sendFor(subscription, type, dateKey)) sent += 1
   }
   return { sent, skipped: false }
+}
+
+export async function runPendingGithubSimulations(now = new Date()) {
+  const rows = await dbAll("SELECT * FROM github_simulation_tasks WHERE status = 'pending' AND run_at <= ? ORDER BY id ASC LIMIT 5", [now.toISOString()])
+  for (const task of rows) {
+    await dbRun("UPDATE github_simulation_tasks SET status='running' WHERE id=? AND status='pending'", [task.id])
+    try {
+      const dateKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(now)
+      const result = await sendGithubSimulationDigest(task.to_email, task.job_type, dateKey)
+      await dbRun("UPDATE github_simulation_tasks SET status='success', details=?, finished_at=? WHERE id=?", [JSON.stringify(result), new Date().toISOString(), task.id])
+      await dbRun("INSERT OR REPLACE INTO github_job_runs (job_key,job_type,status,details,started_at,finished_at) VALUES (?,?,?,?,?,?)", [task.job_key, 'simulation', 'success', JSON.stringify({ to: task.to_email, ...result }), task.created_at, new Date().toISOString()])
+    } catch (error) {
+      await dbRun("UPDATE github_simulation_tasks SET status='failed', details=?, finished_at=? WHERE id=?", [String(error.message || '发送失败').slice(0, 500), new Date().toISOString(), task.id])
+      console.error('[GitHub Radar] simulation digest failed:', error.message)
+    }
+  }
+  return rows.length
 }

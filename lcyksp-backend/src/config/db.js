@@ -386,6 +386,19 @@ export async function initDb() {
     ')',
   ).catch(() => {})
   await run(
+    'CREATE TABLE IF NOT EXISTS github_simulation_tasks (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'job_key TEXT NOT NULL UNIQUE,' +
+      'to_email TEXT NOT NULL,' +
+      'job_type TEXT NOT NULL DEFAULT \'daily\',' +
+      'run_at TEXT NOT NULL,' +
+      'status TEXT NOT NULL DEFAULT \'pending\',' +
+      'details TEXT DEFAULT \'\',' +
+      'created_at TEXT NOT NULL,' +
+      'finished_at TEXT DEFAULT NULL' +
+    ')',
+  ).catch(() => {})
+  await run(
     `INSERT OR IGNORE INTO github_categories (name, description, keywords, languages) VALUES
       ('AI应用/大模型应用/AI开发编程', '关注 AI 应用、LLM 应用、Agent、编程助手和开发工具，不以算法研究为主', '["AI application","LLM application","AI agent","developer tools","coding assistant","RAG","MCP","skill","AI应用","大模型应用","AI开发编程"]', '["Python","TypeScript","JavaScript","Go","Rust"]'),
       ('机械、材料', '关注机械工程、机器人、CAD/CAE、材料科学和制造技术', '["mechanical engineering","robotics","CAD","CAE","materials science","manufacturing","机械","材料","机器人"]', '["Python","C++","Rust","C","MATLAB"]')`,
