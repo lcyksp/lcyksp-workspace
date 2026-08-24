@@ -4,6 +4,7 @@ ACTION="${1:-test}"
 MIHOMO_DIR="${MIHOMO_DIR:-/opt/mihomo}"
 CONFIG="$MIHOMO_DIR/config.yaml"
 BACKUP="$CONFIG.codex-last-good"
+SECRET="$(sed -n 's/^secret: *"\(.*\)"/\1/p' "$CONFIG" | head -n1)"
 rollback() {
   if [[ -f "$BACKUP" ]]; then
     cp -f "$BACKUP" "$CONFIG" || true
@@ -31,14 +32,14 @@ PY
     exit 1
   fi
   chmod 600 "$CONFIG"
-  if ! (cd "$MIHOMO_DIR" && docker compose restart mihomo >/dev/null); then
+  if ! (cd "$MIHOMO_DIR" && docker compose restart mihomo >/dev/null 2>&1); then
     rollback
     echo '{"ok":false,"message":"proxy restart failed; previous configuration restored"}'
     exit 1
   fi
   ready=0
   for _ in $(seq 1 12); do
-    if curl -fsS --max-time 5 http://127.0.0.1:9090/providers/proxies >/dev/null 2>&1; then ready=1; break; fi
+    if curl -fsS --max-time 5 -H "Authorization: Bearer $SECRET" http://127.0.0.1:9090/providers/proxies >/dev/null 2>&1; then ready=1; break; fi
     sleep 2
   done
   if [[ "$ready" != 1 ]]; then
@@ -47,7 +48,6 @@ PY
     exit 1
   fi
 fi
-SECRET="$(sed -n 's/^secret: *"\(.*\)"/\1/p' "$CONFIG" | head -n1)"
 export SECRET
 if ! result="$(python3 - "$ACTION" <<'PY'
 import json, os, sys, time, urllib.request

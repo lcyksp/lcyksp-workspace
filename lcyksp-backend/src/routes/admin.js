@@ -32,7 +32,17 @@ async function runGithubProxyCommand(action, subscriptionUrl = '') {
   const helper = process.env.MIHOMO_ADMIN_HELPER || '/usr/local/bin/lcyksp-mihomo-update';
   const args = [action];
   if (subscriptionUrl) args.push(subscriptionUrl);
-  const { stdout } = await execFileAsync('sudo', [helper, ...args], { timeout: 90000, maxBuffer: 1024 * 1024 });
+  let stdout = '';
+  try {
+    ({ stdout } = await execFileAsync('sudo', [helper, ...args], { timeout: 90000, maxBuffer: 1024 * 1024 }));
+  } catch (error) {
+    let message = '';
+    try {
+      const result = JSON.parse(String(error.stdout || '').trim());
+      message = String(result.message || '');
+    } catch {}
+    throw new Error(message || '代理更新或节点检测失败，请稍后重试');
+  }
   try { return JSON.parse(stdout); } catch { return { ok: true, output: stdout.slice(-2000) }; }
 }
 
@@ -508,9 +518,12 @@ router.post('/config/llm/history', async function (req, res, next) {
 router.get('/config/github-radar', async function (req, res, next) {
   try {
     const db = getDb()
-    const rows = await new Promise((resolve, reject) => db.all("SELECT key, value FROM system_config WHERE key LIKE 'github_%'", (err, result) => err ? reject(err) : resolve(result || [])))
+    const rows = await new Promise((resolve, reject) => db.all("SELECT key, value FROM system_config WHERE key LIKE 'github_%' OR key IN ('llm_url', 'llm_model', 'llm_key')", (err, result) => err ? reject(err) : resolve(result || [])))
     const values = Object.fromEntries(rows.map((row) => [row.key, row.value]))
     res.json({
+      primaryAiUrl: values.llm_url || 'https://api.deepseek.com',
+      primaryAiModel: values.llm_model || 'deepseek-chat',
+      primaryAiConfigured: Boolean(values.llm_key),
       githubTokenConfigured: Boolean(values.github_token),
       smtpConfigured: Boolean(values.github_smtp_password),
       smtpHost: values.github_smtp_host || 'smtp-mail.outlook.com',
@@ -533,6 +546,9 @@ router.get('/config/github-radar', async function (req, res, next) {
 router.post('/config/github-radar', async function (req, res, next) {
   try {
     const values = [
+      ['llm_url', req.body?.primaryAiUrl],
+      ['llm_model', req.body?.primaryAiModel],
+      ['llm_key', req.body?.primaryAiKey],
       ['github_token', req.body?.githubToken],
       ['github_smtp_password', req.body?.smtpPassword],
       ['github_smtp_host', req.body?.smtpHost || 'smtp-mail.outlook.com'],
@@ -546,7 +562,7 @@ router.post('/config/github-radar', async function (req, res, next) {
     const db = getDb()
     for (const [key, value] of values) {
       if (value === undefined || value === null || String(value).trim() === '') continue
-      const encrypted = ['github_token', 'github_smtp_password', 'github_ai_fallback_key', 'github_proxy_subscription'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
+      const encrypted = ['llm_key', 'github_token', 'github_smtp_password', 'github_ai_fallback_key', 'github_proxy_subscription'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
       await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [key, encrypted], (err) => err ? reject(err) : resolve()))
     }
     if (req.body?.proxySubscription && String(req.body.proxySubscription).trim()) {
