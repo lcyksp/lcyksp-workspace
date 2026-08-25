@@ -1,5 +1,5 @@
 import { getDb } from '../config/db.js'
-import { discoverEmergingGithubRepositories, fetchGithubRepositoryContext, getRepositoryCandidatesForSubscription, saveGithubSnapshot } from './githubRadar.js'
+import { discoverEmergingGithubRepositories, fetchGithubRepositoryContext, getRepositoryCandidatesForSubscription, saveGithubSnapshot, MIN_GITHUB_STARS } from './githubRadar.js'
 import { reviewGithubRepository } from './githubAi.js'
 
 function dbAll(sql, params = []) {
@@ -29,6 +29,7 @@ export async function discoverActiveGithubSubscriptions() {
       const candidates = await getRepositoryCandidatesForSubscription(subscription)
       for (const item of candidates) {
         const repository = await saveGithubSnapshot(item)
+        if (!repository.id) continue
         await linkRepository(subscription.id, repository.id, new Date().toISOString())
         discovered += 1
       }
@@ -50,7 +51,7 @@ export async function discoverActiveGithubSubscriptions() {
      INNER JOIN (SELECT DISTINCT repository_id FROM github_subscription_repositories) matched ON matched.repository_id = r.id
      LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id
      LEFT JOIN github_ai_review_attempts attempt ON attempt.repository_id = r.id
-     WHERE a.id IS NULL AND (attempt.next_attempt_at IS NULL OR datetime(replace(attempt.next_attempt_at, 'T', ' ')) <= datetime('now'))
+     WHERE a.id IS NULL AND r.stars >= ${MIN_GITHUB_STARS} AND (attempt.next_attempt_at IS NULL OR datetime(replace(attempt.next_attempt_at, 'T', ' ')) <= datetime('now'))
      ORDER BY r.last_seen_at DESC LIMIT 5`,
   )
   for (const repository of reviewQueue) {

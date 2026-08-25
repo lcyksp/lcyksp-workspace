@@ -10,6 +10,7 @@ const githubDispatcher = GITHUB_PROXY_URL ? new ProxyAgent(GITHUB_PROXY_URL) : u
 const trendingCache = new Map()
 const searchCache = new Map()
 let githubApiCooldownUntil = 0
+export const MIN_GITHUB_STARS = 100
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
@@ -37,8 +38,11 @@ export async function fetchTrendingGithubRepositories({ since = 'daily', limit =
     const fullName = repoMatch[1]
     const description = (block.match(/<p[^>]*>([\s\S]*?)<\/p>/)?.[1] || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim()
     const language = (block.match(/itemprop="programmingLanguage">\s*([^<]+)/)?.[1] || '').trim()
-    const starsText = (block.match(/href="\/[^"/]+\/[^"/]+\/stargazers"[^>]*>[\s\S]*?<\/a>/)?.[0] || '').replace(/<[^>]+>/g, ' ').replace(/,/g, '').trim()
-    items.push({ fullName, url: 'https://github.com/' + fullName, description, language, topics: [], stars: Number(starsText.match(/\d+/)?.[0] || 0), forks: 0, trending: true })
+    const starsText = (block.match(/href="\/[^"/]+\/[^"/]+\/stargazers"[^>]*>[\s\S]*?<\/a>/)?.[0] || '').replace(/<[^>]+>/g, ' ').replace(/,/g, ' ').trim()
+    const starNumbers = [...starsText.matchAll(/\d+/g)].map((m) => Number(m[0])).filter(Number.isFinite)
+    const stars = starNumbers.at(-1) || 0
+    if (stars < MIN_GITHUB_STARS) continue
+    items.push({ fullName, url: 'https://github.com/' + fullName, description, language, topics: [], stars, forks: 0, trending: true })
   }
   trendingCache.set(cacheKey, { at: Date.now(), items })
   return items
@@ -85,7 +89,7 @@ export async function discoverGithubRepositories({ query = '', categoryKeywords 
   const results = []
   for (const group of groups) {
     const termQuery = group.length > 1 ? '(' + group.map((item) => '\"' + item + '\"').join(' OR ') + ')' : group.map((item) => '\"' + item + '\"').join(' ')
-    const q = [termQuery, 'in:name,description,readme', language ? 'language:' + language : '', 'stars:>=20'].filter(Boolean).join(' ')
+    const q = [termQuery, 'in:name,description,readme', language ? 'language:' + language : '', 'stars:>=100'].filter(Boolean).join(' ')
     if (!q) continue
     const data = await githubFetch('/search/repositories', { q, sort: 'stars', order: 'desc', per_page: Math.min(limit, 100) })
     results.push(...(data.items || []))
@@ -112,7 +116,7 @@ export async function discoverEmergingGithubRepositories({ keywords = [], limit 
   const results = []
   for (const group of (terms.length ? terms.slice(0, 4) : ['']).map((term) => [term])) {
     const termQuery = group.filter(Boolean).map((item) => item.replace(/[\"']/g, '')).join(' ')
-    const q = [termQuery, 'in:name,description,readme', 'created:>=' + since, 'stars:>=10'].filter(Boolean).join(' ')
+    const q = [termQuery, 'in:name,description,readme', 'created:>=' + since, 'stars:>=100'].filter(Boolean).join(' ')
     const data = await githubFetch('/search/repositories', { q, sort: 'updated', order: 'desc', per_page: Math.min(limit, 100) })
     results.push(...(data.items || []))
   }
@@ -161,6 +165,7 @@ async function upsertRepository(item, capturedAt) {
 }
 
 export async function saveGithubSnapshot(item, capturedAt = new Date().toISOString()) {
+  if (Number(item.stars || 0) < MIN_GITHUB_STARS) return { id: null, isNew: false, skipped: true }
   const repository = await upsertRepository(item, capturedAt)
   await dbRun('INSERT OR IGNORE INTO github_star_snapshots (repository_id, stars, captured_at) VALUES (?, ?, ?)', [repository.id, item.stars, capturedAt])
   return repository
