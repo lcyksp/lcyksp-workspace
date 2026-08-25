@@ -9,6 +9,7 @@ const INTERVAL_MS = 60 * 60 * 1000;
 let timer = null;
 let digestTimer = null;
 let lastGithubRadarRun = 0;
+let lastDailyGithubPrepKey = '';
 
 async function cleanExpiredRecords() {
   let db;
@@ -81,6 +82,12 @@ export function startCron() {
   // snapshotTrends(); // 已下架
   timer = setInterval(() => {
     cleanExpiredRecords();
+    const beijing = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()).reduce((acc, p) => { acc[p.type] = p.value; return acc }, {})
+    const dailyKey = `${beijing.year}-${beijing.month}-${beijing.day}`
+    if (beijing.hour === '06' && Number(beijing.minute) >= 45 && lastDailyGithubPrepKey !== dailyKey) {
+      lastDailyGithubPrepKey = dailyKey
+      discoverActiveGithubSubscriptions().catch((error) => console.error('[GitHub Radar] daily preparation run failed:', error.message))
+    }
     if (Date.now() - lastGithubRadarRun >= 4 * 60 * 60 * 1000) {
       lastGithubRadarRun = Date.now();
       discoverActiveGithubSubscriptions().catch((error) => console.error('[GitHub Radar] scheduled run failed:', error.message));
