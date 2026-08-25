@@ -399,6 +399,22 @@ export async function initDb() {
     ')',
   ).catch(() => {})
   await run(
+    'CREATE TABLE IF NOT EXISTS github_digest_drafts (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'draft_key TEXT NOT NULL UNIQUE,' +
+      'subscription_id INTEGER NOT NULL REFERENCES github_subscriptions(id) ON DELETE CASCADE,' +
+      'job_type TEXT NOT NULL,' +
+      'date_key TEXT NOT NULL,' +
+      'html TEXT NOT NULL,' +
+      'item_count INTEGER NOT NULL DEFAULT 0,' +
+      'status TEXT NOT NULL DEFAULT \'locked\',' +
+      'send_at TEXT NOT NULL,' +
+      'created_at TEXT NOT NULL,' +
+      'sent_at TEXT DEFAULT NULL,' +
+      'UNIQUE(subscription_id, job_type, date_key)' +
+    ')',
+  ).catch(() => {})
+  await run(
     `INSERT OR IGNORE INTO github_categories (name, description, keywords, languages) VALUES
       ('AI应用/大模型应用/AI开发编程', '关注 AI 应用、LLM 应用、Agent、编程助手和开发工具，不以算法研究为主', '["AI application","LLM application","AI agent","developer tools","coding assistant","RAG","MCP","skill","AI应用","大模型应用","AI开发编程"]', '["Python","TypeScript","JavaScript","Go","Rust"]'),
       ('机械、材料', '关注机械工程、机器人、CAD/CAE、材料科学和制造技术', '["mechanical engineering","robotics","CAD","CAE","materials science","manufacturing","机械","材料","机器人"]', '["Python","C++","Rust","C","MATLAB"]')`,
