@@ -34,7 +34,7 @@ async function callModel(url, key, model, prompt) {
 }
 export async function reviewGithubRepository(repository, { codeContext = false } = {}) {
   const config = await loadConfig(); if (!config?.url || !config.key || !config.model) return null
-  const basePrompt = ['你是 GitHub 技术趋势简报编辑。只输出 JSON，不要 Markdown。', '{"worthPush":true,"category":"不超过12字","summary":"2-4句话，约120-260字，说明项目解决的问题、技术路线或主要特点","confidence":0.0}', '请根据以下仓库信息判断是否值得推送。摘要要像技术新闻简报，具体、自然，不要使用夸张宣传语。', '仓库：' + repository.full_name, '描述：' + (repository.description || '无'), '语言：' + (repository.language || '未知'), 'Topics：' + JSON.stringify(repository.topics || []), 'Star：' + repository.stars, 'README：' + (repository.readme || '无')].join('\n')
+  const basePrompt = ['你是 GitHub 技术趋势简报编辑。只输出 JSON，不要 Markdown。', '{"worthPush":true,"category":"不超过12字","summary":"必须使用简体中文，2-4句话，约120-260字，说明项目解决的问题、技术路线或主要特点","confidence":0.0}', '请根据以下仓库信息判断是否值得推送。摘要必须是自然的中文技术新闻简报；不要保留英文原句，不要使用夸张宣传语。', '仓库：' + repository.full_name, '描述：' + (repository.description || '无'), '语言：' + (repository.language || '未知'), 'Topics：' + JSON.stringify(repository.topics || []), 'Star：' + repository.stars, 'README：' + (repository.readme || '无')].join('\n')
   const prompt = codeContext ? basePrompt + '\n源码片段：\n' + String(repository.codeContext || '').slice(0, 9000) : basePrompt
   let provider = 'primary'; let model = config.model; let result = await callModel(config.url, config.key, model, prompt)
   const confidence = Number(result.parsed?.confidence || 0)
