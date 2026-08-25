@@ -7,11 +7,40 @@ const USER_AGENT = 'lcyksp-github-trend-radar'
 const GITHUB_TIMEOUT_MS = Number(process.env.GITHUB_REQUEST_TIMEOUT_MS || 20000)
 const GITHUB_PROXY_URL = String(process.env.GITHUB_PROXY_URL || '').trim()
 const githubDispatcher = GITHUB_PROXY_URL ? new ProxyAgent(GITHUB_PROXY_URL) : undefined
+const trendingCache = new Map()
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
 function dbRun(sql, params = []) { return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(e) { e ? reject(e) : resolve({ lastID: this.lastID, changes: this.changes }) })) }
 function parseJson(value, fallback) { try { return JSON.parse(value) } catch { return fallback } }
+
+export async function fetchTrendingGithubRepositories({ since = 'daily', limit = 25 } = {}) {
+  const cacheKey = since + ':' + limit
+  const cached = trendingCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < 15 * 60 * 1000) return cached.items
+  const response = await fetch('https://github.com/trending?since=' + encodeURIComponent(since), {
+    headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
+    ...(githubDispatcher ? { dispatcher: githubDispatcher } : {}),
+    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+  })
+  if (!response.ok) throw new Error('GitHub Trending ' + response.status)
+  const html = await response.text()
+  const items = []
+  const articlePattern = /<article class="Box-row">([\s\S]*?)<\/article>/g
+  let match
+  while ((match = articlePattern.exec(html)) && items.length < limit) {
+    const block = match[1]
+    const repoMatch = block.match(/href="\/([^"/?]+\/[^"/?]+)"/)
+    if (!repoMatch) continue
+    const fullName = repoMatch[1]
+    const description = (block.match(/<p[^>]*>([\s\S]*?)<\/p>/)?.[1] || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim()
+    const language = (block.match(/itemprop="programmingLanguage">\s*([^<]+)/)?.[1] || '').trim()
+    const starsText = (block.match(/href="\/[^"/]+\/[^"/]+\/stargazers"[^>]*>[\s\S]*?<\/a>/)?.[0] || '').replace(/<[^>]+>/g, ' ').replace(/,/g, '').trim()
+    items.push({ fullName, url: 'https://github.com/' + fullName, description, language, topics: [], stars: Number(starsText.match(/\d+/)?.[0] || 0), forks: 0, trending: true })
+  }
+  trendingCache.set(cacheKey, { at: Date.now(), items })
+  return items
+}
 
 async function githubFetch(path, params = {}) {
   const tokenRow = await dbGet("SELECT value FROM system_config WHERE key = 'github_token'")
