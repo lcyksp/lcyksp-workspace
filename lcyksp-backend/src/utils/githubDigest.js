@@ -1,5 +1,7 @@
 import { getDb } from '../config/db.js'
 import { calculateGithubGrowth, fetchTrendingGithubRepositories, saveGithubSnapshot, MIN_GITHUB_STARS } from './githubRadar.js'
+import { fetchGithubRepositoryContext } from './githubRadar.js'
+import { reviewGithubRepository } from './githubAi.js'
 import { sendGithubDigestEmail } from './githubMail.js'
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
@@ -32,7 +34,7 @@ async function buildDigest(subscription, type) {
   }
   items.sort((a, b) => b.gain - a.gain)
   if (items.length < 10) {
-    let fallback = rows.filter((row) => row.worth_push === 1 && !items.some((item) => item.row.id === row.id)).slice(0, 10 - items.length)
+    let fallback = rows.filter((row) => row.worth_push === 1 && /[\u4e00-\u9fff]/.test(String(row.summary || '')) && !items.some((item) => item.row.id === row.id)).slice(0, 10 - items.length)
     if (fallback.length < 10 - items.length) {
       try {
         const categories = await dbAll('SELECT keywords FROM github_categories WHERE id IN (' + (JSON.parse(subscription.category_ids || '[]').map(() => '?').join(',') || 'NULL') + ')', JSON.parse(subscription.category_ids || '[]'))
@@ -46,8 +48,13 @@ async function buildDigest(subscription, type) {
           if (!saved.id) continue
           if (rows.some((row) => row.id === saved.id) || items.some((item) => item.row.id === saved.id) || fallback.some((row) => row.id === saved.id)) continue
           await dbRun('INSERT INTO github_subscription_repositories (subscription_id, repository_id, first_matched_at, last_matched_at) VALUES (?, ?, ?, ?) ON CONFLICT(subscription_id, repository_id) DO UPDATE SET last_matched_at=excluded.last_matched_at', [subscription.id, saved.id, new Date().toISOString(), new Date().toISOString()])
-          const row = { ...candidate, id: saved.id, full_name: candidate.fullName, url: candidate.url, stars: candidate.stars, worth_push: 1, summary: candidate.description }
-          fallback.push(row)
+          try {
+            const context = await fetchGithubRepositoryContext(candidate.fullName, { includeCode: false })
+            await reviewGithubRepository({ ...context, ...candidate, full_name: candidate.fullName, id: saved.id }, { codeContext: false })
+          } catch (error) { console.error('[GitHub Radar] trending AI review failed:', candidate.fullName, error.message); continue }
+          const reviewed = await dbGet('SELECT r.*, a.summary, a.worth_push FROM github_repositories r LEFT JOIN github_ai_reviews a ON a.id=r.last_ai_review_id WHERE r.id=?', [saved.id])
+          if (!reviewed || reviewed.worth_push !== 1 || !/[\u4e00-\u9fff]/.test(String(reviewed.summary || ''))) continue
+          fallback.push(reviewed)
           if (fallback.length >= 10 - items.length) break
         }
         rows = rows.concat(fallback)
