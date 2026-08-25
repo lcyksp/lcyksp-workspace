@@ -1,5 +1,5 @@
 import { getDb } from '../config/db.js'
-import { calculateGithubGrowth, fetchTrendingGithubRepositories, saveGithubSnapshot } from './githubRadar.js'
+import { calculateGithubGrowth, fetchTrendingGithubRepositories, saveGithubSnapshot, MIN_GITHUB_STARS } from './githubRadar.js'
 import { sendGithubDigestEmail } from './githubMail.js'
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
@@ -23,7 +23,7 @@ function dueTypes(now = new Date()) {
 }
 
 async function buildDigest(subscription, type) {
-  let rows = await dbAll('SELECT r.*, a.category, a.summary, a.worth_push FROM github_subscription_repositories sr JOIN github_repositories r ON r.id = sr.repository_id LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id WHERE sr.subscription_id = ? ORDER BY r.stars DESC LIMIT 50', [subscription.id])
+  let rows = await dbAll('SELECT r.*, a.category, a.summary, a.worth_push FROM github_subscription_repositories sr JOIN github_repositories r ON r.id = sr.repository_id LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id WHERE sr.subscription_id = ? AND r.stars >= ? ORDER BY r.stars DESC LIMIT 50', [subscription.id, MIN_GITHUB_STARS])
   const items = []
   for (const row of rows) {
     const growth = await calculateGithubGrowth(row.id)
@@ -41,7 +41,9 @@ async function buildDigest(subscription, type) {
         for (const candidate of trending) {
           const haystack = (candidate.fullName + ' ' + candidate.description + ' ' + candidate.language).toLowerCase()
           if (terms.length && !terms.some((term) => haystack.includes(term))) continue
+          if (Number(candidate.stars || 0) < MIN_GITHUB_STARS) continue
           const saved = await saveGithubSnapshot(candidate)
+          if (!saved.id) continue
           if (rows.some((row) => row.id === saved.id) || items.some((item) => item.row.id === saved.id) || fallback.some((row) => row.id === saved.id)) continue
           await dbRun('INSERT INTO github_subscription_repositories (subscription_id, repository_id, first_matched_at, last_matched_at) VALUES (?, ?, ?, ?) ON CONFLICT(subscription_id, repository_id) DO UPDATE SET last_matched_at=excluded.last_matched_at', [subscription.id, saved.id, new Date().toISOString(), new Date().toISOString()])
           const row = { ...candidate, id: saved.id, full_name: candidate.fullName, url: candidate.url, stars: candidate.stars, worth_push: 1, summary: candidate.description }
@@ -58,7 +60,7 @@ async function buildDigest(subscription, type) {
 
 export function renderGithubDigestHtml(items, type = 'daily', dateKey = '') {
   const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
-  const htmlItems = items.length ? items.map(({ row, gain, growth }) => { const stars = growth?.currentStars ?? row.stars ?? 0; const metric = gain === null ? '近期热门 / 新发现' : '24 小时 Star +' + gain; return `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · 当前 Star ${stars.toLocaleString()} · ${metric}</div><div style="margin-top:5px">${esc(cleanSummary(row.summary || row.description || '暂无摘要'))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>` }).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
+  const htmlItems = items.length ? items.map(({ row, gain, growth }) => { const stars = growth?.currentStars ?? row.stars ?? 0; const metric = gain === null ? '近期热门 / 新发现' : '24 小时 Star +' + gain; const summary = row.summary && /[\u4e00-\u9fff]/.test(row.summary) ? row.summary : '项目已进入关注列表，中文技术摘要将在下一轮 AI 审核后补充。'; return `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · 当前 Star ${stars.toLocaleString()} · ${metric}</div><div style="margin-top:5px">${esc(cleanSummary(summary))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>` }).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
   return `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub ${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p><p style="color:#98a2b3;font-size:12px;margin-top:8px">本邮件由系统自动发送，无需回复。</p></div>`
 }
 
