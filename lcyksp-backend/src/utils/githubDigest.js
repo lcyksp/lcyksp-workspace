@@ -1,5 +1,5 @@
 import { getDb } from '../config/db.js'
-import { calculateGithubGrowth } from './githubRadar.js'
+import { calculateGithubGrowth, fetchTrendingGithubRepositories, saveGithubSnapshot } from './githubRadar.js'
 import { sendGithubDigestEmail } from './githubMail.js'
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
@@ -23,7 +23,7 @@ function dueTypes(now = new Date()) {
 }
 
 async function buildDigest(subscription, type) {
-  const rows = await dbAll('SELECT r.*, a.category, a.summary, a.worth_push FROM github_subscription_repositories sr JOIN github_repositories r ON r.id = sr.repository_id LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id WHERE sr.subscription_id = ? ORDER BY r.stars DESC LIMIT 50', [subscription.id])
+  let rows = await dbAll('SELECT r.*, a.category, a.summary, a.worth_push FROM github_subscription_repositories sr JOIN github_repositories r ON r.id = sr.repository_id LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id WHERE sr.subscription_id = ? ORDER BY r.stars DESC LIMIT 50', [subscription.id])
   const items = []
   for (const row of rows) {
     const growth = await calculateGithubGrowth(row.id)
@@ -32,7 +32,25 @@ async function buildDigest(subscription, type) {
   }
   items.sort((a, b) => b.gain - a.gain)
   if (items.length < 10) {
-    const fallback = rows.filter((row) => row.worth_push === 1 && !items.some((item) => item.row.id === row.id)).slice(0, 10 - items.length)
+    let fallback = rows.filter((row) => row.worth_push === 1 && !items.some((item) => item.row.id === row.id)).slice(0, 10 - items.length)
+    if (fallback.length < 10 - items.length) {
+      try {
+        const categories = await dbAll('SELECT keywords FROM github_categories WHERE id IN (' + (JSON.parse(subscription.category_ids || '[]').map(() => '?').join(',') || 'NULL') + ')', JSON.parse(subscription.category_ids || '[]'))
+        const terms = [...JSON.parse(subscription.keywords || '[]'), ...categories.flatMap((row) => { try { return JSON.parse(row.keywords || '[]') } catch { return [] } })].map((v) => String(v).toLowerCase()).filter(Boolean)
+        const trending = await fetchTrendingGithubRepositories({ since: 'daily', limit: 25 })
+        for (const candidate of trending) {
+          const haystack = (candidate.fullName + ' ' + candidate.description + ' ' + candidate.language).toLowerCase()
+          if (terms.length && !terms.some((term) => haystack.includes(term))) continue
+          const saved = await saveGithubSnapshot(candidate)
+          if (rows.some((row) => row.id === saved.id) || items.some((item) => item.row.id === saved.id) || fallback.some((row) => row.id === saved.id)) continue
+          await dbRun('INSERT INTO github_subscription_repositories (subscription_id, repository_id, first_matched_at, last_matched_at) VALUES (?, ?, ?, ?) ON CONFLICT(subscription_id, repository_id) DO UPDATE SET last_matched_at=excluded.last_matched_at', [subscription.id, saved.id, new Date().toISOString(), new Date().toISOString()])
+          const row = { ...candidate, id: saved.id, full_name: candidate.fullName, url: candidate.url, stars: candidate.stars, worth_push: 1, summary: candidate.description }
+          fallback.push(row)
+          if (fallback.length >= 10 - items.length) break
+        }
+        rows = rows.concat(fallback)
+      } catch (error) { console.error('[GitHub Radar] trending fallback failed:', error.message) }
+    }
     items.push(...fallback.map((row) => ({ row, gain: null, growth: {}, source: 'recent' })))
   }
   return items.slice(0, 10)
