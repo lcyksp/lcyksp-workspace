@@ -5,7 +5,7 @@ import { fetchDouyinHot } from './trends/douyin.js';
 import { discoverActiveGithubSubscriptions } from './githubJobs.js';
 import { runGithubDigests, runPendingGithubSimulations } from './githubDigest.js';
 
-const INTERVAL_MS = 60 * 60 * 1000;
+const INTERVAL_MS = 5 * 60 * 1000;
 let timer = null;
 let digestTimer = null;
 let lastGithubRadarRun = 0;
@@ -75,7 +75,7 @@ async function snapshotTrends() {
 
 export function startCron() {
   if (timer) return;
-  console.log('[清道夫] 定时任务已启动（每 60 分钟轮询，已下架热点趋势快照）');
+  console.log('[清道夫] 定时任务已启动（每 5 分钟维护轮询，GitHub 采集仍按 4 小时冷却）');
   cleanExpiredRecords();
   discoverActiveGithubSubscriptions().catch((error) => console.error('[GitHub Radar] initial run failed:', error.message));
   lastGithubRadarRun = Date.now();
