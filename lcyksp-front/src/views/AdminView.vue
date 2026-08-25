@@ -1981,6 +1981,21 @@ onMounted(() => {
   margin-bottom: 14px;
 }
 
+.github-admin-subscriptions-panel {
+  max-width: none;
+  min-width: 0;
+}
+
+.github-admin-subscriptions-panel :deep(.el-table) {
+  width: 100%;
+  min-width: 620px;
+}
+
+.github-admin-subscriptions-panel :deep(.el-table__body-wrapper),
+.github-admin-subscriptions-panel :deep(.el-table__header-wrapper) {
+  overflow-x: auto;
+}
+
 .membership-plan-preview {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2459,6 +2474,14 @@ onMounted(() => {
   .user-search {
     width: 100%;
   }
+
+  .github-admin-subscriptions-panel {
+    grid-column: 1 / -1;
+  }
+
+  .github-admin-subscriptions-panel :deep(.el-form-item) {
+    margin-bottom: 14px;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2494,6 +2517,14 @@ onMounted(() => {
   .single-panel {
     padding: 14px;
     border-radius: 14px;
+  }
+
+  .github-admin-subscriptions-panel :deep(.el-table) {
+    min-width: 560px;
+  }
+
+  .github-admin-subscriptions-panel :deep(.el-button) {
+    max-width: 100%;
   }
 }
 
