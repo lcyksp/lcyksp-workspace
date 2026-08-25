@@ -99,7 +99,7 @@ onMounted(loadData)
     </section>
 
     <section class="panel">
-      <div class="panel-title"><h2>创建订阅</h2><p>预设方向和自定义关键词可同时使用，关键词会在分析阶段扩展为中英文检索词。</p></div>
+      <div class="panel-title"><h2>创建订阅</h2><p>预设方向和自定义关键词可同时使用，关键词会在分析阶段扩展为中英文检索词。新方向首次建立数据通常需要 1—2 天；期间历史 Star 周期尚未完整，邮件可能项目较少，系统会用已审核的近期热门和 GitHub Trending 项目补充，并明确标注来源。</p></div>
       <el-form label-position="top" @submit.prevent="saveSubscription">
         <div class="form-grid">
           <el-form-item label="接收邮箱"><el-input v-model="form.email" type="email" placeholder="name@example.com" clearable /></el-form-item>
