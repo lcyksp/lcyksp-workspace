@@ -58,8 +58,8 @@ async function buildDigest(subscription, type) {
 
 export function renderGithubDigestHtml(items, type = 'daily', dateKey = '') {
   const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
-  const htmlItems = items.length ? items.map(({ row, gain }) => `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · ${gain === null ? '近期热门 / 新发现' : 'Star 增长 +' + gain}</div><div style="margin-top:5px">${esc(cleanSummary(row.summary || row.description || '暂无摘要'))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>`).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
-  return `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub ${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p></div>`
+  const htmlItems = items.length ? items.map(({ row, gain, growth }) => { const stars = growth?.currentStars ?? row.stars ?? 0; const metric = gain === null ? '近期热门 / 新发现' : '24 小时 Star +' + gain; return `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · 当前 Star ${stars.toLocaleString()} · ${metric}</div><div style="margin-top:5px">${esc(cleanSummary(row.summary || row.description || '暂无摘要'))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>` }).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
+  return `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub ${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p><p style="color:#98a2b3;font-size:12px;margin-top:8px">本邮件由系统自动发送，无需回复。</p></div>`
 }
 
 async function sendFor(subscription, type, dateKey) {
@@ -123,11 +123,11 @@ async function sendLockedGithubDigestDrafts(now = new Date()) {
 }
 
 export async function sendGithubSimulationDigest(to, type = 'daily', dateKey = '') {
-  const row = await dbGet('SELECT r.*, a.category, a.summary, a.worth_push FROM github_repositories r LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id ORDER BY r.updated_at DESC LIMIT 1')
-  const item = row ? [{ row, gain: 1 }] : []
+  const subscription = await dbGet("SELECT * FROM github_subscriptions WHERE status = 'active' ORDER BY id LIMIT 1")
+  const item = subscription ? await buildDigest(subscription, type) : []
   const html = renderGithubDigestHtml(item, type, dateKey)
   await sendGithubDigestEmail(to, '【GitHub' + (type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报') + '模拟】' + dateKey, html)
-  return { itemCount: item.length, repository: row?.full_name || '' }
+  return { itemCount: item.length, repository: item[0]?.row?.full_name || '' }
 }
 
 export async function runGithubDigests(now = new Date()) {

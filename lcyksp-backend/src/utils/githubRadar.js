@@ -8,6 +8,8 @@ const GITHUB_TIMEOUT_MS = Number(process.env.GITHUB_REQUEST_TIMEOUT_MS || 20000)
 const GITHUB_PROXY_URL = String(process.env.GITHUB_PROXY_URL || '').trim()
 const githubDispatcher = GITHUB_PROXY_URL ? new ProxyAgent(GITHUB_PROXY_URL) : undefined
 const trendingCache = new Map()
+const searchCache = new Map()
+let githubApiCooldownUntil = 0
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
@@ -43,6 +45,7 @@ export async function fetchTrendingGithubRepositories({ since = 'daily', limit =
 }
 
 async function githubFetch(path, params = {}) {
+  if (Date.now() < githubApiCooldownUntil) throw new Error('GitHub API temporarily cooled down after rate limit')
   const tokenRow = await dbGet("SELECT value FROM system_config WHERE key = 'github_token'")
   const token = process.env.GITHUB_TOKEN || (tokenRow?.value ? decrypt(tokenRow.value) : '')
   const url = new URL(path, GITHUB_API)
@@ -63,7 +66,10 @@ async function githubFetch(path, params = {}) {
       return response.json()
     } catch (error) {
       lastError = error
-      if (String(error?.message || '').includes('GitHub API 401') || String(error?.message || '').includes('GitHub API 403')) throw error
+      if (String(error?.message || '').includes('GitHub API 401') || String(error?.message || '').includes('GitHub API 403')) {
+        if (String(error?.message || '').includes('GitHub API 403')) githubApiCooldownUntil = Date.now() + 15 * 60 * 1000
+        throw error
+      }
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
     }
   }
@@ -73,6 +79,9 @@ async function githubFetch(path, params = {}) {
 export async function discoverGithubRepositories({ query = '', categoryKeywords = [], language = '', limit = 30 } = {}) {
   const terms = [...new Set([query, ...categoryKeywords].map((item) => String(item || '').trim()).filter(Boolean))]
   const groups = terms.length ? terms.slice(0, 4).map((term) => [term]) : [[]]
+  const cacheKey = JSON.stringify({ query, categoryKeywords: categoryKeywords.slice(0, 8), language, limit })
+  const cached = searchCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < 30 * 60 * 1000) return cached.items
   const results = []
   for (const group of groups) {
     const termQuery = group.length > 1 ? '(' + group.map((item) => '\"' + item + '\"').join(' OR ') + ')' : group.map((item) => '\"' + item + '\"').join(' ')
@@ -81,7 +90,7 @@ export async function discoverGithubRepositories({ query = '', categoryKeywords 
     const data = await githubFetch('/search/repositories', { q, sort: 'stars', order: 'desc', per_page: Math.min(limit, 100) })
     results.push(...(data.items || []))
   }
-  return results.map((item) => ({
+  const items = results.map((item) => ({
     fullName: item.full_name,
     url: item.html_url,
     description: item.description || '',
@@ -90,9 +99,14 @@ export async function discoverGithubRepositories({ query = '', categoryKeywords 
     stars: item.stargazers_count || 0,
     forks: item.forks_count || 0,
   }))
+  searchCache.set(cacheKey, { at: Date.now(), items })
+  return items
 }
 
 export async function discoverEmergingGithubRepositories({ keywords = [], limit = 30 } = {}) {
+  const cacheKey = 'emerging:' + JSON.stringify({ keywords: keywords.slice(0, 8), limit })
+  const cached = searchCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < 6 * 60 * 60 * 1000) return cached.items
   const terms = [...new Set(keywords.map((item) => String(item || '').trim()).filter(Boolean))]
   const since = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10)
   const results = []
@@ -102,7 +116,9 @@ export async function discoverEmergingGithubRepositories({ keywords = [], limit 
     const data = await githubFetch('/search/repositories', { q, sort: 'updated', order: 'desc', per_page: Math.min(limit, 100) })
     results.push(...(data.items || []))
   }
-  return [...new Map(results.map((item) => [item.full_name, item])).values()].map((item) => ({ fullName: item.full_name, url: item.html_url, description: item.description || '', language: item.language || '', topics: item.topics || [], stars: item.stargazers_count || 0, forks: item.forks_count || 0 }))
+  const items = [...new Map(results.map((item) => [item.full_name, item])).values()].map((item) => ({ fullName: item.full_name, url: item.html_url, description: item.description || '', language: item.language || '', topics: item.topics || [], stars: item.stargazers_count || 0, forks: item.forks_count || 0 }))
+  searchCache.set(cacheKey, { at: Date.now(), items })
+  return items
 }
 
 export async function fetchGithubRepositoryContext(fullName, { includeCode = false } = {}) {
