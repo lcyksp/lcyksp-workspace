@@ -24,13 +24,20 @@ function dueTypes(now = new Date()) {
   return types
 }
 
+function isDigestTypeDue(parts, type) {
+  if (type === 'daily') return true
+  if (type === 'weekly') return parts.weekday === 'Mon'
+  if (type === 'monthly') return parts.day === '01'
+  return false
+}
+
 async function buildDigest(subscription, type) {
   let rows = await dbAll('SELECT r.*, a.category, a.summary, a.worth_push FROM github_subscription_repositories sr JOIN github_repositories r ON r.id = sr.repository_id LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id WHERE sr.subscription_id = ? AND r.stars >= ? ORDER BY r.stars DESC LIMIT 50', [subscription.id, MIN_GITHUB_STARS])
   const items = []
   for (const row of rows) {
     const growth = await calculateGithubGrowth(row.id)
     const gain = type === 'monthly' ? growth.monthly : type === 'weekly' ? growth.weekly : growth.daily
-    if (gain !== null && gain > 0 && !(row.worth_push === 0 && row.worth_push !== null)) items.push({ row, gain, growth, source: 'growth' })
+    if (gain !== null && gain > 0 && row.worth_push === 1 && /[\u4e00-\u9fff]/.test(String(row.summary || ''))) items.push({ row, gain, growth, source: 'growth' })
   }
   items.sort((a, b) => b.gain - a.gain)
   if (items.length < 10) {
@@ -67,7 +74,8 @@ async function buildDigest(subscription, type) {
 
 export function renderGithubDigestHtml(items, type = 'daily', dateKey = '') {
   const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
-  const htmlItems = items.length ? items.map(({ row, gain, growth }) => { const stars = growth?.currentStars ?? row.stars ?? 0; const metric = gain === null ? '近期热门 / 新发现' : '24 小时 Star +' + gain; const summary = row.summary && /[\u4e00-\u9fff]/.test(row.summary) ? row.summary : '项目已进入关注列表，中文技术摘要将在下一轮 AI 审核后补充。'; return `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · 当前 Star ${stars.toLocaleString()} · ${metric}</div><div style="margin-top:5px">${esc(cleanSummary(summary))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>` }).join('') : '<li>本期暂未发现符合订阅方向且增长明显的项目。</li>'
+  const reviewedItems = items.filter(({ row }) => row.worth_push === 1 && /[\u4e00-\u9fff]/.test(String(row.summary || '')))
+  const htmlItems = reviewedItems.length ? reviewedItems.map(({ row, gain, growth }) => { const stars = growth?.currentStars ?? row.stars ?? 0; const metric = gain === null ? '近期热门 / 新发现' : '24 小时 Star +' + gain; return `<li style="margin:0 0 18px"><div style="font-size:17px;color:#172033">${esc(row.full_name)}</div><div style="color:#667085;font-size:13px">${esc(row.language || '多语言')} · 当前 Star ${stars.toLocaleString()} · ${metric}</div><div style="margin-top:5px">${esc(cleanSummary(row.summary))}</div><div style="margin-top:5px"><a href="${esc(row.url)}" style="color:#1677ff">查看项目</a></div></li>` }).join('') : '<li>本期暂未发现符合订阅方向且已完成中文 AI 审核的项目。</li>'
   return `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub ${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p><p style="color:#98a2b3;font-size:12px;margin-top:8px">本邮件由系统自动发送，无需回复。</p></div>`
 }
 
@@ -103,6 +111,7 @@ async function prepareGithubDigestDrafts(now = new Date()) {
     const frequencies = (() => { try { return JSON.parse(subscription.frequencies) } catch { return ['daily'] } })()
     for (const type of ['daily', 'weekly', 'monthly']) {
       if (!frequencies.includes(type)) continue
+      if (!isDigestTypeDue(parts, type)) continue
       const draftKey = 'github-draft:' + type + ':' + dateKey + ':' + subscription.id
       if (await dbGet('SELECT id FROM github_digest_drafts WHERE draft_key = ?', [draftKey])) continue
       const items = await buildDigest(subscription, type)
