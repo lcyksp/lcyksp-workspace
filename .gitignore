@@ -12,3 +12,5 @@ Thumbs.db
 .codegraph/
 .reasonix/
 AGENTS.md
+
+.secrets/
