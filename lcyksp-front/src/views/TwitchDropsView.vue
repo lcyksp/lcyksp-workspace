@@ -1,0 +1,16 @@
+<script setup>
+import { onMounted, reactive, ref } from 'vue'
+import axios from 'axios'
+import { ElMessage } from 'element-plus'
+const form=reactive({query:'',game:null,channel:null,accountId:'',startAt:'',endAt:''})
+const categories=ref([]), streams=ref([]), accounts=ref([]), tasks=ref([]), loading=ref(false)
+async function load(){ const [a,t]=await Promise.all([axios.get('/api/twitch/accounts'),axios.get('/api/twitch/tasks')]); accounts.value=a.data.accounts||[]; tasks.value=t.data.tasks||[] }
+async function search(){ if(!form.query.trim())return; loading.value=true; try{categories.value=(await axios.get('/api/twitch/categories',{params:{query:form.query}})).data.data||[]}finally{loading.value=false} }
+async function chooseGame(g){form.game=g; form.channel=null; streams.value=(await axios.get('/api/twitch/streams',{params:{gameId:g.id}})).data.data||[]}
+async function login(){const r=await axios.get('/api/twitch/oauth/start'); window.open(r.data.url,'_blank','noopener')}
+async function create(){if(!form.accountId||!form.game||!form.channel||!form.startAt||!form.endAt)return ElMessage.warning('请完整填写配置'); await axios.post('/api/twitch/tasks',{accountId:form.accountId,gameId:form.game.id,gameName:form.game.name,channelId:form.channel.user_id,channelName:form.channel.user_name,startAt:form.startAt,endAt:form.endAt}); ElMessage.success('任务已创建'); await load()}
+async function stop(id){await axios.post(`/api/twitch/tasks/${id}/stop`); await load()}
+onMounted(load)
+</script>
+<template><div class="twitch-page"><h2>Twitch 掉宝任务</h2><el-button type="primary" @click="login">登录 Twitch</el-button><el-select v-model="form.accountId" placeholder="选择 Twitch 账号" class="field"><el-option v-for="a in accounts" :key="a.id" :label="a.display_name" :value="a.id"/></el-select><div class="search"><el-input v-model="form.query" placeholder="输入游戏关键字" @keyup.enter="search"/><el-button :loading="loading" @click="search">搜索游戏</el-button></div><el-select v-if="categories.length" v-model="form.game" value-key="id" placeholder="选择游戏" class="field" @change="chooseGame"><el-option v-for="g in categories" :key="g.id" :label="g.name" :value="g"/></el-select><el-select v-if="streams.length" v-model="form.channel" value-key="id" placeholder="选择直播频道" class="field"><el-option v-for="s in streams" :key="s.id" :label="s.user_name+' · '+s.title" :value="s"/></el-select><div class="times"><el-date-picker v-model="form.startAt" type="datetime" placeholder="开始时间"/><el-date-picker v-model="form.endAt" type="datetime" placeholder="结束时间"/></div><el-button type="success" @click="create">创建挂机任务</el-button><el-table :data="tasks" class="tasks"><el-table-column prop="game_name" label="游戏"/><el-table-column prop="channel_name" label="频道"/><el-table-column prop="status" label="状态"/><el-table-column label="操作"><template #default="{row}"><el-button v-if="['pending','running'].includes(row.status)" link type="danger" @click="stop(row.id)">停止</el-button></template></el-table-column></el-table></div></template>
+<style scoped>.twitch-page{max-width:900px;margin:0 auto;padding:24px;color:var(--el-text-color-primary)}.field{display:block;max-width:420px;margin:16px 0}.search,.times{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}.tasks{margin-top:28px;background:transparent}</style>
