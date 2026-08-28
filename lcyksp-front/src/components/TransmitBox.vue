@@ -5,7 +5,7 @@
  */
 import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { UploadFilled, Link, CopyDocument, Delete, Edit, Document, Lock } from '@element-plus/icons-vue'
+import { UploadFilled, Link, CopyDocument, Delete, Edit, Document, Lock, Calendar } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { copyToClipboard } from '../utils/clipboard.js'
 import { formatSize } from '../utils/format.js'
@@ -40,8 +40,63 @@ const isLoggedIn = ref(false)
 const historyList = ref([])
 const loadingHistory = ref(false)
 
+// 修改过期时间状态与方法
+const editExpireVisible = ref(false)
+const editExpireRow = ref(null)
+const editExpireTimeValue = ref('24h')
+const editCustomExpireTime = ref('')
+
+function handleExpireOptionChange(val) {
+  if (val === 'custom') {
+    const defaultDate = new Date(Date.now() + 24 * 3600 * 1000)
+    const pad = (value) => String(value).padStart(2, '0')
+    editCustomExpireTime.value = `${defaultDate.getFullYear()}-${pad(defaultDate.getMonth() + 1)}-${pad(defaultDate.getDate())}T${pad(defaultDate.getHours())}:${pad(defaultDate.getMinutes())}`
+  }
+}
+
+function openEditExpireTime(row) {
+  editExpireRow.value = row
+  editExpireTimeValue.value = '24h'
+  editCustomExpireTime.value = ''
+  editExpireVisible.value = true
+}
+
+async function submitEditExpireTime() {
+  if (!editExpireRow.value) return
+  
+  let targetExpireTime = editExpireTimeValue.value
+  if (targetExpireTime === 'custom') {
+    if (!editCustomExpireTime.value) {
+      ElMessage.warning('请选择自定义过期时间')
+      return
+    }
+    const d = new Date(editCustomExpireTime.value)
+    if (isNaN(d.getTime())) {
+      ElMessage.warning('日期格式无效')
+      return
+    }
+    targetExpireTime = d.toISOString()
+  }
+
+  try {
+    const res = await axios.post('/api/transmit/update-expire', {
+      code: editExpireRow.value.code,
+      expireTime: targetExpireTime
+    })
+    ElMessage.success(res.data.message || '过期时间已修改')
+    editExpireVisible.value = false
+    fetchHistory()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || '修改失败')
+  }
+}
+
 function checkLoginState() {
+  const oldLogin = isLoggedIn.value
   isLoggedIn.value = !!localStorage.getItem('lcyksp_token')
+  if (isLoggedIn.value && !oldLogin && activeTab.value === 'history') {
+    fetchHistory()
+  }
 }
 
 // ---------- 监听 Tab 切换 ----------
@@ -196,6 +251,9 @@ async function handleUpload() {
 
     ElMessage.success('闪传链接已生成！')
     files.value = []
+    if (isLoggedIn.value) {
+      fetchHistory()
+    }
   } catch (err) {
     ElMessage.error(err.response?.data?.error || '上传并创建链接失败')
   } finally {
@@ -221,6 +279,13 @@ function formatTime(isoStr) {
   } catch {
     return isoStr
   }
+}
+
+function getDownloadsStr(item) {
+  if (item.maxDownloads === -1 || item.maxDownloads === 0) {
+    return `${item.currentDownloads} / 无限制`
+  }
+  return `${item.currentDownloads} / ${item.maxDownloads}`
 }
 </script>
 
@@ -369,6 +434,15 @@ function formatTime(isoStr) {
                     <el-icon><Edit /></el-icon>修改提取码
                   </el-button>
                   <el-button
+                    type="success"
+                    size="small"
+                    text
+                    :disabled="item.isExpired"
+                    @click="openEditExpireTime(item)"
+                  >
+                    <el-icon><Calendar /></el-icon>修改过期时间
+                  </el-button>
+                  <el-button
                     type="danger"
                     size="small"
                     text
@@ -383,6 +457,42 @@ function formatTime(isoStr) {
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- 修改过期时间弹窗 -->
+    <el-dialog
+      v-model="editExpireVisible"
+      title="修改过期时间"
+      width="400px"
+      :close-on-click-modal="false"
+      center
+    >
+      <el-form label-position="top" style="padding: 10px 0 0;">
+        <el-form-item label="选择新过期时间">
+          <el-select v-model="editExpireTimeValue" style="width: 100%" @change="handleExpireOptionChange">
+            <el-option label="1 小时" value="1h" />
+            <el-option label="12 小时" value="12h" />
+            <el-option label="24 小时" value="24h" />
+            <el-option label="7 天" value="7d" />
+            <el-option label="🔒 永久有效（不自动销毁）" value="permanent" />
+            <el-option label="📅 自定义过期时间" value="custom" />
+          </el-select>
+        </el-form-item>
+        
+        <el-form-item v-if="editExpireTimeValue === 'custom'" label="自定义过期时间">
+          <el-date-picker
+            v-model="editCustomExpireTime"
+            type="datetime"
+            placeholder="选择过期时间"
+            value-format="YYYY-MM-DDTHH:mm:ss.000Z"
+            style="width: 100%;"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editExpireVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitEditExpireTime">确定</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 结果弹窗 -->
     <el-dialog

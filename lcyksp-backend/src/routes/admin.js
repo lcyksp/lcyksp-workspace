@@ -8,6 +8,8 @@ import { getDb } from '../config/db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
@@ -24,6 +26,31 @@ router.use(authMiddleware);
 router.use(requireAdmin);
 
 var SALT_ROUNDS = 10;
+var execFileAsync = promisify(execFile);
+
+async function runGithubProxyCommand(action, subscriptionUrl = '') {
+  const helper = process.env.MIHOMO_ADMIN_HELPER || '/usr/local/bin/lcyksp-mihomo-update';
+  const args = [action];
+  if (subscriptionUrl) args.push(subscriptionUrl);
+  let stdout = '';
+  try {
+    ({ stdout } = await execFileAsync('sudo', [helper, ...args], { timeout: 90000, maxBuffer: 1024 * 1024 }));
+  } catch (error) {
+    let message = '';
+    try {
+      const result = JSON.parse(String(error.stdout || '').trim());
+      message = String(result.message || '');
+    } catch {}
+    throw new Error(message || '代理更新或节点检测失败，请稍后重试');
+  }
+  try { return JSON.parse(stdout); } catch { return { ok: true, output: stdout.slice(-2000) }; }
+}
+
+function dbGetAsync(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row)) ) }
+function dbAllAsync(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || [])) ) }
+function dbRunAsync(sql, params = []) { return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(e) { e ? reject(e) : resolve({ lastID: this.lastID, changes: this.changes }) }) ) }
+function parseAdminJson(value, fallback) { try { return JSON.parse(value) } catch { return fallback } }
+function serializeAdminSubscription(row) { return { id: row.id, userId: row.user_id, username: row.username || '', email: row.email, categoryIds: parseAdminJson(row.category_ids, []), keywords: parseAdminJson(row.keywords, []), frequencies: parseAdminJson(row.frequencies, ['daily']), status: row.status, lastTestSentAt: row.last_test_sent_at, createdAt: row.created_at, updatedAt: row.updated_at } }
 
 function generateCardCode() {
   var raw = crypto.randomBytes(10).toString('hex').toUpperCase();
@@ -42,11 +69,8 @@ function normalizeImportedMembershipCode(value) {
   if (!input) return '';
 
   var redeemMatch = input.match(/\/redeem\/([A-Za-z0-9_-]+)/i);
-  if (redeemMatch && redeemMatch[1]) {
-    return redeemMatch[1];
-  }
-
-  return input;
+  var token = (redeemMatch && redeemMatch[1]) ? redeemMatch[1] : input;
+  return token.toUpperCase();
 }
 
 function maskMembershipDisplayCode(value) {
@@ -119,8 +143,30 @@ router.put('/files/:code', async function (req, res, next) {
 
     var expireTime = req.body.expireTime;
     var maxDownloads = req.body.maxDownloads;
+    var fileName = typeof req.body.fileName === 'string' ? req.body.fileName.trim() : '';
+    var newCode = typeof req.body.newCode === 'string' ? req.body.newCode.trim() : '';
+
     var setClauses = [];
     var params = [];
+
+    if (fileName) {
+      setClauses.push('file_name = ?');
+      params.push(fileName);
+    }
+
+    if (newCode && newCode !== code) {
+      var exists = await new Promise(function (resolve, reject) {
+        db.get('SELECT id FROM transfers WHERE id = ?', [newCode], function (err, row) {
+          if (err) return reject(err);
+          resolve(row);
+        });
+      });
+      if (exists) {
+        return res.status(400).json({ error: '该提取码已被占用，请使用其他提取码' });
+      }
+      setClauses.push('id = ?');
+      params.push(newCode);
+    }
 
     if (expireTime !== undefined) {
       if (expireTime === 'permanent') {
@@ -475,6 +521,119 @@ router.post('/config/llm/history', async function (req, res, next) {
 //  大模型配置管理（当前活跃配置）
 // ===================================================================
 
+router.get('/config/github-radar', async function (req, res, next) {
+  try {
+    const db = getDb()
+    const rows = await new Promise((resolve, reject) => db.all("SELECT key, value FROM system_config WHERE key LIKE 'github_%' OR key IN ('llm_url', 'llm_model', 'llm_key')", (err, result) => err ? reject(err) : resolve(result || [])))
+    const values = Object.fromEntries(rows.map((row) => [row.key, row.value]))
+    res.json({
+      primaryAiUrl: values.llm_url || 'https://api.deepseek.com',
+      primaryAiModel: values.llm_model || 'deepseek-chat',
+      primaryAiConfigured: Boolean(values.llm_key),
+      githubTokenConfigured: Boolean(values.github_token),
+      smtpConfigured: Boolean(values.github_smtp_password),
+      smtpHost: values.github_smtp_host || 'smtp.163.com',
+      smtpPort: Number(values.github_smtp_port || 465),
+      smtpUser: values.github_smtp_user || 'lcykspxyz@163.com',
+      smtpFrom: values.github_smtp_from || values.github_smtp_user || '',
+      aiFallbackUrl: values.github_ai_fallback_url || '',
+      aiFallbackModel: values.github_ai_fallback_model || '',
+      aiFallbackConfigured: Boolean(values.github_ai_fallback_key),
+      proxyConfigured: Boolean(values.github_proxy_subscription),
+      proxyStatus: values.github_proxy_status || '未检测',
+      proxyNode: values.github_proxy_node || '',
+      proxyCheckedAt: values.github_proxy_checked_at || '',
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+router.post('/config/github-radar', async function (req, res, next) {
+  try {
+    const values = [
+      ['llm_url', req.body?.primaryAiUrl],
+      ['llm_model', req.body?.primaryAiModel],
+      ['llm_key', req.body?.primaryAiKey],
+      ['github_token', req.body?.githubToken],
+      ['github_smtp_password', req.body?.smtpPassword],
+      ['github_smtp_host', req.body?.smtpHost || 'smtp.163.com'],
+      ['github_smtp_port', String(req.body?.smtpPort || 465)],
+      ['github_smtp_user', req.body?.smtpUser],
+      ['github_smtp_from', req.body?.smtpFrom || req.body?.smtpUser],
+      ['github_ai_fallback_url', req.body?.aiFallbackUrl],
+      ['github_ai_fallback_model', req.body?.aiFallbackModel],
+      ['github_ai_fallback_key', req.body?.aiFallbackKey],
+    ]
+    const db = getDb()
+    for (const [key, value] of values) {
+      if (value === undefined || value === null || String(value).trim() === '') continue
+      const encrypted = ['llm_key', 'github_token', 'github_smtp_password', 'github_ai_fallback_key', 'github_proxy_subscription'].includes(key) ? encrypt(String(value).trim()) : String(value).trim()
+      await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [key, encrypted], (err) => err ? reject(err) : resolve()))
+    }
+    if (req.body?.proxySubscription && String(req.body.proxySubscription).trim()) {
+      try {
+        const result = await runGithubProxyCommand('update', String(req.body.proxySubscription).trim())
+        const now = new Date().toISOString()
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_subscription', encrypt(String(req.body.proxySubscription).trim())], (err) => err ? reject(err) : resolve()))
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_status', result.ok === false ? '失败' : '已连接'], (err) => err ? reject(err) : resolve()))
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_node', String(result.node || '')], (err) => err ? reject(err) : resolve()))
+        await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_checked_at', now], (err) => err ? reject(err) : resolve()))
+      } catch (proxyError) {
+        return res.status(502).json({ error: '机场订阅更新或节点检测失败：' + proxyError.message })
+      }
+    }
+    res.json({ message: 'GitHub 趋势配置已保存' })
+  } catch (err) {
+    next(err)
+  }
+})
+
+router.post('/config/github-radar/proxy-test', async function (req, res, next) {
+  try {
+    const result = await runGithubProxyCommand('test')
+    const db = getDb()
+    const now = new Date().toISOString()
+    await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_status', result.ok === false ? '失败' : '已连接'], (err) => err ? reject(err) : resolve()))
+    await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_node', String(result.node || '')], (err) => err ? reject(err) : resolve()))
+    await new Promise((resolve, reject) => db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['github_proxy_checked_at', now], (err) => err ? reject(err) : resolve()))
+    res.json(result)
+  } catch (err) { next(err) }
+})
+
+router.get('/github-radar/categories', async function (req, res, next) {
+  try {
+    const db = getDb()
+    const rows = await new Promise((resolve, reject) => db.all('SELECT id, name, description, keywords, languages, enabled FROM github_categories ORDER BY id DESC', (err, result) => err ? reject(err) : resolve(result || [])))
+    res.json({ categories: rows.map((row) => ({ ...row, keywords: JSON.parse(row.keywords || '[]'), languages: JSON.parse(row.languages || '[]') })) })
+  } catch (err) { next(err) }
+})
+
+router.post('/github-radar/categories', async function (req, res, next) {
+  try {
+    const name = String(req.body?.name || '').trim().slice(0, 64)
+    const description = String(req.body?.description || '').trim().slice(0, 240)
+    const keywords = Array.isArray(req.body?.keywords) ? req.body.keywords : String(req.body?.keywords || '').split(/[,，\n]/)
+    const languages = Array.isArray(req.body?.languages) ? req.body.languages : String(req.body?.languages || '').split(/[,，\n]/)
+    const clean = (items, max) => [...new Set(items.map((item) => String(item || '').trim()).filter(Boolean))].slice(0, max)
+    if (!name || !clean(keywords, 30).length) return res.status(400).json({ error: '方向名称和关键词不能为空' })
+    const db = getDb()
+    await new Promise((resolve, reject) => db.run('INSERT INTO github_categories (name, description, keywords, languages) VALUES (?, ?, ?, ?)', [name, description, JSON.stringify(clean(keywords, 30)), JSON.stringify(clean(languages, 20))], (err) => err ? reject(err) : resolve()))
+    res.json({ message: '预设方向已创建' })
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT') return res.status(409).json({ error: '方向名称已存在' })
+    next(err)
+  }
+})
+
+router.delete('/github-radar/categories/:id', async function (req, res, next) {
+  try {
+    const db = getDb()
+    await new Promise((resolve, reject) => db.run('DELETE FROM github_categories WHERE id = ?', [req.params.id], (err) => err ? reject(err) : resolve()))
+    res.json({ message: '预设方向已删除' })
+  } catch (err) { next(err) }
+})
+
 router.get('/config/llm', async function (req, res, next) {
   try {
     var db = getDb();
@@ -644,7 +803,7 @@ router.get('/config/membership', async function (req, res, next) {
     var db = getDb();
     var rows = await new Promise(function (resolve, reject) {
       db.all(
-        'SELECT key, value FROM system_config WHERE key IN (\'membership_afdian_url\', \'membership_notice\', \'membership_afdian_user_id\', \'membership_afdian_token\', \'membership_afdian_webhook_token\', \'membership_plan_id_monthly\', \'membership_plan_id_quarterly\', \'membership_plan_id_yearly\')',
+        'SELECT key, value FROM system_config WHERE key IN (\'membership_afdian_url\', \'membership_notice\', \'membership_afdian_user_id\', \'membership_afdian_token\', \'membership_afdian_webhook_token\', \'membership_plan_id_monthly\', \'membership_plan_id_quarterly\', \'membership_plan_id_yearly\', \'membership_afdian_reply_template\')',
         function (err, rows) {
           if (err) return reject(err);
           resolve(rows);
@@ -666,6 +825,7 @@ router.get('/config/membership', async function (req, res, next) {
       planIdMonthly: config.membership_plan_id_monthly || '',
       planIdQuarterly: config.membership_plan_id_quarterly || '',
       planIdYearly: config.membership_plan_id_yearly || '',
+      afdianReplyTemplate: config.membership_afdian_reply_template || '',
       plans: MEMBERSHIP_PLANS,
     });
   } catch (err) {
@@ -683,6 +843,7 @@ router.post('/config/membership', async function (req, res, next) {
     var planIdMonthly = typeof req.body.planIdMonthly === 'string' ? req.body.planIdMonthly.trim() : '';
     var planIdQuarterly = typeof req.body.planIdQuarterly === 'string' ? req.body.planIdQuarterly.trim() : '';
     var planIdYearly = typeof req.body.planIdYearly === 'string' ? req.body.planIdYearly.trim() : '';
+    var afdianReplyTemplate = typeof req.body.afdianReplyTemplate === 'string' ? req.body.afdianReplyTemplate.trim() : '';
     var db = getDb();
 
     await new Promise(function (resolve, reject) {
@@ -729,6 +890,12 @@ router.post('/config/membership', async function (req, res, next) {
     });
     await new Promise(function (resolve, reject) {
       db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_plan_id_yearly', planIdYearly], function (err) {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    await new Promise(function (resolve, reject) {
+      db.run('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', ['membership_afdian_reply_template', afdianReplyTemplate], function (err) {
         if (err) return reject(err);
         resolve();
       });
@@ -845,6 +1012,8 @@ router.post('/membership/cards/import', async function (req, res, next) {
       .map(normalizeImportedMembershipCode)
       .filter(Boolean);
 
+    codes = Array.from(new Set(codes));
+
     if (!codes.length) {
       return res.status(400).json({ error: '请至少输入一条兑换码或兑换链接' });
     }
@@ -958,5 +1127,72 @@ router.delete('/feedback/:id', async function (req, res, next) {
     next(err);
   }
 });
+
+// ===================================================================
+// GitHub 日报订阅管理
+// ===================================================================
+router.get('/github-radar/subscriptions', async function (req, res, next) {
+  try {
+    const rows = await dbAllAsync(`SELECT s.*, u.username FROM github_subscriptions s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.updated_at DESC, s.id DESC`)
+    res.json({ subscriptions: rows.map(serializeAdminSubscription) })
+  } catch (err) { next(err) }
+})
+
+router.post('/github-radar/subscriptions', async function (req, res, next) {
+  try {
+    const userId = Number(req.body?.userId)
+    const email = String(req.body?.email || '').trim().toLowerCase()
+    const categoryIds = Array.isArray(req.body?.categoryIds) ? req.body.categoryIds.map(Number).filter(Number.isInteger) : []
+    const keywords = Array.isArray(req.body?.keywords) ? req.body.keywords.map(String).map((v) => v.trim()).filter(Boolean) : []
+    const frequencies = Array.isArray(req.body?.frequencies) ? req.body.frequencies.filter((v) => ['daily', 'weekly', 'monthly'].includes(v)) : ['daily']
+    const status = ['pending', 'active', 'paused', 'closed'].includes(req.body?.status) ? req.body.status : 'active'
+    if (!Number.isInteger(userId) || !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '用户和邮箱格式不正确' })
+    if (!categoryIds.length && !keywords.length) return res.status(400).json({ error: '至少填写一个方向或关键词' })
+    const user = await dbGetAsync('SELECT id FROM users WHERE id = ?', [userId]); if (!user) return res.status(404).json({ error: '用户不存在' })
+    const now = new Date().toISOString()
+    const result = await dbRunAsync('INSERT INTO github_subscriptions (user_id,email,category_ids,keywords,frequencies,status,updated_at) VALUES (?,?,?,?,?,?,?)', [userId, email, JSON.stringify(categoryIds), JSON.stringify(keywords), JSON.stringify(frequencies), status, now])
+    const row = await dbGetAsync('SELECT s.*, u.username FROM github_subscriptions s LEFT JOIN users u ON u.id=s.user_id WHERE s.id=?', [result.lastID])
+    res.status(201).json({ subscription: serializeAdminSubscription(row) })
+  } catch (err) { if (String(err.message).includes('UNIQUE')) return res.status(409).json({ error: '该用户已存在相同邮箱订阅' }); next(err) }
+})
+
+router.put('/github-radar/subscriptions/:id', async function (req, res, next) {
+  try {
+    const id = Number(req.params.id); const existing = await dbGetAsync('SELECT id FROM github_subscriptions WHERE id=?', [id]); if (!existing) return res.status(404).json({ error: '订阅不存在' })
+    const sets = []; const params = []
+    if (req.body?.userId !== undefined) { sets.push('user_id=?'); params.push(Number(req.body.userId)) }
+    if (req.body?.email !== undefined) { const email = String(req.body.email).trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '邮箱格式不正确' }); sets.push('email=?'); params.push(email) }
+    if (Array.isArray(req.body?.categoryIds)) { sets.push('category_ids=?'); params.push(JSON.stringify(req.body.categoryIds.map(Number).filter(Number.isInteger))) }
+    if (Array.isArray(req.body?.keywords)) { sets.push('keywords=?'); params.push(JSON.stringify(req.body.keywords.map(String).map(v => v.trim()).filter(Boolean))) }
+    if (Array.isArray(req.body?.frequencies)) { sets.push('frequencies=?'); params.push(JSON.stringify(req.body.frequencies.filter(v => ['daily','weekly','monthly'].includes(v)))) }
+    if (req.body?.status && ['pending','active','paused','closed'].includes(req.body.status)) { sets.push('status=?'); params.push(req.body.status) }
+    if (!sets.length) return res.status(400).json({ error: '没有可修改的内容' })
+    sets.push('updated_at=?'); params.push(new Date().toISOString()); params.push(id)
+    await dbRunAsync('UPDATE github_subscriptions SET ' + sets.join(',') + ' WHERE id=?', params)
+    const row = await dbGetAsync('SELECT s.*, u.username FROM github_subscriptions s LEFT JOIN users u ON u.id=s.user_id WHERE s.id=?', [id]); res.json({ subscription: serializeAdminSubscription(row) })
+  } catch (err) { if (String(err.message).includes('UNIQUE')) return res.status(409).json({ error: '该用户已存在相同邮箱订阅' }); next(err) }
+})
+
+router.delete('/github-radar/subscriptions/:id', async function (req, res, next) { try { const result = await dbRunAsync('DELETE FROM github_subscriptions WHERE id=?', [Number(req.params.id)]); if (!result.changes) return res.status(404).json({ error: '订阅不存在' }); res.json({ success: true }) } catch (err) { next(err) } })
+
+router.post('/github-radar/simulation', async function (req, res, next) {
+  try {
+    const delayMinutes = Math.max(1, Math.min(180, Number(req.body?.delayMinutes || 30)))
+    const to = String(req.body?.email || '1296757861@qq.com').trim().toLowerCase()
+    const type = ['daily', 'weekly', 'monthly'].includes(req.body?.type) ? req.body.type : 'daily'
+    const runAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
+    const jobKey = 'github-simulation:' + Date.now()
+    await dbRunAsync('INSERT INTO github_simulation_tasks (job_key,to_email,job_type,run_at,status,created_at) VALUES (?,?,?,?,?,?)', [jobKey, to, type, runAt, 'pending', new Date().toISOString()])
+    res.json({ scheduled: true, jobKey, runAt: new Date(runAt).toISOString(), to })
+  } catch (err) { next(err) }
+})
+
+router.get('/github-radar/simulation', async function (req, res, next) {
+  try { res.json({ tasks: await dbAllAsync('SELECT id,job_key,to_email,job_type,run_at,status,details,created_at,finished_at FROM github_simulation_tasks ORDER BY id DESC LIMIT 20') }) } catch (err) { next(err) }
+})
+
+router.delete('/github-radar/simulation/:id', async function (req, res, next) {
+  try { const result = await dbRunAsync('DELETE FROM github_simulation_tasks WHERE id=?', [Number(req.params.id)]); if (!result.changes) return res.status(404).json({ error: '模拟任务不存在' }); res.json({ success: true }) } catch (err) { next(err) }
+})
 
 export default router;

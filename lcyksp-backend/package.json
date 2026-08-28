@@ -21,6 +21,7 @@
     "pdfkit": "^0.15.0",
     "playwright-core": "^1.60.0",
     "sharp": "^0.33.5",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "undici": "^6.19.8"
   }
 }

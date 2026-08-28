@@ -32,7 +32,12 @@ import WatermarkView from '../views/WatermarkView.vue'
 import ZipToolView from '../views/ZipToolView.vue'
 import ImageUpscaleView from '../views/ImageUpscaleView.vue'
 import StitchView from '../views/StitchView.vue'
+import LyricsView from '../views/LyricsView.vue'
+import TrendsView from '../views/TrendsView.vue'
 import WeatherView from '../views/WeatherView.vue'
+import WebCaptureView from '../views/WebCaptureView.vue'
+import ApexView from '../views/ApexView.vue'
+import GithubRadarView from '../views/GithubRadarView.vue'
 
 function readCurrentUser() {
   try {
@@ -81,7 +86,12 @@ const routes = [
   { path: '/zip-tool', name: 'zip-tool', component: ZipToolView },
   { path: '/image-upscale', name: 'image-upscale', component: ImageUpscaleView },
   { path: '/stitch', name: 'stitch', component: StitchView },
+  { path: '/lyrics', name: 'lyrics', component: LyricsView },
+  { path: '/trends', name: 'trends', component: TrendsView },
   { path: '/weather', name: 'weather', component: WeatherView },
+  { path: '/web-capture', name: 'web-capture', component: WebCaptureView },
+  { path: '/apex', name: 'apex', component: ApexView },
+  { path: '/github-radar', name: 'GitHub日报', component: GithubRadarView, meta: { requiresPremium: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
 ]
 
@@ -93,6 +103,11 @@ const router = createRouter({
 router.beforeEach((to) => {
   const user = readCurrentUser()
 
+  if (to.path === '/trends') {
+    ElMessage.warning('热点趋势服务暂时停止')
+    return { name: 'home' }
+  }
+
   if (to.meta?.requiresAdmin) {
     if (!user) {
       ElMessage.warning('请先登录管理员账号')
@@ -101,6 +116,17 @@ router.beforeEach((to) => {
     if (user.role !== 'admin') {
       ElMessage.warning('当前页面仅管理员可访问')
       return { name: 'home' }
+    }
+  }
+
+  if (to.meta?.requiresPremium) {
+    if (!user) {
+      ElMessage.warning('请先登录高级用户账号')
+      return { name: 'home' }
+    }
+    if (!['admin', 'premium', 'pro'].includes(user.role)) {
+      ElMessage.warning('GitHub日报仅对高级用户开放')
+      return { name: 'membership' }
     }
   }
 

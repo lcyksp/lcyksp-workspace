@@ -12,12 +12,15 @@ import feedbackRouter from './routes/feedback.js';
 import membershipRouter from './routes/membership.js';
 import tvRouter from './routes/tv.js';
 import stitchRouter from './routes/stitch.js';
+import lyricsRouter from './routes/lyrics.js';
+import trendsRouter from './routes/trends.js';
+import apexRouter from './routes/apex.js';
+import githubSubscriptionsRouter from './routes/githubSubscriptions.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ---------- 基础中间件 ----------
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -48,6 +51,10 @@ app.use('/api/feedback', feedbackRouter);
 app.use('/api/membership', membershipRouter);
 app.use('/api/tv', tvRouter);
 app.use('/api/stitch', stitchRouter);
+app.use('/api/lyrics', lyricsRouter);
+app.use('/api/trends', trendsRouter);
+app.use('/api/apex', apexRouter);
+app.use('/api/github-subscriptions', githubSubscriptionsRouter);
 
 // IP归属地查询接口
 app.get('/api/ip-lookup', async (req, res) => {
@@ -133,6 +140,15 @@ app.use((err, _req, res, _next) => {
   });
 });
 
+// ---------- 进程安全监控 ----------
+process.on('unhandledRejection', (reason) => {
+  console.error('[Unhandled Rejection]', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]', err);
+});
+
 // ---------- 启动 ----------
 async function bootstrap() {
   console.log('🔄 正在初始化数据库...');
@@ -147,7 +163,7 @@ async function bootstrap() {
 }
 
 bootstrap().catch((err) => {
-  console.error('❌ 启动失败（请检查 sqlite 依赖是否在本地编译好）:', err);
+  console.error('❌ 启动失败:', err);
   process.exit(1);
 });
 
