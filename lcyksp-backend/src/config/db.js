@@ -423,5 +423,30 @@ export async function initDb() {
 
   await run("UPDATE users SET role = 'admin', quota_plan = 'admin' WHERE id = 1").catch(() => {})
 
+  await run(`CREATE TABLE IF NOT EXISTS twitch_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    twitch_user_id TEXT NOT NULL,
+    login TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT DEFAULT '',
+    expires_at TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, twitch_user_id)
+  )`).catch(() => {})
+  await run(`CREATE TABLE IF NOT EXISTS twitch_drop_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES twitch_accounts(id) ON DELETE CASCADE,
+    game_id TEXT NOT NULL, game_name TEXT NOT NULL,
+    channel_id TEXT NOT NULL, channel_name TEXT NOT NULL,
+    start_at TEXT NOT NULL, end_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`).catch(() => {})
+
   console.log('[DB] Schema ready')
 }

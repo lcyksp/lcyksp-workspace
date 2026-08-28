@@ -16,6 +16,7 @@ import lyricsRouter from './routes/lyrics.js';
 import trendsRouter from './routes/trends.js';
 import apexRouter from './routes/apex.js';
 import githubSubscriptionsRouter from './routes/githubSubscriptions.js';
+import twitchRouter from './routes/twitch.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
@@ -55,6 +56,7 @@ app.use('/api/lyrics', lyricsRouter);
 app.use('/api/trends', trendsRouter);
 app.use('/api/apex', apexRouter);
 app.use('/api/github-subscriptions', githubSubscriptionsRouter);
+app.use('/api/twitch', twitchRouter);
 
 // IP归属地查询接口
 app.get('/api/ip-lookup', async (req, res) => {
