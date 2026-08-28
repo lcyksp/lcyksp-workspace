@@ -29,6 +29,7 @@ const fileDialogVisible = ref(false)
 const fileFormLoading = ref(false)
 const fileForm = reactive({
   code: '',
+  newCode: '',
   fileName: '',
   expireTime: '',
   isPermanent: false,
@@ -63,6 +64,7 @@ const membershipConfig = reactive({
   planIdMonthly: '',
   planIdQuarterly: '',
   planIdYearly: '',
+  afdianReplyTemplate: '',
   plans: [],
 })
 const membershipConfigLoading = ref(false)
@@ -78,14 +80,14 @@ const cardDetail = ref(null)
 const cardDetailVisible = ref(false)
 
 function planCardStats(planKey) {
-  const cards = membershipCards.value.filter(c => c.plan_key === planKey)
+  const cards = membershipCards.value.filter(c => c.planKey === planKey)
   const stats = { total: cards.length, unused: 0, used: 0 }
   cards.forEach(c => { if (c.status === 'used') stats.used += 1; else stats.unused += 1 })
   return stats
 }
 
 function filteredPlanCards(planKey) {
-  let cards = membershipCards.value.filter(c => c.plan_key === planKey)
+  let cards = membershipCards.value.filter(c => c.planKey === planKey)
   if (planKey !== membershipCardFilterPlan.value) return []
   if (membershipCardStatusFilter.value === 'unused') return cards.filter(c => c.status !== 'used' && c.status !== 'invalid')
   if (membershipCardStatusFilter.value === 'used') return cards.filter(c => c.status === 'used')
@@ -119,7 +121,38 @@ const membershipImportSummary = ref(null)
 const llmLoading = ref(false)
 const llmSaving = ref(false)
 const llmTesting = ref(false)
+const githubRadarLoading = ref(false)
+const githubRadarSaving = ref(false)
+const githubCategoryLoading = ref(false)
+const githubCategorySaving = ref(false)
+const githubCategories = ref([])
+const githubRadarConfig = reactive({
+  primaryAiUrl: 'https://api.deepseek.com', primaryAiModel: 'deepseek-chat', primaryAiKey: '', primaryAiConfigured: false,
+  githubToken: '', githubTokenConfigured: false,
+  smtpPassword: '', smtpConfigured: false,
+  smtpHost: 'smtp.163.com', smtpPort: 465,
+  smtpUser: 'lcykspxyz@163.com', smtpFrom: 'lcykspxyz@163.com',
+  aiFallbackUrl: '', aiFallbackModel: '', aiFallbackKey: '', aiFallbackConfigured: false,
+  proxySubscription: '', proxyConfigured: false, proxyStatus: '未检测', proxyNode: '', proxyCheckedAt: '',
+})
+const githubCategoryForm = reactive({ name: '', description: '', keywords: '', languages: '' })
+const githubAdminSubscriptions = ref([])
+const githubAdminSubscriptionsLoading = ref(false)
+const githubAdminSubscriptionForm = reactive({ id: null, userId: '', email: '', categoryIds: [], keywords: '', frequencies: ['daily'], status: 'active' })
 const quickActionLoadingId = ref(null)
+
+async function loadGithubAdminSubscriptions() {
+  githubAdminSubscriptionsLoading.value = true
+  try { const res = await axios.get('/api/admin/github-radar/subscriptions'); githubAdminSubscriptions.value = res.data?.subscriptions || [] } catch (error) { ElMessage.error(error.response?.data?.error || '加载订阅失败') } finally { githubAdminSubscriptionsLoading.value = false }
+}
+function editGithubAdminSubscription(row) { Object.assign(githubAdminSubscriptionForm, { id: row.id, userId: row.userId, email: row.email, categoryIds: row.categoryIds || [], keywords: (row.keywords || []).join(', '), frequencies: row.frequencies || ['daily'], status: row.status }) }
+function resetGithubAdminSubscription() { Object.assign(githubAdminSubscriptionForm, { id: null, userId: '', email: '', categoryIds: [], keywords: '', frequencies: ['daily'], status: 'active' }) }
+async function saveGithubAdminSubscription() {
+  const payload = { userId: Number(githubAdminSubscriptionForm.userId), email: githubAdminSubscriptionForm.email, categoryIds: githubAdminSubscriptionForm.categoryIds, keywords: githubAdminSubscriptionForm.keywords.split(/[,，\n]/).map(v => v.trim()).filter(Boolean), frequencies: githubAdminSubscriptionForm.frequencies, status: githubAdminSubscriptionForm.status }
+  try { if (githubAdminSubscriptionForm.id) await axios.put(`/api/admin/github-radar/subscriptions/${githubAdminSubscriptionForm.id}`, payload); else await axios.post('/api/admin/github-radar/subscriptions', payload); ElMessage.success('订阅已保存'); resetGithubAdminSubscription(); await loadGithubAdminSubscriptions() } catch (error) { ElMessage.error(error.response?.data?.error || '保存订阅失败') }
+}
+async function deleteGithubAdminSubscription(row) { try { await ElMessageBox.confirm(`确定删除 ${row.email} 的订阅吗？`, '删除订阅', { type: 'warning' }); await axios.delete(`/api/admin/github-radar/subscriptions/${row.id}`); ElMessage.success('订阅已删除'); await loadGithubAdminSubscriptions() } catch (error) { if (error !== 'cancel') ElMessage.error(error.response?.data?.error || '删除失败') } }
+async function scheduleGithubSimulation() { try { const res = await axios.post('/api/admin/github-radar/simulation', { email: '1296757861@qq.com', delayMinutes: 30, type: 'daily' }); ElMessage.success(`模拟日报已安排：${new Date(res.data.runAt).toLocaleString()}`) } catch (error) { ElMessage.error(error.response?.data?.error || '安排模拟日报失败') } }
 
 const MAX_HISTORY = 5
 const HISTORY_KEYS = {
@@ -256,22 +289,16 @@ async function deleteFile(code, fileName) {
 
 function openEditFile(file) {
   fileForm.code = file.id
+  fileForm.newCode = file.id
   fileForm.fileName = file.fileName
   fileForm.maxDownloads = file.maxDownloads
 
   if (!file.expireTime || String(file.expireTime).includes('2099')) {
-    fileForm.expireTime = 'permanent'
+    fileForm.expireTime = ''
     fileForm.isPermanent = true
   } else {
-    const date = new Date(file.expireTime)
-    if (Number.isNaN(date.getTime())) {
-      fileForm.expireTime = ''
-      fileForm.isPermanent = false
-    } else {
-      const pad = (value) => String(value).padStart(2, '0')
-      fileForm.expireTime = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
-      fileForm.isPermanent = false
-    }
+    fileForm.expireTime = file.expireTime
+    fileForm.isPermanent = false
   }
 
   fileDialogVisible.value = true
@@ -279,6 +306,14 @@ function openEditFile(file) {
 
 async function submitFileForm() {
   const payload = {}
+
+  if (fileForm.fileName.trim()) {
+    payload.fileName = fileForm.fileName.trim()
+  }
+
+  if (fileForm.newCode.trim() && fileForm.newCode.trim() !== fileForm.code) {
+    payload.newCode = fileForm.newCode.trim()
+  }
 
   if (fileForm.isPermanent) {
     payload.expireTime = 'permanent'
@@ -533,6 +568,71 @@ async function saveLlmConfig() {
   }
 }
 
+async function loadGithubRadarConfig() {
+  githubRadarLoading.value = true
+  try {
+    const [configRes, categoryRes] = await Promise.all([
+      axios.get('/api/admin/config/github-radar'),
+      axios.get('/api/admin/github-radar/categories'),
+    ])
+    Object.assign(githubRadarConfig, {
+      ...githubRadarConfig,
+      ...configRes.data,
+      primaryAiKey: '', githubToken: '', smtpPassword: '', aiFallbackKey: '',
+    })
+    githubCategories.value = categoryRes.data?.categories || []
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载 GitHub日报配置失败')
+  } finally { githubRadarLoading.value = false }
+}
+
+async function saveGithubRadarConfig() {
+  githubRadarSaving.value = true
+  try {
+    await axios.post('/api/admin/config/github-radar', { ...githubRadarConfig })
+    ElMessage.success('GitHub日报配置已保存')
+    await loadGithubRadarConfig()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存 GitHub日报配置失败')
+  } finally { githubRadarSaving.value = false }
+}
+
+async function testGithubProxy() {
+  githubRadarSaving.value = true
+  try {
+    const res = await axios.post('/api/admin/config/github-radar/proxy-test')
+    githubRadarConfig.proxyStatus = res.data?.status || '已连接'
+    githubRadarConfig.proxyNode = res.data?.node || githubRadarConfig.proxyNode
+    ElMessage.success(res.data?.message || 'GitHub 代理测试成功')
+  } catch (error) {
+    githubRadarConfig.proxyStatus = '失败'
+    ElMessage.error(error.response?.data?.error || 'GitHub 代理测试失败')
+  } finally { githubRadarSaving.value = false }
+}
+
+async function createGithubCategory() {
+  githubCategorySaving.value = true
+  try {
+    await axios.post('/api/admin/github-radar/categories', { ...githubCategoryForm })
+    Object.assign(githubCategoryForm, { name: '', description: '', keywords: '', languages: '' })
+    ElMessage.success('预设方向已创建')
+    await loadGithubRadarConfig()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '创建预设方向失败')
+  } finally { githubCategorySaving.value = false }
+}
+
+async function deleteGithubCategory(category) {
+  try {
+    await ElMessageBox.confirm(`确定删除“${category.name}”吗？`, '删除预设方向', { type: 'warning' })
+    githubCategoryLoading.value = true
+    await axios.delete(`/api/admin/github-radar/categories/${category.id}`)
+    await loadGithubRadarConfig()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.error || '删除预设方向失败')
+  } finally { githubCategoryLoading.value = false }
+}
+
 async function loadMembershipConfig() {
   membershipConfigLoading.value = true
   try {
@@ -545,6 +645,7 @@ async function loadMembershipConfig() {
     membershipConfig.planIdMonthly = res.data?.planIdMonthly || ''
     membershipConfig.planIdQuarterly = res.data?.planIdQuarterly || ''
     membershipConfig.planIdYearly = res.data?.planIdYearly || ''
+    membershipConfig.afdianReplyTemplate = res.data?.afdianReplyTemplate || ''
     membershipConfig.plans = Array.isArray(res.data?.plans) ? res.data.plans : []
     if (membershipConfig.plans.length && !membershipConfig.plans.some((item) => item.key === membershipCardForm.planKey)) {
       membershipCardForm.planKey = membershipConfig.plans[0].key
@@ -571,6 +672,7 @@ async function saveMembershipConfig() {
       planIdMonthly: membershipConfig.planIdMonthly.trim(),
       planIdQuarterly: membershipConfig.planIdQuarterly.trim(),
       planIdYearly: membershipConfig.planIdYearly.trim(),
+      afdianReplyTemplate: membershipConfig.afdianReplyTemplate.trim(),
     })
     ElMessage.success('会员配置已保存')
     loadMembershipConfig()
@@ -621,6 +723,28 @@ async function generateMembershipCards() {
   } finally {
     membershipCardGenerating.value = false
   }
+}
+
+function copyAllGeneratedCodes() {
+  if (!generatedCardCodes.value.length) return
+  const text = generatedCardCodes.value.join('\n')
+  navigator.clipboard.writeText(text)
+    .then(() => {
+      ElMessage.success('已成功复制全部兑换码')
+    })
+    .catch(() => {
+      ElMessage.error('复制失败，请手动选择复制')
+    })
+}
+
+function copyCardCode(code) {
+  navigator.clipboard.writeText(code)
+    .then(() => {
+      ElMessage.success('已复制卡密: ' + code)
+    })
+    .catch(() => {
+      ElMessage.error('复制失败')
+    })
 }
 
 async function importMembershipCards() {
@@ -925,6 +1049,8 @@ onMounted(() => {
   loadFiles()
   loadUsers()
   loadLlmConfig()
+  loadGithubRadarConfig()
+  loadGithubAdminSubscriptions()
   loadMembershipConfig()
   loadMembershipCards()
   loadFeedback()
@@ -971,11 +1097,11 @@ onMounted(() => {
               <el-table-column label="创建时间" width="180">
                 <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="170">
+              <el-table-column label="操作" width="170" fixed="right">
                 <template #default="{ row }">
                   <div class="row-actions">
-                    <el-button size="small" type="primary" plain @click="openEditFile(row)">编辑</el-button>
-                    <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+                    <el-button size="small" type="primary" @click="openEditFile(row)">编辑</el-button>
+                    <el-button size="small" type="danger" @click="deleteFile(row.id, row.fileName)">删除</el-button>
                   </div>
                 </template>
               </el-table-column>
@@ -1015,7 +1141,7 @@ onMounted(() => {
             </dl>
             <div class="mobile-card-actions">
               <el-button size="small" type="primary" @click="openEditFile(row)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="deleteFile(row.id, row.fileName)">删除</el-button>
+              <el-button size="small" type="danger" @click="deleteFile(row.id, row.fileName)">删除</el-button>
             </div>
           </article>
         </div>
@@ -1075,11 +1201,11 @@ onMounted(() => {
               <el-table-column label="注册时间" width="180">
                 <template #default="{ row }">{{ formatTime(row.created_at || row.createdAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="170">
+              <el-table-column label="操作" width="170" fixed="right">
                 <template #default="{ row }">
                   <div class="row-actions">
                     <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
-                    <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+                    <el-button size="small" type="danger" :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
                   </div>
                 </template>
               </el-table-column>
@@ -1147,7 +1273,7 @@ onMounted(() => {
             </dl>
             <div class="mobile-card-actions">
               <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
-              <el-button size="small" type="danger" plain :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+              <el-button size="small" type="danger" :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
             </div>
             <div v-if="row.role === 'admin'" class="mobile-quick-placeholder">
               其他管理员不可在此修改
@@ -1228,6 +1354,82 @@ onMounted(() => {
         </section>
       </el-tab-pane>
 
+      <el-tab-pane label="GitHub日报">
+        <div class="tab-header">
+          <span class="tab-count">配置 GitHub 发现、Outlook 发信、AI 复核和预设学习方向</span>
+          <el-button size="small" :loading="githubRadarLoading" @click="loadGithubRadarConfig"><el-icon><Refresh /></el-icon>刷新</el-button>
+        </div>
+        <div class="membership-admin-grid">
+          <section class="single-panel">
+            <el-form label-position="top" size="large">
+              <el-form-item label="GitHub Token">
+                <el-input v-model="githubRadarConfig.githubToken" type="password" show-password placeholder="留空表示保持现有配置" clearable />
+                <div class="form-hint">状态：{{ githubRadarConfig.githubTokenConfigured ? '已配置' : '未配置' }}。建议使用权限最小的 GitHub Token。</div>
+              </el-form-item>
+              <el-form-item label="机场订阅链接">
+                <el-input v-model="githubRadarConfig.proxySubscription" type="password" show-password placeholder="留空表示保持现有订阅" clearable />
+                <div class="form-hint">状态：{{ githubRadarConfig.proxyConfigured ? githubRadarConfig.proxyStatus : '未配置' }}。保存后服务器会自动刷新订阅、检测节点并选择可访问 GitHub 的最低延迟节点。</div>
+                <div v-if="githubRadarConfig.proxyNode" class="form-hint">当前节点：{{ githubRadarConfig.proxyNode }}<span v-if="githubRadarConfig.proxyCheckedAt"> · {{ githubRadarConfig.proxyCheckedAt }}</span></div>
+              </el-form-item>
+              <el-divider content-position="left">163 邮箱发信</el-divider>
+              <el-form-item label="SMTP 主机"><el-input v-model="githubRadarConfig.smtpHost" /></el-form-item>
+              <el-form-item label="SMTP 端口"><el-input-number v-model="githubRadarConfig.smtpPort" :min="1" :max="65535" /></el-form-item>
+              <el-form-item label="发件邮箱"><el-input v-model="githubRadarConfig.smtpUser" /></el-form-item>
+              <el-form-item label="客户端授权码">
+                <el-input v-model="githubRadarConfig.smtpPassword" type="password" show-password placeholder="留空表示保持现有授权码" clearable />
+                <div class="form-hint">状态：{{ githubRadarConfig.smtpConfigured ? '已配置' : '未配置' }}。请填写 163 邮箱生成的客户端授权码，不是邮箱登录密码。推荐 smtp.163.com:465（SSL/TLS）。</div>
+              </el-form-item>
+              <el-form-item label="显示发件人"><el-input v-model="githubRadarConfig.smtpFrom" /></el-form-item>
+              <el-divider content-position="left">第一模型：README 初筛</el-divider>
+              <el-form-item label="第一模型 API URL"><el-input v-model="githubRadarConfig.primaryAiUrl" placeholder="OpenAI 兼容接口" /></el-form-item>
+              <el-form-item label="第一模型名称"><el-input v-model="githubRadarConfig.primaryAiModel" placeholder="例如 gpt-5.6-luna" /></el-form-item>
+              <el-form-item label="第一模型 API Key"><el-input v-model="githubRadarConfig.primaryAiKey" type="password" show-password placeholder="留空表示保持现有配置" clearable /><div class="form-hint">状态：{{ githubRadarConfig.primaryAiConfigured ? '已配置' : '未配置' }}。用于 README 和项目信息的首轮筛选。</div></el-form-item>
+              <el-divider content-position="left">第二模型：低置信度复核</el-divider>
+              <el-form-item label="第二模型 API URL"><el-input v-model="githubRadarConfig.aiFallbackUrl" placeholder="可选，OpenAI 兼容接口" /></el-form-item>
+              <el-form-item label="第二模型名称"><el-input v-model="githubRadarConfig.aiFallbackModel" placeholder="例如 grok-..." /></el-form-item>
+              <el-form-item label="第二模型 API Key"><el-input v-model="githubRadarConfig.aiFallbackKey" type="password" show-password placeholder="留空表示保持现有配置" clearable /><div class="form-hint">状态：{{ githubRadarConfig.aiFallbackConfigured ? '已配置' : '未配置' }}。当前先保存配置，后续用于低置信度复核。</div></el-form-item>
+              <el-button type="primary" :loading="githubRadarSaving" @click="saveGithubRadarConfig">保存 GitHub日报配置</el-button>
+              <el-button :loading="githubRadarSaving" @click="testGithubProxy">测试 GitHub 代理</el-button>
+              <el-button @click="scheduleGithubSimulation">安排 30 分钟后模拟日报</el-button>
+            </el-form>
+          </section>
+          <section class="single-panel">
+            <h3>预设学习方向</h3>
+            <div class="form-hint">用户会在 GitHub日报页面选择这些方向。关键词支持中英文，语言用于 GitHub Search 过滤。</div>
+            <el-form label-position="top">
+              <el-form-item label="方向名称"><el-input v-model="githubCategoryForm.name" placeholder="例如：AI / 大模型" /></el-form-item>
+              <el-form-item label="方向说明"><el-input v-model="githubCategoryForm.description" placeholder="一句话说明关注范围" /></el-form-item>
+              <el-form-item label="关键词"><el-input v-model="githubCategoryForm.keywords" type="textarea" :rows="3" placeholder="AI, LLM, Agent, RAG" /></el-form-item>
+              <el-form-item label="编程语言"><el-input v-model="githubCategoryForm.languages" placeholder="Python, TypeScript, Rust" /></el-form-item>
+              <el-button type="primary" :loading="githubCategorySaving" @click="createGithubCategory">新增方向</el-button>
+            </el-form>
+            <div class="category-admin-list" v-loading="githubCategoryLoading">
+              <div v-for="category in githubCategories" :key="category.id" class="category-admin-item">
+                <div><strong>{{ category.name }}</strong><small>{{ category.description }}</small><small>{{ category.keywords.join(' · ') }}</small></div>
+                <el-button link type="danger" @click="deleteGithubCategory(category)">删除</el-button>
+              </div>
+            </div>
+          </section>
+          <section class="single-panel github-admin-subscriptions-panel">
+            <div class="panel-title"><h3>用户订阅管理</h3><p>管理员可以新增、修改或删除用户的接收邮箱、方向、关键词和推送频率。</p></div>
+            <el-form label-position="top" size="small">
+              <el-form-item label="用户 ID"><el-input v-model="githubAdminSubscriptionForm.userId" placeholder="对应用户管理中的 ID" /></el-form-item>
+              <el-form-item label="接收邮箱"><el-input v-model="githubAdminSubscriptionForm.email" /></el-form-item>
+              <el-form-item label="预设方向"><el-select v-model="githubAdminSubscriptionForm.categoryIds" multiple clearable style="width:100%"><el-option v-for="category in githubCategories" :key="category.id" :label="category.name" :value="category.id" /></el-select></el-form-item>
+              <el-form-item label="关键词"><el-input v-model="githubAdminSubscriptionForm.keywords" placeholder="多个关键词用逗号分隔" /></el-form-item>
+              <el-form-item label="推送频率"><el-checkbox-group v-model="githubAdminSubscriptionForm.frequencies"><el-checkbox label="daily">日报</el-checkbox><el-checkbox label="weekly">周报</el-checkbox><el-checkbox label="monthly">月报</el-checkbox></el-checkbox-group></el-form-item>
+              <el-form-item label="状态"><el-select v-model="githubAdminSubscriptionForm.status"><el-option label="待确认" value="pending" /><el-option label="启用" value="active" /><el-option label="暂停" value="paused" /><el-option label="关闭" value="closed" /></el-select></el-form-item>
+              <el-button type="primary" @click="saveGithubAdminSubscription">{{ githubAdminSubscriptionForm.id ? '保存修改' : '新增订阅' }}</el-button><el-button v-if="githubAdminSubscriptionForm.id" @click="resetGithubAdminSubscription">取消编辑</el-button>
+            </el-form>
+            <el-divider />
+            <el-button size="small" :loading="githubAdminSubscriptionsLoading" @click="loadGithubAdminSubscriptions">刷新订阅</el-button>
+            <el-table v-loading="githubAdminSubscriptionsLoading" :data="githubAdminSubscriptions" size="small" style="margin-top:10px" max-height="360">
+              <el-table-column prop="id" label="ID" width="65" /><el-table-column prop="userId" label="用户" width="65" /><el-table-column prop="email" label="邮箱" min-width="190" /><el-table-column prop="status" label="状态" width="75" /><el-table-column label="频率" width="120"><template #default="{row}">{{ (row.frequencies || []).join(' / ') }}</template></el-table-column><el-table-column label="操作" width="125" fixed="right"><template #default="{row}"><el-button link type="primary" @click="editGithubAdminSubscription(row)">编辑</el-button><el-button link type="danger" @click="deleteGithubAdminSubscription(row)">删除</el-button></template></el-table-column>
+            </el-table>
+          </section>
+        </div>
+      </el-tab-pane>
+
       <el-tab-pane label="会员配置">
         <div class="tab-header">
           <span class="tab-count">爱发电自动开通配置、模拟开通测试与备用卡密管理</span>
@@ -1266,6 +1468,16 @@ onMounted(() => {
               </el-form-item>
               <el-form-item label="Webhook 令牌">
                 <el-input v-model="membershipConfig.webhookToken" placeholder="自定义一个回调校验令牌，例如：afdian-hook-2026" clearable />
+              </el-form-item>
+              <el-form-item label="自动发货私信回复模板">
+                <el-input
+                  v-model="membershipConfig.afdianReplyTemplate"
+                  type="textarea"
+                  :rows="4"
+                  resize="vertical"
+                  placeholder="赞助支付成功后，自动发给用户的私信模板。支持占位符：{code} (兑换码)、{plan_name} (方案名称)、{duration_days} (有效天数)、{order_id} (订单号)。
+留空则使用默认模板：感谢您的赞助！您的 {plan_name} 兑换码为：\n{code}\n请前往本站兑换。"
+                />
               </el-form-item>
               <el-form-item label="月卡 plan_id">
                 <el-input v-model="membershipConfig.planIdMonthly" placeholder="没有也可以先留空，系统会按 5 元自动识别" clearable />
@@ -1350,9 +1562,12 @@ onMounted(() => {
             </div>
 
             <div v-if="generatedCardCodes.length" class="generated-cards-box">
-              <div class="generated-cards-title">最新生成</div>
+              <div class="generated-cards-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>最新生成</span>
+                <el-button type="primary" size="small" link @click="copyAllGeneratedCodes">复制全部</el-button>
+              </div>
               <div class="generated-cards-list">
-                <code v-for="code in generatedCardCodes" :key="code">{{ code }}</code>
+                <code v-for="code in generatedCardCodes" :key="code" style="cursor: pointer;" @click="copyCardCode(code)" title="点击复制">{{ code }}</code>
               </div>
             </div>
           </section>
@@ -1380,7 +1595,7 @@ onMounted(() => {
     <div v-loading="membershipCardsLoading" class="membership-card-list">
       <div v-if="filteredPlanCards(plan.key).length === 0" class="feedback-empty" style="padding: 12px 0;">暂无卡密</div>
       <div v-for="card in filteredPlanCards(plan.key)" :key="card.id" class="membership-card-simple">
-        <span class="membership-card-code">{{ card.code }}</span>
+        <span class="membership-card-code" style="cursor: pointer;" @click="copyCardCode(card.code)" title="点击复制">{{ card.code }}</span>
         <el-tag :type="card.status === 'used' ? 'success' : 'warning'" effect="dark" size="small">
           {{ card.status === 'used' ? '已使用' : '未使用' }}
         </el-tag>
@@ -1469,7 +1684,7 @@ onMounted(() => {
                   <h4>{{ item.problemSummary }}</h4>
                   <span>{{ formatTime(item.createdAt) }}</span>
                 </div>
-                <el-button size="small" type="danger" plain :loading="feedbackDeletingId === item.id" @click="deleteFeedback(item.id)">删除</el-button>
+                <el-button size="small" type="danger" :loading="feedbackDeletingId === item.id" @click="deleteFeedback(item.id)">删除</el-button>
               </div>
 
               <dl class="feedback-meta">
@@ -1540,15 +1755,22 @@ onMounted(() => {
     <el-dialog v-model="fileDialogVisible" title="编辑文件属性" width="440px" :close-on-click-modal="false">
       <el-form label-position="top">
         <el-form-item label="文件名">
-          <el-input :model-value="fileForm.fileName" disabled />
+          <el-input v-model="fileForm.fileName" placeholder="修改文件名" clearable />
         </el-form-item>
         <el-form-item label="提取码">
-          <el-input :model-value="fileForm.code" disabled />
+          <el-input v-model="fileForm.newCode" placeholder="修改提取码" clearable />
         </el-form-item>
         <el-form-item label="过期时间">
           <div class="file-edit-time-row">
-            <el-input v-model="fileForm.expireTime" type="datetime-local" :disabled="fileForm.isPermanent" placeholder="选择过期时间" />
-            <el-checkbox v-model="fileForm.isPermanent" @change="(value) => { fileForm.expireTime = value ? 'permanent' : '' }">永久有效</el-checkbox>
+            <el-date-picker
+              v-model="fileForm.expireTime"
+              type="datetime"
+              placeholder="选择过期时间"
+              value-format="YYYY-MM-DDTHH:mm:ss.000Z"
+              :disabled="fileForm.isPermanent"
+              style="flex: 1;"
+            />
+            <el-checkbox v-model="fileForm.isPermanent" @change="(value) => { if (value) { fileForm.expireTime = '' } }">永久有效</el-checkbox>
           </div>
           <div class="form-hint">取消勾选后可手动设置过期时间。</div>
         </el-form-item>
@@ -1606,6 +1828,11 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.row-actions :deep(.el-button) {
+  flex-shrink: 0;
 }
 
 .user-search-wrap {
@@ -1752,6 +1979,21 @@ onMounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 14px;
+}
+
+.github-admin-subscriptions-panel {
+  max-width: none;
+  min-width: 0;
+}
+
+.github-admin-subscriptions-panel :deep(.el-table) {
+  width: 100%;
+  min-width: 620px;
+}
+
+.github-admin-subscriptions-panel :deep(.el-table__body-wrapper),
+.github-admin-subscriptions-panel :deep(.el-table__header-wrapper) {
+  overflow-x: auto;
 }
 
 .membership-plan-preview {
@@ -2060,6 +2302,31 @@ onMounted(() => {
   margin-bottom: 0;
 }
 
+.category-admin-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.category-admin-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-ctrl);
+}
+
+.category-admin-item > div {
+  display: grid;
+  gap: 4px;
+}
+
+.category-admin-item strong { color: var(--text-heading); }
+.category-admin-item small { color: var(--text-muted); line-height: 1.4; }
+
 :deep(.el-tabs--border-card) {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -2207,6 +2474,14 @@ onMounted(() => {
   .user-search {
     width: 100%;
   }
+
+  .github-admin-subscriptions-panel {
+    grid-column: 1 / -1;
+  }
+
+  .github-admin-subscriptions-panel :deep(.el-form-item) {
+    margin-bottom: 14px;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2242,6 +2517,14 @@ onMounted(() => {
   .single-panel {
     padding: 14px;
     border-radius: 14px;
+  }
+
+  .github-admin-subscriptions-panel :deep(.el-table) {
+    min-width: 560px;
+  }
+
+  .github-admin-subscriptions-panel :deep(.el-button) {
+    max-width: 100%;
   }
 }
 

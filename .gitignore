@@ -2,8 +2,10 @@ node_modules/
 dist/
 .env
 *.tar.gz
-lcyksp-backend/data/db/database.db*
+lcyksp-backend/data/db/
 lcyksp-backend/data/uploads/
+lcyksp-backend/data/cookies*.txt
+**/dist-codex/
 *.log
 .DS_Store
 Thumbs.db

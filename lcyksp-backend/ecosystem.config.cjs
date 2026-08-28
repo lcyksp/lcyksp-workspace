@@ -19,7 +19,7 @@ module.exports = {
       exec_mode: 'fork',
       max_memory_restart: '500M',  // 超过 500MB 自动重启
       autorestart: true,           // 崩溃自动重启
-      max_restarts: 10,            // 10 次内连续失败则停止
+      exp_backoff_restart_delay: 1000, // 指数退避重启避开风暴
       min_uptime: '10s',           // 最少运行 10s 才算成功启动
 
       // ---------- 日志 ----------

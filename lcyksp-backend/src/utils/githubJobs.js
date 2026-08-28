@@ -1,0 +1,77 @@
+import { getDb } from '../config/db.js'
+import { discoverEmergingGithubRepositories, fetchGithubRepositoryContext, getRepositoryCandidatesForSubscription, saveGithubSnapshot, MIN_GITHUB_STARS } from './githubRadar.js'
+import { reviewGithubRepository } from './githubAi.js'
+
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => getDb().all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || []))))
+}
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => getDb().run(sql, params, function onRun(err) {
+    if (err) return reject(err)
+    resolve({ lastID: this.lastID, changes: this.changes })
+  }))
+}
+
+async function linkRepository(subscriptionId, repositoryId, now) {
+  await dbRun(
+    'INSERT INTO github_subscription_repositories (subscription_id, repository_id, first_matched_at, last_matched_at) VALUES (?, ?, ?, ?) ON CONFLICT(subscription_id, repository_id) DO UPDATE SET last_matched_at = excluded.last_matched_at',
+    [subscriptionId, repositoryId, now, now],
+  )
+}
+
+export async function discoverActiveGithubSubscriptions() {
+  const subscriptions = await dbAll(
+    "SELECT * FROM github_subscriptions WHERE status = 'active'",
+  )
+  let discovered = 0
+  for (const subscription of subscriptions) {
+    try {
+      const candidates = await getRepositoryCandidatesForSubscription(subscription)
+      for (const item of candidates) {
+        const repository = await saveGithubSnapshot(item)
+        if (!repository.id) continue
+        await linkRepository(subscription.id, repository.id, new Date().toISOString())
+        discovered += 1
+      }
+      console.log('[GitHub Radar] subscription', subscription.id, 'candidates:', candidates.length)
+    } catch (error) {
+      console.error('[GitHub Radar] subscription', subscription.id, 'failed:', error.message)
+    }
+  }
+  const globalKeywords = ['AI', 'agent', 'developer tools', 'automation', 'robotics', 'materials science', 'mechanical engineering']
+  try {
+    const emerging = await discoverEmergingGithubRepositories({ keywords: globalKeywords, limit: 50 })
+    for (const item of emerging) await saveGithubSnapshot(item)
+    discovered += emerging.length
+  } catch (error) {
+    console.error('[GitHub Radar] emerging discovery failed:', error.message)
+  }
+  const reviewQueue = await dbAll(
+    `SELECT r.* FROM github_repositories r
+     INNER JOIN (SELECT DISTINCT repository_id FROM github_subscription_repositories) matched ON matched.repository_id = r.id
+     LEFT JOIN github_ai_reviews a ON a.id = r.last_ai_review_id
+     LEFT JOIN github_ai_review_attempts attempt ON attempt.repository_id = r.id
+     WHERE a.id IS NULL AND r.stars >= ${MIN_GITHUB_STARS} AND (attempt.next_attempt_at IS NULL OR datetime(replace(attempt.next_attempt_at, 'T', ' ')) <= datetime('now'))
+     ORDER BY r.last_seen_at DESC LIMIT 5`,
+  )
+  for (const repository of reviewQueue) {
+    const attemptAt = new Date().toISOString()
+    await dbRun(`INSERT INTO github_ai_review_attempts (repository_id, status, attempts, next_attempt_at, updated_at)
+      VALUES (?, 'running', 1, ?, ?) ON CONFLICT(repository_id) DO UPDATE SET status='running', attempts=attempts+1, next_attempt_at=excluded.next_attempt_at, updated_at=excluded.updated_at`,
+    [repository.id, new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(), attemptAt])
+    try {
+      console.log('[GitHub Radar] AI review start:', repository.full_name)
+      const basicContext = await fetchGithubRepositoryContext(repository.full_name, { includeCode: false })
+      const first = await reviewGithubRepository({ ...basicContext, ...repository, id: repository.id }, { codeContext: false })
+      if (!first || first.confidence < 0.55 || !basicContext.readme) {
+        const codeContext = await fetchGithubRepositoryContext(repository.full_name, { includeCode: true })
+        await reviewGithubRepository({ ...codeContext, ...repository, id: repository.id }, { codeContext: true })
+      }
+      await dbRun("UPDATE github_ai_review_attempts SET status='success', last_error='', updated_at=? WHERE repository_id=?", [new Date().toISOString(), repository.id])
+    } catch (error) {
+      await dbRun("UPDATE github_ai_review_attempts SET status='failed', last_error=?, updated_at=? WHERE repository_id=?", [String(error.message || 'failed').slice(0, 500), new Date().toISOString(), repository.id])
+      console.error('[GitHub Radar] AI review failed:', repository.full_name, error.message)
+    }
+  }
+  return { subscriptions: subscriptions.length, discovered }
+}

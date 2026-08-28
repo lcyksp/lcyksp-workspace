@@ -58,38 +58,15 @@ watch(cityQuery, (newVal) => {
 
 let searchTimer = null
 
-// Geocoding search with debounce
-function handleCitySearch(query) {
-  if (!query || query.length < 2) {
-    cityOptions.value = []
-    return
-  }
-
-  clearTimeout(searchTimer)
-  searchTimer = setTimeout(async () => {
-    searchLoading.value = true
-    try {
-      const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&language=zh&count=8&format=json`
-      const resp = await fetch(url)
-      const data = await resp.json()
-
-      if (data.results && data.results.length > 0) {
-        cityOptions.value = data.results.map(r => ({
-          label: buildCityLabel(r),
-          value: r,
-          lat: r.latitude,
-          lon: r.longitude
-        }))
-      } else {
-        cityOptions.value = []
-      }
-    } catch (err) {
-      console.error('Geocoding error:', err)
-      cityOptions.value = []
-    } finally {
-      searchLoading.value = false
-    }
-  }, 350)
+function scoreFeatureCode(r) {
+  const code = r?.feature_code || ''
+  if (code === 'PPLC') return 100
+  if (code === 'PPLA') return 90
+  if (code === 'PPLA2') return 80
+  if (code === 'PPLA3') return 70
+  if (code === 'PPLA4') return 60
+  if (code.startsWith('PPL')) return 50
+  return 10
 }
 
 function buildCityLabel(r) {
@@ -99,6 +76,72 @@ function buildCityLabel(r) {
   if (r.admin1 && r.admin1 !== r.name) parts.push(r.admin1)
   if (r.country) parts.push(r.country)
   return parts.join(', ')
+}
+
+async function fetchGeocodingResults(rawQuery) {
+  const trimmed = String(rawQuery || '').trim()
+  if (!trimmed) return []
+
+  const queries = [trimmed]
+  if (/[\u4e00-\u9fa5]/.test(trimmed) && !/[市县区州省]$/.test(trimmed)) {
+    queries.push(trimmed + '市')
+    queries.push(trimmed + '县')
+    queries.push(trimmed + '区')
+  }
+
+  const fetchPromises = queries.map(q =>
+    fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&language=zh&count=15&format=json`)
+      .then(res => res.json())
+      .catch(() => ({ results: [] }))
+  )
+
+  const resultsList = await Promise.all(fetchPromises)
+  const mergedMap = new Map()
+
+  for (const res of resultsList) {
+    if (res?.results && Array.isArray(res.results)) {
+      for (const item of res.results) {
+        const key = item.id || `${item.latitude},${item.longitude}`
+        if (!mergedMap.has(key)) {
+          mergedMap.set(key, item)
+        }
+      }
+    }
+  }
+
+  const sortedList = Array.from(mergedMap.values()).sort((a, b) => scoreFeatureCode(b) - scoreFeatureCode(a))
+
+  return sortedList.map(r => ({
+    label: buildCityLabel(r),
+    value: r,
+    lat: r.latitude,
+    lon: r.longitude
+  }))
+}
+
+function querySearchAsync(query, cb) {
+  const trimmed = String(query || '').trim()
+  if (!trimmed) {
+    cityOptions.value = []
+    cb([])
+    return
+  }
+
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(async () => {
+    searchLoading.value = true
+    try {
+      const options = await fetchGeocodingResults(trimmed)
+      cityOptions.value = options
+      cb(options)
+    } catch (err) {
+      console.error('Geocoding error:', err)
+      cityOptions.value = []
+      cb([])
+    } finally {
+      searchLoading.value = false
+    }
+  }, 300)
 }
 
 function handleCitySelect(item) {
@@ -119,19 +162,12 @@ async function handleCityQuerySubmit() {
 
   loading.value = true
   try {
-    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityQuery.value.trim())}&language=zh&count=1&format=json`
-    const resp = await fetch(url)
-    const data = await resp.json()
+    const options = await fetchGeocodingResults(cityQuery.value.trim())
 
-    if (data.results && data.results.length > 0) {
-      const match = data.results[0]
-      const label = buildCityLabel(match)
-      selectedCity.value = {
-        label: label,
-        lat: match.latitude,
-        lon: match.longitude
-      }
-      fetchWeatherData(match.latitude, match.longitude)
+    if (options && options.length > 0) {
+      const match = options[0]
+      selectedCity.value = match
+      fetchWeatherData(match.lat, match.lon)
     } else {
       ElMessage.error('未找到匹配的城市，请检查拼写')
     }
@@ -362,8 +398,8 @@ function precipLevel(mm) {
           <el-icon class="search-prefix-icon" :size="20"><Location /></el-icon>
           <el-autocomplete
             v-model="cityQuery"
-            :fetch-suggestions="(q, cb) => { handleCitySearch(q); cb(cityOptions) }"
-            placeholder="请输入城市名称，如：深圳、Tokyo、New York、Paris…"
+            :fetch-suggestions="querySearchAsync"
+            placeholder="请输入城市名称，如：德州、深圳、Tokyo、New York…"
             :trigger-on-focus="false"
             :debounce="0"
             value-key="label"
@@ -672,6 +708,7 @@ function precipLevel(mm) {
 
 .glass-card :deep(.el-card__body) {
   padding: 20px;
+  background: transparent !important;
 }
 
 /* Search Section */

@@ -291,3 +291,107 @@ html.dark .el-dialog {
 [data-theme="light"] .el-descriptions__content {
   color: #2c3e50 !important;
 }
+
+/* ===== 网页截图/转PDF 页面日间模式适配 ===== */
+[data-theme="light"] .web-capture-view {
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .web-capture-view .page-title {
+  background: linear-gradient(135deg, #4f46e5, #818cf8) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+[data-theme="light"] .web-capture-view .page-desc {
+  color: var(--text-secondary) !important;
+}
+
+[data-theme="light"] .web-capture-view .card-wrap {
+  background: var(--bg-card) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.05) !important;
+}
+
+[data-theme="light"] .web-capture-view .form-label {
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .web-capture-view .url-input .el-input__wrapper {
+  background: var(--bg-input) !important;
+  box-shadow: 0 0 0 1px var(--border-color) inset !important;
+}
+
+[data-theme="light"] .web-capture-view .url-input .el-input__inner {
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .web-capture-view .format-card {
+  border-color: var(--border-color) !important;
+  background: var(--bg-ctrl) !important;
+}
+
+[data-theme="light"] .web-capture-view .format-card:hover {
+  border-color: rgba(99, 102, 241, 0.4) !important;
+  background: var(--bg-hover) !important;
+}
+
+[data-theme="light"] .web-capture-view .format-card.active {
+  border-color: #6366f1 !important;
+  background: rgba(99, 102, 241, 0.05) !important;
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.08) !important;
+}
+
+[data-theme="light"] .web-capture-view .format-icon {
+  color: var(--text-muted) !important;
+}
+
+[data-theme="light"] .web-capture-view .format-card.active .format-icon {
+  color: #6366f1 !important;
+}
+
+[data-theme="light"] .web-capture-view .format-title {
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .web-capture-view .format-desc {
+  color: var(--text-secondary) !important;
+}
+
+[data-theme="light"] .web-capture-view .settings-section {
+  border-color: var(--border-color) !important;
+}
+
+[data-theme="light"] .web-capture-view .settings-title {
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .web-capture-view .settings-grid {
+  background: var(--bg-ctrl) !important;
+  border-color: var(--border-subtle) !important;
+}
+
+[data-theme="light"] .web-capture-view .settings-label {
+  color: var(--text-secondary) !important;
+}
+
+[data-theme="light"] .web-capture-view .theme-radios .el-radio-button__inner {
+  background: var(--bg-input) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .web-capture-view .theme-radios .el-radio-button__inner:hover {
+  color: #6366f1 !important;
+}
+
+[data-theme="light"] .web-capture-view .theme-radios .el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background: #6366f1 !important;
+  border-color: #6366f1 !important;
+  color: #ffffff !important;
+}
+
+[data-theme="light"] .web-capture-view .slider-hint {
+  color: var(--text-muted) !important;
+}
+
