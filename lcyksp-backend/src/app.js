@@ -16,9 +16,7 @@ import lyricsRouter from './routes/lyrics.js';
 import trendsRouter from './routes/trends.js';
 import apexRouter from './routes/apex.js';
 import githubSubscriptionsRouter from './routes/githubSubscriptions.js';
-import twitchRouter from './routes/twitch.js';
 import { startCron } from './utils/cron.js';
-import { startTwitchWorker } from './utils/twitchWorker.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -57,7 +55,6 @@ app.use('/api/lyrics', lyricsRouter);
 app.use('/api/trends', trendsRouter);
 app.use('/api/apex', apexRouter);
 app.use('/api/github-subscriptions', githubSubscriptionsRouter);
-app.use('/api/twitch', twitchRouter);
 
 // IP归属地查询接口
 app.get('/api/ip-lookup', async (req, res) => {
@@ -158,7 +155,6 @@ async function bootstrap() {
   await initDb();
   console.log('✅ 数据库初始化成功！');
   startCron();
-  startTwitchWorker();
   
   // 监听所有网卡接口，确保 Nginx 代理能打进来
   app.listen(PORT, '0.0.0.0', () => {
