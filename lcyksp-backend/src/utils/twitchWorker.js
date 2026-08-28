@@ -54,3 +54,8 @@ export async function stopTwitchWorker() {
   for (const browser of browsers.values()) await browser.close().catch(() => {})
   browsers.clear()
 }
+
+export async function cancelTwitchTask(taskId) {
+  const browser = browsers.get(Number(taskId))
+  if (browser) { await browser.close().catch(() => {}); browsers.delete(Number(taskId)) }
+}
