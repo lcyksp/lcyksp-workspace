@@ -18,6 +18,7 @@ import apexRouter from './routes/apex.js';
 import githubSubscriptionsRouter from './routes/githubSubscriptions.js';
 import twitchRouter from './routes/twitch.js';
 import { startCron } from './utils/cron.js';
+import { startTwitchWorker } from './utils/twitchWorker.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -157,6 +158,7 @@ async function bootstrap() {
   await initDb();
   console.log('✅ 数据库初始化成功！');
   startCron();
+  startTwitchWorker();
   
   // 监听所有网卡接口，确保 Nginx 代理能打进来
   app.listen(PORT, '0.0.0.0', () => {
