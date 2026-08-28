@@ -38,6 +38,7 @@ import WeatherView from '../views/WeatherView.vue'
 import WebCaptureView from '../views/WebCaptureView.vue'
 import ApexView from '../views/ApexView.vue'
 import GithubRadarView from '../views/GithubRadarView.vue'
+import TwitchDropsView from '../views/TwitchDropsView.vue'
 
 function readCurrentUser() {
   try {
@@ -92,6 +93,7 @@ const routes = [
   { path: '/web-capture', name: 'web-capture', component: WebCaptureView },
   { path: '/apex', name: 'apex', component: ApexView },
   { path: '/github-radar', name: 'GitHub日报', component: GithubRadarView, meta: { requiresPremium: true } },
+  { path: '/twitch-drops', name: 'Twitch掉宝', component: TwitchDropsView, meta: { requiresAuth: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
 ]
 
@@ -117,6 +119,11 @@ router.beforeEach((to) => {
       ElMessage.warning('当前页面仅管理员可访问')
       return { name: 'home' }
     }
+  }
+
+  if (to.meta?.requiresAuth && !user) {
+    ElMessage.warning('请先登录本站账号')
+    return { name: 'home' }
   }
 
   if (to.meta?.requiresPremium) {
