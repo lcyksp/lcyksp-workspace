@@ -293,9 +293,54 @@ function extractInlineScriptTexts(html) {
   return Array.from(String(html || '').matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)).map((match) => match[1] || '')
 }
 
+let cachedTtwidCookie = ''
+let ttwidFetchTime = 0
+const TTWID_CACHE_TTL_MS = 60 * 60 * 1000
+
+async function getOrFetchTtwidCookie() {
+  if (cachedTtwidCookie && Date.now() - ttwidFetchTime < TTWID_CACHE_TTL_MS) {
+    return cachedTtwidCookie
+  }
+  try {
+    const res = await fetch('https://ttwid.bytedance.com/ttwid/union/register/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': DESKTOP_UA,
+      },
+      body: JSON.stringify({
+        region: 'cn',
+        aid: 1768,
+        needFp: 'true',
+        fp: 'verify_l0123456_1234_1234_1234_123456789012',
+        service: 'www.douyin.com',
+        migrate_info: { ticket: '', source: 'node' },
+        cb: 'user_unique_id',
+      }),
+    })
+    const getSetCookie = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [res.headers.get('set-cookie') || '']
+    for (const c of getSetCookie) {
+      if (c && c.includes('ttwid=')) {
+        cachedTtwidCookie = c.split(';')[0].trim()
+        ttwidFetchTime = Date.now()
+        return cachedTtwidCookie
+      }
+    }
+  } catch (err) {
+    console.error('[Douyin] Failed to register ttwid cookie:', err.message)
+  }
+  return cachedTtwidCookie || ''
+}
+
 async function fetchDouyinPageHtml(url, options = {}) {
   const cookiesMeta = getCookiesMeta('douyin')
-  const cookieHeader = options.customCookieHeader || buildCookieHeader(cookiesMeta)
+  let cookieHeader = options.customCookieHeader || buildCookieHeader(cookiesMeta)
+  if (!cookieHeader || !cookieHeader.includes('ttwid=')) {
+    const ttwid = await getOrFetchTtwidCookie()
+    if (ttwid) {
+      cookieHeader = cookieHeader ? `${cookieHeader}; ${ttwid}` : ttwid
+    }
+  }
   const response = await fetch(url, {
     method: 'GET',
     redirect: 'follow',
@@ -693,8 +738,13 @@ async function analyzeDouyinViaSignedApi(url, options = {}) {
   if (!awemeId) throw new Error('unable to extract douyin aweme id')
 
   const cookiesMeta = getCookiesMeta('douyin')
-  const cookieHeader = options.customCookieHeader || buildCookieHeader(cookiesMeta)
-  if (!cookieHeader) throw new Error('douyin signed api requires cookies')
+  let cookieHeader = options.customCookieHeader || buildCookieHeader(cookiesMeta)
+  if (!cookieHeader || !cookieHeader.includes('ttwid=')) {
+    const ttwid = await getOrFetchTtwidCookie()
+    if (ttwid) {
+      cookieHeader = cookieHeader ? `${cookieHeader}; ${ttwid}` : ttwid
+    }
+  }
 
   const params = buildDouyinDetailParams(awemeId)
   const query = params.toString()

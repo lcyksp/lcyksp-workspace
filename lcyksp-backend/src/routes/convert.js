@@ -207,4 +207,157 @@ router.post('/pdf-to-docx', upload.single('pdf'), async (req, res, next) => {
   }
 });
 
+function getChromePath() {
+  if (process.env.CHROME_PATH) {
+    return process.env.CHROME_PATH;
+  }
+  if (process.platform === 'win32') {
+    const paths = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) return p;
+    }
+  } else {
+    const paths = [
+      '/home/admin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome',
+      '/home/admin/.cache/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-linux64/chrome-headless-shell',
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium'
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return undefined;
+}
+
+// ========== POST /web-capture ==========
+router.post('/web-capture', async (req, res, next) => {
+  let browser = null;
+  try {
+    const { url, format, width, delay } = req.body;
+    if (!url) {
+      return res.status(400).json({ error: '网页链接不能为空' });
+    }
+
+    let targetUrl = url.trim();
+
+    // 智能解析并提取浏览器阅读模式下的原始网页链接
+    if (/^read:\/\//i.test(targetUrl)) {
+      try {
+        const parsed = new URL(targetUrl.replace(/^read:\/\//i, 'http://'));
+        const actualUrl = parsed.searchParams.get('url');
+        if (actualUrl && /^https?:\/\//i.test(actualUrl)) {
+          targetUrl = actualUrl;
+        } else {
+          let clean = targetUrl.replace(/^read:\/\//i, '');
+          if (/^(https?)_/i.test(clean)) {
+            targetUrl = clean.replace(/^(https?)_/i, '$1://');
+          } else {
+            targetUrl = 'https://' + clean;
+          }
+        }
+      } catch (err) {
+        targetUrl = targetUrl.replace(/^read:\/\//i, 'https://');
+      }
+    } else if (/^about:reader/i.test(targetUrl)) {
+      try {
+        const parsed = new URL(targetUrl.replace(/^about:reader/i, 'http://dummy'));
+        const actualUrl = parsed.searchParams.get('url');
+        if (actualUrl && /^https?:\/\//i.test(actualUrl)) {
+          targetUrl = actualUrl;
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    if (!/^https?:\/\//i.test(targetUrl)) {
+      targetUrl = 'https://' + targetUrl;
+    }
+
+    const { chromium } = await import('playwright-core');
+    const execPath = getChromePath();
+
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: execPath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+
+    const parsedWidth = parseInt(width, 10) || 1280;
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      viewport: { width: parsedWidth, height: 800 },
+      deviceScaleFactor: 2, // High quality
+    });
+
+    const page = await context.newPage();
+
+    try {
+      await page.goto(targetUrl, {
+        waitUntil: 'networkidle',
+        timeout: 15000,
+      });
+    } catch (gotoErr) {
+      const isTimeout = gotoErr.message.includes('timeout') || gotoErr.message.includes('Timeout');
+      if (!isTimeout) {
+        throw new Error(`无法访问该网页，请确认网址是否正确且支持公网访问 (${gotoErr.message})`);
+      }
+      console.warn(`[WebCapture] page.goto timeout warning: ${gotoErr.message}`);
+    }
+
+    // Wait for custom delay (clamped between 0 and 10 seconds)
+    const parsedDelay = Math.min(Math.max(parseInt(delay, 10) || 2000, 0), 10000);
+    await page.waitForTimeout(parsedDelay);
+
+    let buffer;
+    let contentType;
+    let ext;
+
+    if (format === 'pdf') {
+      buffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' },
+      });
+      contentType = 'application/pdf';
+      ext = 'pdf';
+    } else {
+      buffer = await page.screenshot({
+        fullPage: true,
+        type: 'png',
+      });
+      contentType = 'image/png';
+      ext = 'png';
+    }
+
+    await context.close();
+    await browser.close();
+    browser = null;
+
+    const domain = targetUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0] || 'page';
+    const safeDomain = domain.replace(/[^a-z0-9-]/gi, '_');
+
+    res.set('Content-Type', contentType);
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(safeDomain)}.${ext}"`);
+    res.send(buffer);
+
+  } catch (err) {
+    console.error('[WebCapture Error]', err);
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (closeErr) {
+        // silent
+      }
+    }
+    res.status(500).json({ error: `网页捕获失败: ${err.message}` });
+  }
+});
+
 export default router;

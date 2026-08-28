@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Expand,
   Fold,
@@ -15,6 +15,7 @@ import {
   Edit,
   Upload,
   KnifeFork,
+  Reading,
   Star,
   Moon,
   Sunny,
@@ -142,6 +143,7 @@ const menuItems = reactive([
       { name: '图片解混淆', path: '/obfuscate' },
       { name: '证件照制作', path: '/id-photo' },
       { name: '在线PS', path: '/photopea' },
+      { name: '网页截图/转PDF', path: '/web-capture' },
     ],
     isOpen: false,
   },
@@ -184,6 +186,8 @@ const menuItems = reactive([
           { name: '音视频下载', path: '/video-download' },
           { name: '电视剧/电影观看', path: '/tv-download' },
           { name: '屏幕录制', path: '/screen-recording' },
+          { name: '横屏歌词', path: '/lyrics' },
+          { name: '热点趋势', path: '/trends', adminOnly: true },
         ],
       },
       {
@@ -195,8 +199,17 @@ const menuItems = reactive([
           { name: 'IP归属地查询', path: '/ip-lookup' },
           { name: '随机小助手', path: '/roll-call' },
           { name: '系统更新模拟', path: '/win-update' },
+          { name: 'Apex 战绩查询', path: '/apex' },
         ],
       },
+    ],
+    isOpen: false,
+  },
+  {
+    name: '学习助手',
+    icon: Reading,
+    children: [
+      { name: 'GitHub日报', path: '/github-radar' },
     ],
     isOpen: false,
   },
@@ -305,13 +318,15 @@ function canAccessPremiumFeature(path) {
     }
   }
 
-  if (path === '/recipe') {
+  if (path === '/recipe' || path === '/github-radar') {
     if (['admin', 'premium', 'pro'].includes(currentUser.value.role)) {
       return { allowed: true, message: '' }
     }
     return {
       allowed: false,
-      message: '当前用户仅对高级用户开放。捐赠成为高级用户后即可使用赛博菜谱。',
+      message: path === '/github-radar'
+        ? 'GitHub 技术趋势雷达仅对高级用户开放。'
+        : '当前用户仅对高级用户开放。捐赠成为高级用户后即可使用赛博菜谱。',
     }
   }
 
@@ -341,8 +356,39 @@ function openSupportDialogFor(reason = '') {
   accessDialogVisible.value = true
 }
 
+function showTrendsSuspendedPopup() {
+  ElMessageBox({
+    title: '系统公告',
+    message: `
+      <div class="gorgeous-suspended-notice">
+        <div class="neon-glow-icon">🔮</div>
+        <h3>热点趋势服务已暂停</h3>
+        <p class="suspended-description">
+          由于功能模块正在进行架构调整与优化升级，热点趋势抓取与数据统计服务自即日起暂停对外服务。
+        </p>
+        <div class="tech-lines">
+          <span class="line-dot"></span>
+          <span class="line-status">SERVICE SUSPENDED</span>
+          <span class="line-dot"></span>
+        </div>
+        <p class="suspended-footer">感谢您的理解与配合，敬请期待稍后推出的全新升级版本。</p>
+      </div>
+    `,
+    dangerouslyUseHTMLString: true,
+    customClass: 'premium-suspended-dialog',
+    confirmButtonText: '我知道了',
+    center: true,
+    showCancelButton: false
+  }).catch(() => {})
+}
+
 function handleMenuNavigate(path) {
-  if (path === '/recipe' || path === '/gallery') {
+  if (path === '/trends') {
+    showTrendsSuspendedPopup()
+    return
+  }
+
+  if (path === '/recipe' || path === '/gallery' || path === '/github-radar') {
     const access = canAccessPremiumFeature(path)
     if (!access.allowed) {
       ElMessage.warning(access.message)
@@ -574,8 +620,7 @@ onUnmounted(() => {
 
           <transition name="slide">
             <div v-if="group.isOpen" class="submenu">
-              <template v-for="child in group.children" :key="child.name">
-                <!-- Subfolder Mode -->
+              <template v-for="child in group.children.filter(c => !c.adminOnly || currentUser?.username === 'lcyksp')" :key="child.name">
                 <template v-if="child.isFolder">
                   <div
                     class="menu-item submenu-item folder-header"
@@ -1158,8 +1203,8 @@ onUnmounted(() => {
 
 .sub-submenu {
   padding-left: 12px;
-  background: rgba(0, 0, 0, 0.15);
-  border-left: 2px solid rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--bg-sidebar) 90%, transparent);
+  border-left: 2px solid var(--border-subtle);
   margin-left: 44px;
   margin-bottom: 4px;
   border-radius: 0 0 6px 6px;
@@ -1171,19 +1216,19 @@ onUnmounted(() => {
   height: 36px !important;
   padding-left: 16px !important;
   font-size: 0.8rem !important;
-  color: rgba(255, 255, 255, 0.6) !important;
+  color: var(--text-secondary) !important;
   border-radius: 4px !important;
   margin: 2px 4px 2px 0 !important;
 }
 
 .sub-submenu-item:hover {
-  color: #ffffff !important;
-  background: rgba(255, 255, 255, 0.04) !important;
+  color: var(--text-primary) !important;
+  background: var(--bg-hover) !important;
 }
 
 .sub-submenu-item.active {
-  color: #38bdf8 !important;
-  background: rgba(56, 189, 248, 0.08) !important;
+  color: var(--accent-blue) !important;
+  background: var(--bg-active) !important;
   font-weight: 500;
 }
 
@@ -1525,4 +1570,144 @@ onUnmounted(() => {
   }
 
 }
+
+/* Premium Suspended Dialog */
+:global(.premium-suspended-dialog) {
+  background: rgba(19, 19, 35, 0.85) !important;
+  backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(139, 92, 246, 0.3) !important; /* purple glow border */
+  box-shadow: 0 0 30px rgba(139, 92, 246, 0.25) !important;
+  border-radius: 16px !important;
+  max-width: 420px !important;
+  width: 90% !important;
+}
+
+:global(.premium-suspended-dialog .el-message-box__container) {
+  display: block !important;
+  text-align: center !important;
+}
+
+:global(.premium-suspended-dialog .el-message-box__message) {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  margin: 0 auto !important;
+  text-align: center !important;
+}
+
+:global(html[data-theme="light"] .premium-suspended-dialog) {
+  background: rgba(255, 255, 255, 0.9) !important;
+  backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(99, 102, 241, 0.3) !important;
+  box-shadow: 0 10px 40px rgba(99, 102, 241, 0.15) !important;
+}
+
+:global(.premium-suspended-dialog .el-message-box__title) {
+  color: #a78bfa !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+}
+
+:global(html[data-theme="light"] .premium-suspended-dialog .el-message-box__title) {
+  color: #4f46e5 !important;
+}
+
+:global(.premium-suspended-dialog .el-message-box__close) {
+  color: rgba(255, 255, 255, 0.5) !important;
+}
+:global(html[data-theme="light"] .premium-suspended-dialog .el-message-box__close) {
+  color: #4a5568 !important;
+}
+
+:global(.premium-suspended-dialog .el-button--primary) {
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9) !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3) !important;
+  font-weight: 600 !important;
+  border-radius: 8px !important;
+  padding: 10px 24px !important;
+}
+
+:global(.premium-suspended-dialog .el-button--primary:hover) {
+  background: linear-gradient(135deg, #a78bfa, #7c3aed) !important;
+  box-shadow: 0 6px 16px rgba(139, 92, 246, 0.5) !important;
+}
+
+:global(.gorgeous-suspended-notice) {
+  text-align: center;
+  padding: 10px 5px;
+}
+
+:global(.neon-glow-icon) {
+  font-size: 48px;
+  margin-bottom: 16px;
+  animation: pulse-glow-btn 2s infinite ease-in-out;
+  display: inline-block;
+  filter: drop-shadow(0 0 12px rgba(139, 92, 246, 0.6));
+}
+
+@keyframes pulse-glow-btn {
+  0% { transform: scale(1); filter: drop-shadow(0 0 12px rgba(139, 92, 246, 0.6)); }
+  50% { transform: scale(1.1); filter: drop-shadow(0 0 24px rgba(139, 92, 246, 0.9)); }
+  100% { transform: scale(1); filter: drop-shadow(0 0 12px rgba(139, 92, 246, 0.6)); }
+}
+
+:global(.gorgeous-suspended-notice h3) {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 12px 0 !important;
+  background: linear-gradient(135deg, #ff007f, #7928ca);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+:global(html[data-theme="light"] .gorgeous-suspended-notice h3) {
+  background: linear-gradient(135deg, #4f46e5, #ec4899);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+:global(.suspended-description) {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.6;
+  margin: 0 0 20px 0;
+}
+
+:global(html[data-theme="light"] .suspended-description) {
+  color: #4a5568;
+}
+
+:global(.tech-lines) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+:global(.line-dot) {
+  width: 4px;
+  height: 4px;
+  background-color: #8b5cf6;
+  border-radius: 50%;
+  box-shadow: 0 0 6px #8b5cf6;
+}
+
+:global(.line-status) {
+  font-size: 10px;
+  color: #8b5cf6;
+  letter-spacing: 2px;
+  font-weight: 700;
+}
+
+:global(.suspended-footer) {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 0;
+}
+
+:global(html[data-theme="light"] .suspended-footer) {
+  color: #718096;
+}
+
 </style>
