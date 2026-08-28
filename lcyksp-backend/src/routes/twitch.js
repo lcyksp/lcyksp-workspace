@@ -2,6 +2,7 @@ import { Router } from 'express'
 import crypto from 'crypto'
 import { getDb } from '../config/db.js'
 import { authMiddleware, requireAuth } from '../middleware/auth.js'
+import { cancelTwitchTask } from '../utils/twitchWorker.js'
 
 const router = Router()
 const pendingOAuth = new Map()
@@ -24,5 +25,5 @@ router.get('/streams', async(req,res,next)=>{try{const id=String(req.query.gameI
 router.get('/accounts', async(req,res,next)=>{try{res.json({accounts:await dbAll('SELECT id,login,display_name,created_at,updated_at FROM twitch_accounts WHERE user_id=? ORDER BY id DESC',[req.user.userId])})}catch(e){next(e)}})
 router.post('/tasks', async(req,res,next)=>{try{const b=req.body||{}; for(const k of ['accountId','gameId','gameName','channelId','channelName','startAt','endAt']) if(!b[k]) return res.status(400).json({error:'缺少 '+k}); const a=await dbGet('SELECT id FROM twitch_accounts WHERE id=? AND user_id=?',[b.accountId,req.user.userId]); if(!a)return res.status(404).json({error:'Twitch 账号不存在'}); const r=await dbRun('INSERT INTO twitch_drop_tasks (user_id,account_id,game_id,game_name,channel_id,channel_name,start_at,end_at) VALUES (?,?,?,?,?,?,?,?)',[req.user.userId,b.accountId,b.gameId,b.gameName,b.channelId,b.channelName,new Date(b.startAt).toISOString(),new Date(b.endAt).toISOString()]); res.status(201).json({id:r.lastID})}catch(e){next(e)}})
 router.get('/tasks', async(req,res,next)=>{try{res.json({tasks:await dbAll('SELECT * FROM twitch_drop_tasks WHERE user_id=? ORDER BY id DESC',[req.user.userId])})}catch(e){next(e)}})
-router.post('/tasks/:id/stop', async(req,res,next)=>{try{const r=await dbRun("UPDATE twitch_drop_tasks SET status='cancelled',updated_at=datetime('now') WHERE id=? AND user_id=? AND status IN ('pending','running')",[req.params.id,req.user.userId]); if(!r.changes)return res.status(404).json({error:'任务不存在或已结束'}); res.json({success:true})}catch(e){next(e)}})
+router.post('/tasks/:id/stop', async(req,res,next)=>{try{const r=await dbRun("UPDATE twitch_drop_tasks SET status='cancelled',updated_at=datetime('now') WHERE id=? AND user_id=? AND status IN ('pending','running')",[req.params.id,req.user.userId]); if(!r.changes)return res.status(404).json({error:'任务不存在或已结束'}); await cancelTwitchTask(req.params.id); res.json({success:true})}catch(e){next(e)}})
 export default router
