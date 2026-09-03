@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import sharp from 'sharp'; // 基于 C++ libvips 底层的高性能图像库，非纯 JS，异步非阻塞
+import sharp from '../utils/imageGuard.js'; // 基于 C++ libvips 底层的高性能图像库，已套上像素上限
 
 const router = Router();
 

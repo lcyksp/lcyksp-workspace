@@ -5,9 +5,10 @@ import os from 'os'
 import path from 'path'
 import { Readable } from 'stream'
 import { fileURLToPath } from 'url'
-import sharp from 'sharp'
+import sharp, { MAX_REMOTE_IMAGE_BYTES } from '../utils/imageGuard.js'
 import { generateABogus } from '../utils/douyin-a-bogus.js'
 import { authMiddleware, requireAuth } from '../middleware/auth.js'
+import { heavyLimiter, previewLimiter } from '../middleware/rateLimit.js'
 import { ACTION_ANALYZE, ACTION_DOWNLOAD, PLAN_FREE, buildQuotaExceededMessage, consumeQuota } from '../utils/quota.js'
 import { getClientIp } from '../utils/turnstile.js'
 import { logDownload } from '../utils/logger.js'
@@ -1281,6 +1282,30 @@ function getStoredCookie(userId) {
   })
 }
 
+/**
+ * 把远端响应体读进内存，但带硬上限。
+ * 原来直接 response.arrayBuffer()，对方给多大就吃多大——一个链接就能把 2G 机器打穿。
+ */
+async function readBodyWithLimit(response, limit = MAX_REMOTE_IMAGE_BYTES) {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > limit) {
+    throw new Error(`图片体积 ${(declared / 1024 / 1024).toFixed(1)}MB 超过 ${limit / 1024 / 1024}MB 上限`)
+  }
+
+  const chunks = []
+  let received = 0
+  for await (const chunk of response.body) {
+    received += chunk.length
+    if (received > limit) {
+      // 主动断开，别把剩下的也拉完
+      try { await response.body.cancel?.() } catch { /* ignore */ }
+      throw new Error(`图片体积超过 ${limit / 1024 / 1024}MB 上限`)
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
+}
+
 async function streamDirectImageAsJpeg({ mediaUrl, title, res, customCookieHeader }) {
   const cookiesMeta = getCookiesMeta('douyin')
   const cookieHeader = customCookieHeader || buildCookieHeader(cookiesMeta)
@@ -1302,8 +1327,7 @@ async function streamDirectImageAsJpeg({ mediaUrl, title, res, customCookieHeade
     throw new Error(`图片下载失败: HTTP ${response.status}`)
   }
 
-  const arrayBuffer = await response.arrayBuffer()
-  const jpegBuffer = await sharp(Buffer.from(arrayBuffer)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
+  const jpegBuffer = await sharp(await readBodyWithLimit(response)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
 
   res.setHeader('Content-Type', 'image/jpeg')
   res.setHeader('Content-Disposition', buildDownloadDisposition(title || 'download', '.jpg'))
@@ -1332,8 +1356,7 @@ async function proxyImagePreview({ mediaUrl, res, customCookieHeader }) {
     throw new Error(`图片预览失败: HTTP ${response.status}`)
   }
 
-  const arrayBuffer = await response.arrayBuffer()
-  const jpegBuffer = await sharp(Buffer.from(arrayBuffer)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
+  const jpegBuffer = await sharp(await readBodyWithLimit(response)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
   res.setHeader('Content-Type', 'image/jpeg')
   res.setHeader('Cache-Control', 'public, max-age=300')
   res.setHeader('Content-Length', jpegBuffer.length)
@@ -1457,6 +1480,17 @@ async function mergeBrowserVideoAudioToResponse({ videoUrl, audioUrl, title, tem
   })
 }
 
+// 对外只暴露「配没配好」，绝不暴露 content（cookie 原文）与 path（服务器绝对路径）
+function publicCookieStatus(meta) {
+  return {
+    exists: Boolean(meta?.exists),
+    usable: Boolean(meta?.usable),
+    validCount: Number(meta?.validCount || 0),
+    invalidCount: Number(meta?.invalidCount || 0),
+    invalidReasons: Array.isArray(meta?.invalidReasons) ? meta.invalidReasons : [],
+  }
+}
+
 router.get('/status', (_req, res) => {
   const bilibiliMeta = getCookiesMeta('bilibili')
   const douyinMeta = getCookiesMeta('douyin')
@@ -1467,10 +1501,10 @@ router.get('/status', (_req, res) => {
     data: {
       ytDlpCommand: 'yt-dlp',
       cookies: {
-        default: sanitizeCookieFile(DEFAULT_COOKIES_PATH),
-        bilibili: bilibiliMeta.active,
-        douyin: douyinMeta.active,
-        youtube: youtubeMeta.active,
+        default: publicCookieStatus(sanitizeCookieFile(DEFAULT_COOKIES_PATH)),
+        bilibili: publicCookieStatus(bilibiliMeta.active),
+        douyin: publicCookieStatus(douyinMeta.active),
+        youtube: publicCookieStatus(youtubeMeta.active),
       },
     },
   })
@@ -1538,7 +1572,7 @@ router.delete('/cookie', requireAuth, async (req, res, next) => {
   }
 })
 
-router.post('/analyze', async (req, res) => {
+router.post('/analyze', heavyLimiter, async (req, res) => {
   const startedAt = Date.now()
   let { url } = req.body
   url = pickUrlFromText(url || '')
@@ -1787,7 +1821,7 @@ router.post('/analyze', async (req, res) => {
   }
 })
 
-router.post('/download', async (req, res) => {
+router.post('/download', heavyLimiter, async (req, res) => {
   let { url, formatId, title, browserDirectUrl, browserAudioUrl, source } = req.body
   url = pickUrlFromText(url || '')
 
@@ -1987,7 +2021,7 @@ router.post('/download', async (req, res) => {
   }
 })
 
-router.get('/preview-image', async (req, res) => {
+router.get('/preview-image', previewLimiter, async (req, res) => {
   try {
     const mediaUrl = String(req.query.url || '').trim()
     if (!/^https?:\/\//i.test(mediaUrl)) {
