@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { Loading } from '@element-plus/icons-vue'
 
 const DEFAULT_AFDIAN_URL = 'https://ifdian.net/a/lcyksp'
 

@@ -131,7 +131,7 @@ const githubRadarConfig = reactive({
   githubToken: '', githubTokenConfigured: false,
   smtpPassword: '', smtpConfigured: false,
   smtpHost: 'smtp.163.com', smtpPort: 465,
-  smtpUser: 'lcykspxyz@163.com', smtpFrom: 'lcykspxyz@163.com',
+  smtpUser: '', smtpFrom: '',
   aiFallbackUrl: '', aiFallbackModel: '', aiFallbackKey: '', aiFallbackConfigured: false,
   proxySubscription: '', proxyConfigured: false, proxyStatus: '未检测', proxyNode: '', proxyCheckedAt: '',
 })
@@ -152,7 +152,7 @@ async function saveGithubAdminSubscription() {
   try { if (githubAdminSubscriptionForm.id) await axios.put(`/api/admin/github-radar/subscriptions/${githubAdminSubscriptionForm.id}`, payload); else await axios.post('/api/admin/github-radar/subscriptions', payload); ElMessage.success('订阅已保存'); resetGithubAdminSubscription(); await loadGithubAdminSubscriptions() } catch (error) { ElMessage.error(error.response?.data?.error || '保存订阅失败') }
 }
 async function deleteGithubAdminSubscription(row) { try { await ElMessageBox.confirm(`确定删除 ${row.email} 的订阅吗？`, '删除订阅', { type: 'warning' }); await axios.delete(`/api/admin/github-radar/subscriptions/${row.id}`); ElMessage.success('订阅已删除'); await loadGithubAdminSubscriptions() } catch (error) { if (error !== 'cancel') ElMessage.error(error.response?.data?.error || '删除失败') } }
-async function scheduleGithubSimulation() { try { const res = await axios.post('/api/admin/github-radar/simulation', { email: '1296757861@qq.com', delayMinutes: 30, type: 'daily' }); ElMessage.success(`模拟日报已安排：${new Date(res.data.runAt).toLocaleString()}`) } catch (error) { ElMessage.error(error.response?.data?.error || '安排模拟日报失败') } }
+async function scheduleGithubSimulation() { try { const { value } = await ElMessageBox.prompt('模拟日报发送到哪个邮箱？', '安排模拟日报', { inputValue: githubAdminSubscriptionForm.email || '', inputPattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, inputErrorMessage: '请输入有效邮箱' }); const res = await axios.post('/api/admin/github-radar/simulation', { email: value.trim(), delayMinutes: 30, type: 'daily' }); ElMessage.success(`模拟日报已安排：${new Date(res.data.runAt).toLocaleString()}`) } catch (error) { if (error !== 'cancel') ElMessage.error(error.response?.data?.error || '安排模拟日报失败') } }
 
 const MAX_HISTORY = 5
 const HISTORY_KEYS = {
@@ -1490,7 +1490,7 @@ onMounted(() => {
               </el-form-item>
               <el-form-item label="Webhook 地址">
                 <el-input
-                  :model-value="`http://47.106.101.81/api/membership/afdian/webhook?token=${membershipConfig.webhookToken || '你设置的令牌'}`"
+                  :model-value="`https://lcyksp.xyz/api/membership/afdian/webhook?token=${membershipConfig.webhookToken || '你设置的令牌'}`"
                   readonly
                 />
               </el-form-item>
@@ -1929,6 +1929,11 @@ onMounted(() => {
 
 .mobile-card-actions :deep(.el-button) {
   width: 100%;
+}
+
+/* Element Plus 默认给相邻按钮加 margin-left，窄屏单列堆叠时会把第二个按钮顶出边界 */
+.mobile-card-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 
 .mobile-quick-action,

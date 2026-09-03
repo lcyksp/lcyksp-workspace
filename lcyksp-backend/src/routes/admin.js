@@ -8,6 +8,7 @@ import { getDb } from '../config/db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
+import { normalizeEndpoint } from '../utils/llmEndpoint.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -534,7 +535,7 @@ router.get('/config/github-radar', async function (req, res, next) {
       smtpConfigured: Boolean(values.github_smtp_password),
       smtpHost: values.github_smtp_host || 'smtp.163.com',
       smtpPort: Number(values.github_smtp_port || 465),
-      smtpUser: values.github_smtp_user || 'lcykspxyz@163.com',
+      smtpUser: values.github_smtp_user || '',
       smtpFrom: values.github_smtp_from || values.github_smtp_user || '',
       aiFallbackUrl: values.github_ai_fallback_url || '',
       aiFallbackModel: values.github_ai_fallback_model || '',
@@ -740,15 +741,6 @@ router.post('/config/llm/test', async function (req, res, next) {
 
     if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 1) {
       return res.json({ success: false, error: 'API Key 未提供' });
-    }
-
-    // 自动补全 /chat/completions
-    function normalizeEndpoint(url) {
-      if (!url || typeof url !== 'string') return 'https://api.deepseek.com/chat/completions';
-      var trimmed = url.trim();
-      if (trimmed.slice(-18) === '/chat/completions') return trimmed;
-      if (trimmed.slice(-1) === '/') return trimmed + 'chat/completions';
-      return trimmed + '/chat/completions';
     }
 
     var targetUrl = normalizeEndpoint(apiUrl);
@@ -1169,6 +1161,9 @@ router.put('/github-radar/subscriptions/:id', async function (req, res, next) {
     if (!sets.length) return res.status(400).json({ error: '没有可修改的内容' })
     sets.push('updated_at=?'); params.push(new Date().toISOString()); params.push(id)
     await dbRunAsync('UPDATE github_subscriptions SET ' + sets.join(',') + ' WHERE id=?', params)
+    if (Array.isArray(req.body?.categoryIds) || Array.isArray(req.body?.keywords)) {
+      await dbRunAsync("UPDATE github_subscription_repositories SET relevance_status='pending', relevance_score=0, relevance_reason='', relevance_reviewed_at=NULL WHERE subscription_id=?", [id])
+    }
     const row = await dbGetAsync('SELECT s.*, u.username FROM github_subscriptions s LEFT JOIN users u ON u.id=s.user_id WHERE s.id=?', [id]); res.json({ subscription: serializeAdminSubscription(row) })
   } catch (err) { if (String(err.message).includes('UNIQUE')) return res.status(409).json({ error: '该用户已存在相同邮箱订阅' }); next(err) }
 })
@@ -1178,7 +1173,8 @@ router.delete('/github-radar/subscriptions/:id', async function (req, res, next)
 router.post('/github-radar/simulation', async function (req, res, next) {
   try {
     const delayMinutes = Math.max(1, Math.min(180, Number(req.body?.delayMinutes || 30)))
-    const to = String(req.body?.email || '1296757861@qq.com').trim().toLowerCase()
+    const to = String(req.body?.email || process.env.ADMIN_TEST_EMAIL || '').trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: '请提供有效的收件邮箱' })
     const type = ['daily', 'weekly', 'monthly'].includes(req.body?.type) ? req.body.type : 'daily'
     const runAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
     const jobKey = 'github-simulation:' + Date.now()

@@ -12,6 +12,9 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
+        // 安全必填：生产环境必须设置强随机 JWT_SECRET（至少 16 字符），否则后端拒绝启动。
+        // 生成方式: openssl rand -hex 32
+        // JWT_SECRET: 'REPLACE_WITH_RANDOM_64_HEX',
       },
 
       // ---------- 进程管理 ----------

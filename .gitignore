@@ -14,3 +14,27 @@ Thumbs.db
 AGENTS.md
 
 .secrets/
+
+# 本地 AI 会话与内部记录
+.claude/
+.mimocode/
+CLAUDE.md
+HOMEPAGE-COSMOS.md
+TASKS.md
+
+# 本地备份与运维脚本（含服务器地址与口令流程）
+backups/
+tools/
+deploy/
+deploy.sh
+deploy.ps1
+DEPLOY.md
+lcyksp-backend/nginx-example.conf
+
+# 域名/站点归属验证文件
+ad034305310504369b8e4428b3224117.txt
+
+# 第三方源码副本与历史遗留
+_thirdparty/
+_tmp_douyin_api/
+_video_old_full.js

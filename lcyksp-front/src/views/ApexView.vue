@@ -14,7 +14,8 @@ const sessionsData = ref(null)
 const platforms = [
   { value: 'origin', label: 'PC (EA/Steam)' },
   { value: 'psn', label: 'PlayStation' },
-  { value: 'xbl', label: 'Xbox' }
+  { value: 'xbl', label: 'Xbox' },
+  { value: 'switch', label: 'Switch' }
 ]
 
 // Load cached searches if any
@@ -155,7 +156,7 @@ function getAvatarUrl(avatar) {
         
         <el-input
           v-model="username"
-          placeholder="请输入完整的游戏内用户名"
+          placeholder="EA 账号名 / 游戏内用户名 / 数字 UID"
           size="large"
           class="username-input"
           clearable
@@ -362,7 +363,7 @@ function getAvatarUrl(avatar) {
             <div v-else class="empty-sessions">
               <el-icon class="empty-icon"><Histogram /></el-icon>
               <p>暂无近期对局历史</p>
-              <span class="empty-subtext">该玩家可能是首次在本站的战绩系统中被检索。系统现已将该玩家加入追踪序列，请在游玩几局游戏后刷新本页查看。</span>
+              <span class="empty-subtext">该玩家可能是首次在本站的战绩系统中被检索，已加入追踪序列，游玩几局后会开始记录。若一直无数据，可能是该玩家未开启 EA 公开战绩。</span>
             </div>
           </div>
         </div>

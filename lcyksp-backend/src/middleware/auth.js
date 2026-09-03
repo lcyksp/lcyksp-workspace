@@ -2,7 +2,20 @@ import jwt from 'jsonwebtoken'
 import { getDb } from '../config/db.js'
 import { normalizeRole, roleToPlan } from '../utils/quota.js'
 
-const JWT_SECRET = process.env.JWT_SECRET || 'lcyksp-jwt-secret-dev-2026'
+// 安全加固：生产环境必须显式注入 JWT_SECRET，缺失时拒绝启动，
+// 避免回退到可预测的默认密钥导致任意用户 token 可被伪造。
+function resolveJwtSecret() {
+  const envSecret = process.env.JWT_SECRET
+  if (envSecret && envSecret.trim().length >= 16) return envSecret.trim()
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[安全] 生产环境必须设置 JWT_SECRET 环境变量（至少 16 字符），拒绝启动。')
+    throw new Error('JWT_SECRET is required in production environment')
+  }
+  console.warn('[安全] 警告：未设置 JWT_SECRET，开发环境使用默认密钥，请勿用于生产。')
+  return 'lcyksp-jwt-secret-dev-2026'
+}
+
+const JWT_SECRET = resolveJwtSecret()
 
 function dbGet(sql, params = []) {
   const db = getDb()

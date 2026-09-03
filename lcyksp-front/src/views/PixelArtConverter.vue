@@ -7,6 +7,7 @@
  */
 import { ref, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Picture, UploadFilled } from '@element-plus/icons-vue'
 
 // ===================================================================
 //  预设拼豆官方色卡

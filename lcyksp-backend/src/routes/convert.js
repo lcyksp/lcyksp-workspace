@@ -6,11 +6,34 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { spawn } from 'child_process';
+import { assertPublicUrl } from '../utils/ssrf.js';
+import { getClientIp } from '../utils/turnstile.js';
 
 const router = Router();
 
 // 纯内存存储
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
+
+// ---------- web-capture 反滥用防护（内存态） ----------
+// 并发上限：同时最多 2 个无头浏览器实例，防止资源耗尽
+const WEB_CAPTURE_MAX_CONCURRENT = 2;
+let webCaptureActive = 0;
+// 频率上限：每个客户端 IP 每小时最多 20 次截图请求
+const WEB_CAPTURE_RATE_LIMIT = 20;
+const WEB_CAPTURE_RATE_WINDOW_MS = 60 * 60 * 1000;
+const webCaptureRateMap = new Map();
+
+// 定期清理过期的限流记录，防止内存缓慢增长（每小时一次）
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of webCaptureRateMap) {
+    if (now - record.windowStart > WEB_CAPTURE_RATE_WINDOW_MS) {
+      webCaptureRateMap.delete(ip);
+    }
+  }
+  // 极端情况下仍超限则整体重置，保证内存有界
+  if (webCaptureRateMap.size > 20000) webCaptureRateMap.clear();
+}, 60 * 60 * 1000).unref();
 
 /** 支持的转换类型映射 */
 const CONVERSION_MAP = {
@@ -238,6 +261,27 @@ function getChromePath() {
 // ========== POST /web-capture ==========
 router.post('/web-capture', async (req, res, next) => {
   let browser = null;
+
+  // ---- 反滥用：按客户端 IP 限流（内存态，进程重启即重置） ----
+  const clientIp = getClientIp(req);
+  const now = Date.now();
+  const rateRecord = webCaptureRateMap.get(clientIp) || { count: 0, windowStart: now };
+  if (now - rateRecord.windowStart > WEB_CAPTURE_RATE_WINDOW_MS) {
+    rateRecord.count = 0;
+    rateRecord.windowStart = now;
+  }
+  if (rateRecord.count >= WEB_CAPTURE_RATE_LIMIT) {
+    return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+  }
+  rateRecord.count += 1;
+  webCaptureRateMap.set(clientIp, rateRecord);
+
+  // ---- 反滥用：并发上限（防止浏览器实例耗尽 CPU/内存） ----
+  if (webCaptureActive >= WEB_CAPTURE_MAX_CONCURRENT) {
+    return res.status(429).json({ error: '截图服务繁忙，请稍后再试' });
+  }
+  webCaptureActive += 1;
+
   try {
     const { url, format, width, delay } = req.body;
     if (!url) {
@@ -280,6 +324,13 @@ router.post('/web-capture', async (req, res, next) => {
       targetUrl = 'https://' + targetUrl;
     }
 
+    // ---- SSRF 防护：拒绝内网 / 回环 / 链路本地 / 云元数据等地址 ----
+    try {
+      targetUrl = await assertPublicUrl(targetUrl);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
     const { chromium } = await import('playwright-core');
     const execPath = getChromePath();
 
@@ -297,6 +348,35 @@ router.post('/web-capture', async (req, res, next) => {
     });
 
     const page = await context.newPage();
+
+    // ---- SSRF 防护：拦截页面内所有指向内网/本机的子请求（含跳转后目标） ----
+    await page.route('**/*', async (route) => {
+      let requestUrl = '';
+      try {
+        requestUrl = route.request().url();
+      } catch (e) {
+        /* ignore */
+      }
+      try {
+        const parsed = new URL(requestUrl);
+        // 浏览器内部资源协议直接放行
+        if (parsed.protocol === 'data:' || parsed.protocol === 'blob:' || parsed.protocol === 'about:') {
+          return route.continue();
+        }
+        // ws/wss/file 等一律拦截：ws 的底层 TCP 仍可能打到内网
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return route.abort('blockedbyclient');
+        }
+        await assertPublicUrl(requestUrl);
+        return route.continue();
+      } catch (e) {
+        try {
+          return route.abort('blockedbyclient');
+        } catch (abortErr) {
+          /* ignore */
+        }
+      }
+    });
 
     try {
       await page.goto(targetUrl, {
@@ -357,6 +437,8 @@ router.post('/web-capture', async (req, res, next) => {
       }
     }
     res.status(500).json({ error: `网页捕获失败: ${err.message}` });
+  } finally {
+    webCaptureActive = Math.max(0, webCaptureActive - 1);
   }
 });
 

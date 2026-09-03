@@ -15,6 +15,7 @@ import { ElMessage } from 'element-plus'
 import axios from 'axios'
 import { copyToClipboard } from '../utils/clipboard.js'
 import { formatSize } from '../utils/format.js'
+import { CircleCheckFilled, CopyDocument, Download, Loading, Lock, WarningFilled } from '@element-plus/icons-vue'
 
 const route = useRoute()
 

@@ -325,6 +325,9 @@ export async function initDb() {
       'topics TEXT NOT NULL DEFAULT \'[]\',' +
       'stars INTEGER NOT NULL DEFAULT 0,' +
       'forks INTEGER NOT NULL DEFAULT 0,' +
+      'trending_rank INTEGER DEFAULT NULL,' +
+      "trending_since TEXT DEFAULT ''," +
+      'trending_seen_at TEXT DEFAULT NULL,' +
       'first_seen_at TEXT NOT NULL,' +
       'last_seen_at TEXT NOT NULL,' +
       'last_ai_review_id INTEGER DEFAULT NULL,' +
@@ -361,9 +364,22 @@ export async function initDb() {
       'repository_id INTEGER NOT NULL REFERENCES github_repositories(id) ON DELETE CASCADE,' +
       'first_matched_at TEXT NOT NULL,' +
       'last_matched_at TEXT NOT NULL,' +
+      "relevance_status TEXT NOT NULL DEFAULT 'pending'," +
+      'relevance_score REAL DEFAULT 0,' +
+      "relevance_reason TEXT DEFAULT ''," +
+      'relevance_reviewed_at TEXT DEFAULT NULL,' +
       'PRIMARY KEY(subscription_id, repository_id)' +
     ')',
   ).catch(() => {})
+  await run('ALTER TABLE github_repositories ADD COLUMN trending_rank INTEGER DEFAULT NULL').catch(() => {})
+  await run("ALTER TABLE github_repositories ADD COLUMN trending_since TEXT DEFAULT ''").catch(() => {})
+  await run('ALTER TABLE github_repositories ADD COLUMN trending_seen_at TEXT DEFAULT NULL').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_github_repositories_trending ON github_repositories(trending_seen_at, trending_rank)').catch(() => {})
+  await run("ALTER TABLE github_subscription_repositories ADD COLUMN relevance_status TEXT NOT NULL DEFAULT 'pending'").catch(() => {})
+  await run('ALTER TABLE github_subscription_repositories ADD COLUMN relevance_score REAL DEFAULT 0').catch(() => {})
+  await run("ALTER TABLE github_subscription_repositories ADD COLUMN relevance_reason TEXT DEFAULT ''").catch(() => {})
+  await run('ALTER TABLE github_subscription_repositories ADD COLUMN relevance_reviewed_at TEXT DEFAULT NULL').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_github_subscription_relevance ON github_subscription_repositories(subscription_id, relevance_status, repository_id)').catch(() => {})
   await run(
     'CREATE TABLE IF NOT EXISTS github_job_runs (' +
       'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
@@ -415,10 +431,35 @@ export async function initDb() {
     ')',
   ).catch(() => {})
   await run(
-    `INSERT OR IGNORE INTO github_categories (name, description, keywords, languages) VALUES
-      ('AI应用/大模型应用/AI开发编程', '关注 AI 应用、LLM 应用、Agent、编程助手和开发工具，不以算法研究为主', '["AI application","LLM application","AI agent","developer tools","coding assistant","RAG","MCP","skill","AI应用","大模型应用","AI开发编程"]', '["Python","TypeScript","JavaScript","Go","Rust"]'),
-      ('机械、材料', '关注机械工程、机器人、CAD/CAE、材料科学和制造技术', '["mechanical engineering","robotics","CAD","CAE","materials science","manufacturing","机械","材料","机器人"]', '["Python","C++","Rust","C","MATLAB"]')`,
+    'CREATE TABLE IF NOT EXISTS github_digest_pushes (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'subscription_id INTEGER NOT NULL REFERENCES github_subscriptions(id) ON DELETE CASCADE,' +
+      'repository_id INTEGER NOT NULL REFERENCES github_repositories(id) ON DELETE CASCADE,' +
+      'job_type TEXT NOT NULL DEFAULT \'daily\',' +
+      'pushed_at TEXT NOT NULL,' +
+      'push_count INTEGER NOT NULL DEFAULT 1,' +
+      'UNIQUE(subscription_id, repository_id, job_type)' +
+    ')',
   ).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_github_digest_pushes_lookup ON github_digest_pushes(subscription_id, job_type, pushed_at)').catch(() => {})
+  await run("ALTER TABLE github_digest_drafts ADD COLUMN item_ids TEXT NOT NULL DEFAULT '[]'").catch(() => {})
+  await run(
+    `INSERT OR IGNORE INTO github_categories (name, description, keywords, languages) VALUES
+      ('AI应用/大模型应用/AI开发编程', '关注可落地的大模型应用、Agent、RAG、MCP、提示词工程、AI生成创作、图像/视频与多模态应用、AI编程工具、Coding Agent/Harness 和 Skill 技能生态；排除纯算法论文及无直接关系的通用工具', '["LLM application","AI agent framework","RAG application","MCP server","prompt engineering","prompt library","generative AI content creation","AI creative tools","AI image generation","AI video generation","multimodal AI application","AI coding tool","coding agent","coding agent harness","agent harness","LLM harness","Claude Code tool","Codex tool","AI agent skill","Claude skill","Codex skill","agent skills","大模型应用","智能体应用","提示词工程","提示词库","AI生成创作","AI内容创作","AI编程工具","编码智能体","智能体框架","AI技能","Skill生态"]', '["Python","TypeScript","JavaScript","Go","Rust"]'),
+      ('机械、材料', '关注机械工程、机械设计制造、增材制造、材料及机械自动化、材料科学、材料成型技术、SolidWorks、机器人、CAD/CAE 和制造技术', '["mechanical engineering","robotics","CAD","CAE","SolidWorks","SolidWorks API","SolidWorks macro","SolidWorks add-in","materials science","manufacturing","机械","材料","机器人","机械设计制造","增材制造","additive manufacturing","材料及机械自动化","mechanical automation","材料科学","材料成型技术","materials processing"]', '["Python","C++","Rust","C","MATLAB"]')`,
+  ).catch(() => {})
+  await run(`UPDATE github_categories SET description = '关注可落地的 AI/大模型应用、Agent 与工作流、RAG、MCP、编程助手和 AI 开发工具；排除纯算法论文、通用开发工具及仅顺带提及 AI 的项目', keywords = '["LLM application","AI agent framework","RAG application","MCP server","AI coding assistant","generative AI application","AI workflow automation","大模型应用","智能体应用","AI开发编程"]' WHERE name = 'AI应用/大模型应用/AI开发编程' AND keywords = '["AI application","LLM application","AI agent","developer tools","coding assistant","RAG","MCP","skill","AI应用","大模型应用","AI开发编程"]'`).catch(() => {})
+  await run(`UPDATE github_categories SET description = '关注机械工程、机械设计制造、增材制造、材料及机械自动化、材料科学、材料成型技术、机器人、CAD/CAE 和制造技术', keywords = '["mechanical engineering","robotics","CAD","CAE","materials science","manufacturing","机械","材料","机器人","机械设计制造","增材制造","additive manufacturing","材料及机械自动化","mechanical automation","材料科学","材料成型技术","materials processing"]' WHERE name = '机械、材料' AND keywords = '["mechanical engineering","robotics","CAD","CAE","materials science","manufacturing","机械","材料","机器人"]'`).catch(() => {})
+  await run(`UPDATE github_categories SET description = '关注可落地的 AI/大模型应用、Agent 与工作流、RAG、MCP、编程助手、图像/视频生成、多模态应用和 AI 开发工具；排除纯算法论文、通用开发工具及仅顺带提及 AI 的项目', keywords = '["LLM application","AI agent framework","RAG application","MCP server","AI coding assistant","generative AI application","AI workflow automation","AI image generation","text to image","AI video generation","multimodal AI application","大模型应用","智能体应用","AI开发编程","AI图像生成","AI视频生成","多模态应用"]' WHERE name = 'AI应用/大模型应用/AI开发编程' AND keywords = '["LLM application","AI agent framework","RAG application","MCP server","AI coding assistant","generative AI application","AI workflow automation","大模型应用","智能体应用","AI开发编程"]'`).catch(() => {})
+  await run(`UPDATE github_categories SET description = '关注机械工程、机械设计制造、增材制造、材料及机械自动化、材料科学、材料成型技术、SolidWorks、机器人、CAD/CAE 和制造技术', keywords = '["mechanical engineering","robotics","CAD","CAE","SolidWorks","SolidWorks API","SolidWorks macro","SolidWorks add-in","materials science","manufacturing","机械","材料","机器人","机械设计制造","增材制造","additive manufacturing","材料及机械自动化","mechanical automation","材料科学","材料成型技术","materials processing"]', languages = '["Python","C++","Rust","C","MATLAB","C#","VBA"]' WHERE name = '机械、材料' AND keywords = '["mechanical engineering","robotics","CAD","CAE","materials science","manufacturing","机械","材料","机器人","机械设计制造","增材制造","additive manufacturing","材料及机械自动化","mechanical automation","材料科学","材料成型技术","materials processing"]'`).catch(() => {})
+  const aiScopeMigration = await run(`UPDATE github_categories SET description = '关注可落地的大模型应用、Agent、RAG、MCP、提示词工程、AI生成创作、图像/视频与多模态应用、AI编程工具、Coding Agent/Harness 和 Skill 技能生态；排除纯算法论文及无直接关系的通用工具', keywords = '["LLM application","AI agent framework","RAG application","MCP server","prompt engineering","prompt library","generative AI content creation","AI creative tools","AI image generation","AI video generation","multimodal AI application","AI coding tool","coding agent","coding agent harness","agent harness","LLM harness","Claude Code tool","Codex tool","AI agent skill","Claude skill","Codex skill","agent skills","大模型应用","智能体应用","提示词工程","提示词库","AI生成创作","AI内容创作","AI编程工具","编码智能体","智能体框架","AI技能","Skill生态"]' WHERE name = 'AI应用/大模型应用/AI开发编程' AND keywords = '["LLM application","AI agent framework","RAG application","MCP server","AI coding assistant","generative AI application","AI workflow automation","AI image generation","text to image","AI video generation","multimodal AI application","大模型应用","智能体应用","AI开发编程","AI图像生成","AI视频生成","多模态应用"]'`).catch(() => ({ changes: 0 }))
+  if (aiScopeMigration.changes) {
+    await run(`UPDATE github_subscription_repositories SET relevance_status='pending', relevance_score=0, relevance_reason='', relevance_reviewed_at=NULL WHERE relevance_status='rejected' AND subscription_id IN (SELECT s.id FROM github_subscriptions s, json_each(s.category_ids) c WHERE CAST(c.value AS INTEGER)=1)`).catch(() => {})
+  }
+  const mechanicalLanguageMigration = await run(`UPDATE github_categories SET languages = '["Python","C++","Rust","C","MATLAB"]' WHERE name = '机械、材料' AND languages = '["Python","C++","Rust","C","MATLAB","C#","VBA"]'`).catch(() => ({ changes: 0 }))
+  if (mechanicalLanguageMigration.changes) {
+    await run(`UPDATE github_subscription_repositories SET relevance_status='pending', relevance_score=0, relevance_reason='', relevance_reviewed_at=NULL WHERE relevance_status='rejected' AND subscription_id IN (SELECT s.id FROM github_subscriptions s, json_each(s.category_ids) c WHERE CAST(c.value AS INTEGER)=2) AND repository_id IN (SELECT id FROM github_repositories WHERE lower(full_name || ' ' || description) LIKE '%solidworks%')`).catch(() => {})
+  }
   await run("UPDATE github_categories SET enabled = 0 WHERE name IN ('AI / 大模型', '开发者工具', '基础设施 / 云原生', '嵌入式 / 硬件')").catch(() => {})
 
   await run("UPDATE users SET role = 'admin', quota_plan = 'admin' WHERE id = 1").catch(() => {})
@@ -447,6 +488,16 @@ export async function initDb() {
     error TEXT DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`).catch(() => {})
+
+  await run(`CREATE TABLE IF NOT EXISTS algs_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season TEXT NOT NULL,
+    league TEXT NOT NULL,
+    region TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_algs_snapshots_event ON algs_snapshots(season, league, region, id)').catch(() => {})
 
   console.log('[DB] Schema ready')
 }
