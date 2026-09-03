@@ -10,7 +10,7 @@
 // 太阳方向以「地固系」传给着色器，所以晨昏线不受任何世界朝向变化影响。
 // 月球潮汐锁定后同一面永远朝地球，月相的太阳方向单独取地球的真实日心方向——
 // 轨道半径被 ORBIT_POW 压缩过，拿月球在场景里的位置去算会差出十几度；月相还要再补
-// 一次相机视差，因为月地距离被压到了真实值的三十分之一，详见 place() 里的那段注释。
+// 一次相机视差，因为月地距离被压到了真实值的十四分之一，详见 place() 里的那段注释。
 //
 // 已离线校验过的两条不变量：地轴与黄道北极夹角恒等于 obliquity(n)、地轴黄经恒为
 // 90°；直下点经 earthMatrix 转到世界后与「地球指向太阳」的夹角在 J2000 处为
@@ -52,16 +52,16 @@ const ORBIT_POW = 0.35
 // 海王星压缩后的轨道半径，全景视角按它取景
 const SOLAR_RADIUS = ORBIT_K * Math.pow(30.07, ORBIT_POW)
 const SOLAR_ELEVATION = 62 * DEG
-// 特写状态地球占画面短边的 1/3.2。留这么大的余量不是为了 HUD，而是为了月球：同一个
-// 画框里，月地距离和地球的视觉大小是同一个换算关系的两端，地球占得越满月球就越贴脸
+// 特写状态地球占画面短边的 1/3.2。这个余量本来是给月球留的取景空间，现在月球按真实
+// 方向摆、允许走出画外，留着只是因为地球贴满画框反而看不出它在自转
 const EARTH_MARGIN = 3.2
-// 月球摆在画面可视半径的 0.8 处，也就是 2.56 个地球半径（真实约 60）。这是短边方向的
-// 极限值，长边方向还有余量，所以任何视口比例下这个距离都能恒定，不会忽远忽近
-const MOON_DIST = EARTH_MARGIN * 0.8
 const IDLE_SPIN = 1.5 * DEG
-// 月球绕地球换边时的最大角速度：屏幕上那圈半径最大约 230 px，0.18 rad/s 折算成
-// 40 px/s 上下，换一次边滑十几秒，看着就是慢慢绕过去，而不是「啪」地闪一下
-const MOON_SLEW = 0.18
+// 甩动后的惯性：每秒衰减到 8%，普通一甩滑一秒半左右停住；上限 6 rad/s，免得一下抽过好几圈
+const DRAG_DAMP = 0.08
+const DRAG_MAX_VEL = 6
+const DRAG_STOP_VEL = 0.03
+// 停下多久之后接回自动巡航。3.5s 和引导线那道呼吸动画的周期基本对齐
+const DRAG_RESUME_MS = 3500
 const ZOOM_MS = 1700
 const EPHEMERIS_MS = 200
 // 日冕贴图里日面边缘所在的半径比例，精灵缩放按它反推
@@ -167,6 +167,11 @@ const ECL_NORTH = new Vector3(0, 1, 0)
 const FADE_MS = 700
 // 场景里地球半径就是 1，所以月地真实距离换算成场景单位只需除以地球半径
 const EARTH_RADIUS_KM = 6371
+// 月球半径比照真值。月地距离没法照抄：真实的 60.3 个地球半径在这个画框里只剩几个像素，
+// 而且相机就蹲在 7.7 个半径处，月球会永远在相机外侧，绝不可能从地球前面过。所以距离跟
+// 行星走同一条 ORBIT_POW 压缩律，60.3^0.35 ≈ 4.2 —— 黄经方向和近远地点起伏都还是真的，
+// 月球于是会被地球挡住、也会从地球前面过，摆到画框边上还会走出去
+const MOON_RADIUS = 1737.4 / EARTH_RADIUS_KM
 
 export function createCosmos(options = {}) {
   const { canvas, rings = [], location = null } = options
@@ -299,10 +304,7 @@ export function createCosmos(options = {}) {
   const worldNormal = new Vector3()
   const viewDir = new Vector3()
   const camTarget = new Vector3()
-  const camRight = new Vector3()
-  const camUp = new Vector3()
   const moonDir = new Vector3()
-  const moonOffset = new Vector3()
   const moonX = new Vector3()
   const moonY = new Vector3()
   const moonZ = new Vector3()
@@ -313,6 +315,7 @@ export function createCosmos(options = {}) {
   const moonViewCam = new Vector3()
   const moonViewTrue = new Vector3()
   const moonPhase = new Quaternion()
+  const moonFace = new Quaternion()
   const orientation = new Matrix4()
 
   let epoch = null
@@ -322,10 +325,11 @@ export function createCosmos(options = {}) {
   let zoomStart = 0
   let zoomDur = 0
   let azimuth = 0
-  // 月球在画面上绕地球的方位角，第一帧直接对准真值，之后按 MOON_SLEW 限速跟随
-  let moonAngle = null
   let baseElevation = 18 * DEG
   let idle = true
+  let dragging = false
+  let dragVel = 0
+  let resumeAt = 0
   let paused = false
   let raf = 0
   let lastFrame = 0
@@ -377,6 +381,14 @@ export function createCosmos(options = {}) {
     moonFadeStart = performance.now()
   })
 
+  // 以 dir 为局部 +X、极轴尽量指黄道北的正交基。月球贴图 u=0.5（0° 经线，正对地球那
+  // 一面）落在局部 +X，所以这个基既用来摆潮汐锁定的朝向，也用来求 place() 里那次视差修正
+  function faceBasis(dir) {
+    moonZ.crossVectors(dir, ECL_NORTH).normalize()
+    moonY.crossVectors(moonZ, dir)
+    return moonBasis.makeBasis(dir, moonY, moonZ)
+  }
+
   function refreshEphemeris(date) {
     const n = daysSinceJ2000(date)
     for (const key of PLANET_KEYS) {
@@ -401,12 +413,9 @@ export function createCosmos(options = {}) {
     // 月相的太阳方向取「地球的真实日心方向」，不能拿月球在场景里的位置去算：轨道半径
     // 被压缩过，月地距离相对地日距离被放大了上百倍，直接算今天就会差 12.9°（约一天月龄）
     moonSunTrue.copy(bodies.get('earth').pos).normalize().negate()
-    // 潮汐锁定：贴图 u=0.5（0° 经线，正对地球那一面）落在局部 +X，所以让 +X 指向地心。
-    // 月球自转轴离黄道北极只差 1.5°，直接拿世界 +Y 当极轴，天平动忽略不计
-    moonX.copy(moonDir).negate()
-    moonZ.crossVectors(moonX, ECL_NORTH).normalize()
-    moonY.crossVectors(moonZ, moonX)
-    moonBase.setFromRotationMatrix(moonBasis.makeBasis(moonX, moonY, moonZ))
+    // 潮汐锁定：让局部 +X 指向地心。月球自转轴离黄道北极只差 1.5°，直接拿世界 +Y
+    // 当极轴，天平动忽略不计
+    moonBase.setFromRotationMatrix(faceBasis(moonX.copy(moonDir).negate()))
 
     const sub = subsolarPoint(date)
     lonLatToVec3(sub.lon, sub.lat, earthUniforms.uSunDir.value)
@@ -417,7 +426,7 @@ export function createCosmos(options = {}) {
 
   // t=0 地球特写，t=1 太阳系全景。两端的尺寸差着几个数量级，所以行星在
   // 特写状态缩成 0.015 的小球、靠光晕当恒星看，放大时才长回该有的比例
-  function place(t, ms, dt) {
+  function place(t, ms) {
     const sunScale = MathUtils.lerp(0.06, 2, t)
     sun.scale.setScalar(sunScale)
     // CORONA_LIMB 是「日面半径 / 精灵半宽」，所以精灵边长 = 半径 / limb × 2
@@ -433,7 +442,8 @@ export function createCosmos(options = {}) {
       body.glow.material.opacity = MathUtils.lerp(1, 0.55, t)
     }
 
-    moon.scale.setScalar(MathUtils.lerp(0.27, 0.12, t))
+    // 半径比是真值 0.2727；全景里月球得夸大成 0.12 才不至于只剩一个像素
+    moon.scale.setScalar(MathUtils.lerp(MOON_RADIUS, 0.12, t))
 
     const orbitAlpha = 0.3 * smoothstep(0.18, 0.85, t)
     orbitGroup.visible = orbitAlpha > 0
@@ -454,40 +464,24 @@ export function createCosmos(options = {}) {
     camera.lookAt(camTarget)
     viewDir.copy(camera.position).sub(earthGroup.position).normalize()
 
-    // 月地距离被压到 2.56 个地球半径，月球又按真实黄经方向摆，于是镜头转到某些方位角时它会
-    // 整颗钻到地球背面去——月相白做了。特写状态改成只取黄经方向在屏幕平面内的方位角，
-    // 月球始终贴着地球侧面走，画面上的方位角仍然是真的；拉远到太阳系再切回真三维
-    camRight.set(Math.cos(azimuth), 0, -Math.sin(azimuth))
-    camUp.crossVectors(viewDir, camRight)
-    const cx = moonDir.dot(camRight)
-    const cy = moonDir.dot(camUp)
-    // 视线正好撞上黄经方向时这个方位角没有定义，保持上一帧的即可
-    if (cx * cx + cy * cy > 0.0025) {
-      const aim = Math.atan2(cy, cx)
-      // 换边前后方位角本身转得极快，月球会「啪」地从地球一侧闪到另一侧，所以限一个角速度
-      if (moonAngle === null) moonAngle = aim
-      else {
-        const turn = ((aim - moonAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
-        moonAngle += MathUtils.clamp(turn, -MOON_SLEW * dt, MOON_SLEW * dt)
-      }
-    }
-    // 恒定摆在 MOON_DIST 上。那是短边方向的极限值，长边方向还有余量，所以不必再按
-    // 方位角分别量一次可用半径，月球也就不会随着绕地球一圈忽远忽近
-    const cos = Math.cos(moonAngle ?? 0)
-    const sin = Math.sin(moonAngle ?? 0)
-    moonOffset.copy(camRight).multiplyScalar(cos).addScaledVector(camUp, sin)
-    moon.position.copy(moonOffset.lerp(moonDir, t)).multiplyScalar(MathUtils.lerp(MOON_DIST, 0.9, t))
+    // 月球按真实黄经方向摆，距离用同一条 ORBIT_POW 压缩律换算。于是它会转到地球背后被
+    // 挡住、也会转到地球前面挡住地球，近地点比远地点看着大一圈——这些都是深度缓冲和
+    // 透视自己给的，不需要额外判断（月球材质不透明，地球在特写状态又没有光晕）
+    moon.position.copy(moonDir).multiplyScalar(MathUtils.lerp(Math.pow(moonTrueUnits, ORBIT_POW), 0.9, t))
 
-    // 场景把月地距离压到 2.56 个地球半径（真实约 60），相机的视差因此被放大二十多倍：
-    // 不修正的话镜头自转一圈月相就从 4% 走到 90%，四分钟过完一整个朔望月。
-    // 做法是把月球放回真实距离上重算一次视线，求出「真实视线 → 当前视线」的最小旋转，
-    // 再把月球朝向和太阳方向一起转过去——相位角、明暗界线倾角、正对我们的那一面
-    // 都回到今晚肉眼看到的样子，而月球在画面里的位置一点没动
+    // 距离压到 4.2 个地球半径（真实约 60），相机就在 7.7 个半径处，视差被放大十几倍：
+    // 不修正的话镜头转一圈月相就走完一个朔望月，正对我们的那半张贴图也会转到背面去。
+    // 做法是把月球放回真实距离上重算一次视线，求出「真实视线 → 当前视线」的旋转，再把
+    // 月球朝向和太阳方向一起转过去——相位、明暗界线倾角、正对我们的那一面都回到今晚
+    // 肉眼看到的样子，位置一点没动。这个旋转取两个「极轴朝黄道北」正交基之差而不是最小
+    // 旋转：月球到了地球正前方时两条视线正好反向，最小旋转的转轴在那一帧没有定义
     moonWorld.copy(earthGroup.position).add(moon.position)
     moonViewCam.subVectors(camera.position, moonWorld).normalize()
     moonWorld.copy(moonDir).multiplyScalar(moonTrueUnits).add(earthGroup.position)
     moonViewTrue.subVectors(camera.position, moonWorld).normalize()
-    moonPhase.setFromUnitVectors(moonViewTrue, moonViewCam)
+    moonPhase.setFromRotationMatrix(faceBasis(moonViewTrue)).invert()
+    moonFace.setFromRotationMatrix(faceBasis(moonViewCam))
+    moonPhase.premultiply(moonFace)
     moon.quaternion.multiplyQuaternions(moonPhase, moonBase)
     moonUniforms.uSunDir.value.copy(moonSunTrue).applyQuaternion(moonPhase)
 
@@ -513,7 +507,21 @@ export function createCosmos(options = {}) {
       if (p >= 1) zoomDur = 0
     }
     // 转的是相机而不是地球：地球的朝向必须一直是物理真值，晨昏线才站得住
-    if (idle) azimuth += IDLE_SPIN * dt
+    if (idle) {
+      azimuth += IDLE_SPIN * dt
+    } else if (!dragging) {
+      if (dragVel) {
+        azimuth += dragVel * dt
+        // 按 dt 取幂而不是每帧乘固定系数，低画质档掉到 30fps 时手感才和满帧一致
+        dragVel *= Math.pow(DRAG_DAMP, dt)
+        if (Math.abs(dragVel) < DRAG_STOP_VEL) {
+          dragVel = 0
+          resumeAt = ms + DRAG_RESUME_MS
+        }
+      } else if (ms >= resumeAt) {
+        idle = true
+      }
+    }
 
     if (ephemerisDirty || (!epoch && ms - lastEphemeris >= EPHEMERIS_MS)) {
       lastEphemeris = ms
@@ -527,7 +535,7 @@ export function createCosmos(options = {}) {
       moonUniforms.uReal.value = Math.min((ms - moonFadeStart) / FADE_MS, 1)
     }
     sunUniforms.uTime.value = ms / 1000
-    place(zoomT, ms, dt)
+    place(zoomT, ms)
     renderer.render(scene, camera)
   }
 
@@ -582,6 +590,10 @@ export function createCosmos(options = {}) {
   // 缩放动画由引擎自己补间，调用方只给目标值，过渡曲线就不会被组件写歪
   function setZoom(value, duration = ZOOM_MS) {
     const target = MathUtils.clamp(value, 0, 1)
+    // 拖拽只在地球特写里开放，切走视角时把手上的惯性收掉并接回自动巡航
+    dragging = false
+    dragVel = 0
+    idle = true
     if (duration <= 0) {
       zoomT = target
       zoomDur = 0
@@ -627,13 +639,28 @@ export function createCosmos(options = {}) {
     ephemerisDirty = true
   }
 
-  // 外部一接管视角，自动巡航就让位，留给拖拽旋转
-  function setOrientation(next = {}) {
-    if (typeof next.azimuth === 'number') azimuth = next.azimuth
-    if (typeof next.elevation === 'number') {
-      baseElevation = MathUtils.clamp(next.elevation, -1.4, 1.4)
+  // 手动拖拽：按下先夺走控制权（顺手把上一次甩动的余速掐掉），移动累加方位角，
+  // 松手把角速度交给帧循环去衰减
+  function beginDrag() {
+    dragging = true
+    dragVel = 0
+    idle = false
+    resumeAt = 0
+  }
+
+  function dragBy(rad) {
+    if (!dragging) return
+    azimuth += rad
+  }
+
+  function endDrag(velocity = 0) {
+    if (!dragging) return
+    dragging = false
+    dragVel = MathUtils.clamp(velocity, -DRAG_MAX_VEL, DRAG_MAX_VEL)
+    if (Math.abs(dragVel) < DRAG_STOP_VEL) {
+      dragVel = 0
+      resumeAt = performance.now() + DRAG_RESUME_MS
     }
-    idle = next.idle ?? false
   }
 
   const onVisibility = () => {
@@ -667,13 +694,15 @@ export function createCosmos(options = {}) {
     setMarkers([{ lon: location.lon, lat: location.lat }])
   }
   resize()
-  place(0, 0, 0)
+  place(0, 0)
   renderer.render(scene, camera)
   start()
 
   return {
     setZoom,
-    setOrientation,
+    beginDrag,
+    dragBy,
+    endDrag,
     setEpoch,
     setMarkers,
     setQuality,

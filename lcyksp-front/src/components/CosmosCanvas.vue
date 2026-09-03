@@ -47,13 +47,80 @@ onBeforeUnmount(() => {
   engine = null
 })
 
+// 横拖满一个画面宽 ≈ 180°，这样手机和桌面拖同样的比例转过同样的角度
+const DRAG_TURN = Math.PI
+// 位移超过这个值就算拖拽，不再当成点击去 pick
+const CLICK_SLOP = 6
+// 松手前最后一次移动早于这个间隔，就当人是停住之后才放手的，不给惯性
+const FLICK_STALE_MS = 90
+
+let pointerId = null
+let dragActive = false
+let radPerPx = 0
+let lastX = 0
+let lastTime = 0
+let moved = 0
+let flickVel = 0
+
+function onPointerDown(event) {
+  if (!engine || pointerId !== null || event.button !== 0) return
+  const rect = canvasRef.value.getBoundingClientRect()
+  if (!rect.width) return
+  pointerId = event.pointerId
+  radPerPx = DRAG_TURN / rect.width
+  lastX = event.clientX
+  lastTime = event.timeStamp
+  moved = 0
+  flickVel = 0
+  canvasRef.value.setPointerCapture(pointerId)
+  // 拖拽只在地球特写里开放。太阳系全景和缩放过渡期间照旧只跟踪位移，
+  // 好让全景里的划动不会被误判成一次点击
+  dragActive = engine.getZoom() <= 0.02
+  if (dragActive) engine.beginDrag()
+}
+
+function onPointerMove(event) {
+  if (pointerId !== event.pointerId) return
+  const dx = event.clientX - lastX
+  const dt = (event.timeStamp - lastTime) / 1000
+  lastX = event.clientX
+  lastTime = event.timeStamp
+  moved += Math.abs(dx)
+  if (!dragActive) return
+  // 相机是绕着地球转的，往右拖要让方位角减小，画面上的地表才跟着手指往右走
+  const rad = -dx * radPerPx
+  engine.dragBy(rad)
+  // 单帧除以极小的 dt 会把一两像素的抖动放大成很大的速度，夹一个下限再平滑一次
+  const inst = rad / Math.max(dt, 0.008)
+  flickVel = flickVel ? flickVel * 0.5 + inst * 0.5 : inst
+}
+
+function onPointerUp(event) {
+  if (pointerId !== event.pointerId) return
+  pointerId = null
+  if (!dragActive) return
+  dragActive = false
+  const stale = event.type !== 'pointerup' || event.timeStamp - lastTime > FLICK_STALE_MS
+  engine?.endDrag(stale ? 0 : flickVel)
+}
+
 function onClick(event) {
-  if (engine) emit('pick', engine.pick(event.clientX, event.clientY))
+  // moved 到下一次按下才清零，所以拖完松手带出来的这次 click 会被这里拦掉
+  if (!engine || moved > CLICK_SLOP) return
+  emit('pick', engine.pick(event.clientX, event.clientY))
 }
 </script>
 
 <template>
-  <canvas ref="canvasRef" class="cosmos-canvas" @click="onClick" />
+  <canvas
+    ref="canvasRef"
+    class="cosmos-canvas"
+    @click="onClick"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerUp"
+  />
 </template>
 
 <style scoped>
@@ -61,5 +128,12 @@ function onClick(event) {
   display: block;
   width: 100%;
   height: 100%;
+  /* 只吃横向手势，纵向留给浏览器；不写 none 是为了不劫持移动端的下拉刷新 */
+  touch-action: pan-y;
+  cursor: grab;
+}
+
+.cosmos-canvas:active {
+  cursor: grabbing;
 }
 </style>
