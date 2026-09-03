@@ -1,8 +1,8 @@
 export function getClientIp(req) {
-  const forwarded = req.headers['x-forwarded-for']
-  if (typeof forwarded === 'string' && forwarded.trim()) {
-    return forwarded.split(',')[0].trim()
-  }
+  // 原来直接取 X-Forwarded-For 的第一段，而这一段完全由客户端提供 ——
+  // 随手加个头就能换一个「新 IP」，所有按 IP 的配额和限流都形同虚设。
+  // app.js 已设 trust proxy=1（Nginx 是唯一前置代理，它把真实 remote_addr
+  // 追加在 XFF 末尾），Express 算出来的 req.ip 才是不可伪造的那个。
   return req.ip || req.socket?.remoteAddress || 'unknown'
 }
 

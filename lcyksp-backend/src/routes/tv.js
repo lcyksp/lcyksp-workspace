@@ -1,11 +1,12 @@
 import { Router } from 'express'
 import { createHash } from 'crypto'
-import { spawn, execSync } from 'child_process'
+import { spawn, execSync, execFileSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { authMiddleware } from '../middleware/auth.js'
+import { heavyLimiter } from '../middleware/rateLimit.js'
 import { ACTION_ANALYZE, ACTION_DOWNLOAD, buildQuotaExceededMessage, consumeQuota } from '../utils/quota.js'
 import { getClientIp } from '../utils/turnstile.js'
 import { logDownload } from '../utils/logger.js'
@@ -177,7 +178,16 @@ function padNumber(n) {
 }
 
 function sanitizeFileName(name) {
-  return (name || 'episode').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'episode'
+  // 只做文件名安全：Windows 非法字符 + 控制字符 + 限长。
+  // shell 注入已在调用侧根除（execFileSync / spawn 都不经 shell），所以这里不过滤括号等字符，
+  // 否则中文剧集名里的括号会被打成一串下划线。
+  return (name || 'episode')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+    .trim() || 'episode'
 }
 
 function createWorkPaths(title) {
@@ -280,9 +290,7 @@ async function probeMedia(outputPath) {
     '-of', 'json',
     outputPath
   ]
-  var stdout = execSync('ffprobe ' + args.map(function (item) {
-    return '"' + String(item).replace(/"/g, '\\"') + '"'
-  }).join(' '), { encoding: 'utf8' })
+  var stdout = execFileSync('ffprobe', args, { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 })
   var parsed = JSON.parse(stdout)
   var streams = parsed.streams || []
   return {
@@ -500,7 +508,7 @@ async function runDownloadTask(task) {
   }
 }
 
-router.post('/analyze', async function (req, res, next) {
+router.post('/analyze', heavyLimiter, async function (req, res, next) {
   try {
     var { url, sourceIndex } = req.body
     if (!url) return res.status(400).json({ error: '请提供视频网址、M3U8直链或剧集名称关键词' })
@@ -637,7 +645,7 @@ router.post('/analyze', async function (req, res, next) {
   }
 })
 
-router.post('/download-episode', async function (req, res, next) {
+router.post('/download-episode', heavyLimiter, async function (req, res, next) {
   try {
     var { m3u8Url, title } = req.body
     if (!m3u8Url) return res.status(400).json({ error: '缺少 m3u8Url' })

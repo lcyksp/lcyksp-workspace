@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import sharp from 'sharp';
+import sharp, { imageJobGate } from '../utils/imageGuard.js';
 import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
@@ -44,7 +44,7 @@ const CONVERSION_MAP = {
 };
 
 // ========== POST /image ==========
-router.post('/image', upload.single('image'), async (req, res, next) => {
+router.post('/image', imageJobGate, upload.single('image'), async (req, res, next) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: '请上传一张图片' });
@@ -83,11 +83,9 @@ router.post('/image', upload.single('image'), async (req, res, next) => {
         res.set('Content-Type', 'application/pdf');
         res.set('Content-Disposition', `attachment; filename="${baseName}.pdf"`);
         res.send(pdfBuffer);
-        // 发送后释放 pdfBuffer
-        setImmediate(() => {
-          pdfBuffer = null;
-          imageBuffer = null;
-        });
+        // 这里原来有一段 setImmediate(() => { pdfBuffer = null; imageBuffer = null }) —— 给 const
+        // 赋值，每个 img2pdf 请求都会在下一个 tick 抛 TypeError。响应已经发出去了所以前端看不出来，
+        // 全靠 uncaughtException 只打日志才没炸。回调结束后闭包自然释放，本来就不需要手动置空。
       });
 
       // 将图片转成 JPEG buffer 嵌入 PDF（PDFKit 原生支持 JPEG/PNG）
@@ -147,7 +145,7 @@ router.post('/image', upload.single('image'), async (req, res, next) => {
 });
 
 // ========== POST /pdf-to-docx ==========
-router.post('/pdf-to-docx', upload.single('pdf'), async (req, res, next) => {
+router.post('/pdf-to-docx', imageJobGate, upload.single('pdf'), async (req, res, next) => {
   let tempDir = '';
   try {
     if (!req.file) {
@@ -180,11 +178,19 @@ router.post('/pdf-to-docx', upload.single('pdf'), async (req, res, next) => {
     const cmd = os.platform() === 'win32' ? 'pdf2docx' : '/usr/local/bin/pdf2docx';
 
     await new Promise((resolve, reject) => {
-      const proc = spawn(cmd, args);
+      // stdio 的 stdout 必须 ignore：pdf2docx 会往 stdout 打进度，而这里从不读它，
+      // 一旦写满 64KB 管道缓冲，子进程就永久阻塞 → 请求挂死、僵尸进程堆积。
+      // timeout 同理，之前没有上限，一个坏 PDF 能把这条路占死。
+      const proc = spawn(cmd, args, {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        timeout: 120000,
+        killSignal: 'SIGKILL',
+      });
       let stderr = '';
 
       proc.stderr.on('data', (data) => {
-        stderr += data.toString();
+        // stderr 也要有上限，否则疯狂输出的子进程能把内存写满
+        if (stderr.length < 64 * 1024) stderr += data.toString();
       });
 
       proc.on('error', (err) => {
@@ -195,7 +201,10 @@ router.post('/pdf-to-docx', upload.single('pdf'), async (req, res, next) => {
         }
       });
 
-      proc.on('close', (code) => {
+      proc.on('close', (code, signal) => {
+        if (signal) {
+          return reject(new Error('转换超时已终止，请换更小的 PDF 或缩小页码范围'));
+        }
         if (code === 0) {
           resolve();
         } else {
