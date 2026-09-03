@@ -88,6 +88,9 @@ async function downloadFile() {
   const token = localStorage.getItem('lcyksp_token')
   const headers = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
+  // 后端 /download 现在也校验密码了（以前只有 /verify 校验，知道取件码就能绕过）。
+  // HTTP 头只能放 latin1，中文密码必须先 encodeURIComponent，后端再 decode 回来。
+  if (password.value) headers['X-Transmit-Password'] = encodeURIComponent(password.value)
   const names = fileInfo.value?.fileNames || [fileInfo.value?.fileName || 'download']
 
   for (let i = 0; i < names.length; i++) {

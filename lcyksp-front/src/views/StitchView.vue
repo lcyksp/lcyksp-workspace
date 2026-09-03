@@ -72,7 +72,11 @@ function removeImage(index) {
   images.value.splice(index, 1)
   imageUrls.value.splice(index, 1)
   if (mode.value === 'custom') {
-    customItems.value = customItems.value.filter(item => item.index !== index)
+    // item.index 是 images 数组的下标，splice 之后后面所有图片都往前挪了一位，
+    // 只 filter 不重编号的话，剩下的布局会整体错位贴到别的图片上。
+    customItems.value = customItems.value
+      .filter(item => item.index !== index)
+      .map(item => (item.index > index ? { ...item, index: item.index - 1 } : item))
     recalcCanvas()
   }
 }

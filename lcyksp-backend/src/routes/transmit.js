@@ -280,6 +280,19 @@ router.get('/download/:id', async (req, res, next) => {
       }
     }
 
+    // 密码校验：以前只有 /verify 校验密码，这个接口完全不查，
+    // 知道取件码就能跳过 /verify 直接下载，带密码的分享等于没设密码。
+    if (record.password) {
+      const raw = req.get('x-transmit-password') || '';
+      // 前端 encodeURIComponent 过（HTTP 头放不了中文），这里 decode 回原文再比
+      let provided = raw;
+      try { provided = decodeURIComponent(raw); } catch { /* 非法编码就按原文比，必然不匹配 */ }
+      if (!provided) return res.status(401).json({ error: '该文件需要密码才能下载' });
+      if (hashPassword(provided) !== record.password) {
+        return res.status(403).json({ error: '密码错误' });
+      }
+    }
+
     // 解析多文件路径
     let filePaths = [], fileNames = [];
     try {
@@ -314,7 +327,10 @@ router.get('/download/:id', async (req, res, next) => {
     // 下载完成或断开时的处理
     res.on('finish', () => {
       if (unlimited) return;
-      if (fileIndex !== fileCount - 1) return;
+      // 原来这里写的是 fileCount，而这个变量在本作用域里从未声明过（只是 /verify 响应体的一个
+      // 字段名）。于是每次下载都在 finish 回调里抛 ReferenceError，下载次数永远不加、
+      // 「阅后即焚」永远不触发、文件永远不删。而 uncaughtException 只打日志，所以一直没人发现。
+      if (fileIndex !== fileNames.length - 1) return;
 
       db.run(
         'UPDATE transfers SET current_downloads = current_downloads + 1 WHERE id = ?',

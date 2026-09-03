@@ -1,9 +1,17 @@
 import { Router } from 'express'
 import multer from 'multer'
-import sharp from 'sharp'
+import sharp, { checkCanvasSize, MAX_CANVAS_SIDE } from '../utils/imageGuard.js'
 
 const router = Router()
 
+function httpError(status, message) {
+  const err = new Error(message)
+  err.status = status
+  return err
+}
+
+// 前端 custom 模式除了 images 还会带一个 bgImage 字段。原来这里用的是 upload.array('images')，
+// multer 遇到 bgImage 直接抛 MulterError: Unexpected field → 自定义拼接 + 背景图必然 500。
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
@@ -11,11 +19,15 @@ const upload = multer({
     if (file.mimetype.startsWith('image/')) return cb(null, true)
     cb(new Error('仅支持图片格式'))
   },
-})
+}).fields([
+  { name: 'images', maxCount: 30 },
+  { name: 'bgImage', maxCount: 1 },
+])
 
-router.post('/', upload.array('images', 30), async (req, res, next) => {
+router.post('/', upload, async (req, res, next) => {
   try {
-    if (!req.files || req.files.length === 0) {
+    const images = req.files?.images || []
+    if (images.length === 0) {
       return res.status(400).json({ error: '请至少上传一张图片' })
     }
 
@@ -26,17 +38,18 @@ router.post('/', upload.array('images', 30), async (req, res, next) => {
       if (raw) bgConfig = raw
     } catch { /* use default */ }
 
-    const gap = parseInt(req.body.gap, 10) || 0
+    // gap 不夹紧的话，29 个间隔 × 一个巨大的 gap 就能造出天文数字的画布
+    const gap = Math.min(Math.max(parseInt(req.body.gap, 10) || 0, 0), 500)
 
     if (mode === 'vertical') {
-      const result = await stitchVertical(req.files, { bg: bgConfig, gap })
+      const result = await stitchVertical(images, { bg: bgConfig, gap })
       res.set('Content-Type', 'image/png')
       res.set('Content-Disposition', 'attachment; filename="stitched-vertical.png"')
       return res.send(result)
     }
 
     if (mode === 'horizontal') {
-      const result = await stitchHorizontal(req.files, { bg: bgConfig, gap })
+      const result = await stitchHorizontal(images, { bg: bgConfig, gap })
       res.set('Content-Type', 'image/png')
       res.set('Content-Disposition', 'attachment; filename="stitched-horizontal.png"')
       return res.send(result)
@@ -50,18 +63,19 @@ router.post('/', upload.array('images', 30), async (req, res, next) => {
         return res.status(400).json({ error: '布局数据格式错误' })
       }
 
-      let bgImageBuffer = null
-      const bgImageFile = req.files.find(f => f.fieldname === 'bgImage')
-      if (bgImageFile) {
-        bgImageBuffer = bgImageFile.buffer
-      }
+      const bgImageBuffer = req.files?.bgImage?.[0]?.buffer || null
 
-      const result = await stitchCustom(req.files.filter(f => f.fieldname === 'images'), {
+      const canvasWidth = Math.min(Math.max(parseInt(req.body.canvasWidth, 10) || 1080, 1), MAX_CANVAS_SIDE)
+      const canvasHeight = Math.min(Math.max(parseInt(req.body.canvasHeight, 10) || 1920, 1), MAX_CANVAS_SIDE)
+      const sizeError = checkCanvasSize(canvasWidth, canvasHeight)
+      if (sizeError) return res.status(413).json({ error: sizeError })
+
+      const result = await stitchCustom(images, {
         layout,
         bg: bgConfig,
         bgImageBuffer,
-        canvasWidth: parseInt(req.body.canvasWidth, 10) || 1080,
-        canvasHeight: parseInt(req.body.canvasHeight, 10) || 1920,
+        canvasWidth,
+        canvasHeight,
       })
       res.set('Content-Type', 'image/png')
       res.set('Content-Disposition', 'attachment; filename="stitched-custom.png"')
@@ -75,24 +89,26 @@ router.post('/', upload.array('images', 30), async (req, res, next) => {
 })
 
 async function stitchVertical(files, { bg, gap }) {
-  const buffers = await Promise.all(files.map(f => sharp(f.buffer).toBuffer()))
-  const metas = await Promise.all(buffers.map(b => sharp(b).metadata()))
+  // 原来先把每张图 sharp().toBuffer() 走一遍再读 metadata，等于白解码+白编码 30 次，
+  // 而且 30 张解码结果同时留在内存里。composite 能直接吃原始 buffer，这一趟完全可以省掉。
+  const metas = await Promise.all(files.map(f => sharp(f.buffer).metadata()))
 
   const maxWidth = Math.max(...metas.map(m => m.width || 0))
   const totalHeight = metas.reduce((sum, m) => sum + (m.height || 0), 0) + gap * (files.length - 1)
 
+  const sizeError = checkCanvasSize(maxWidth, totalHeight)
+  if (sizeError) throw httpError(413, sizeError)
+
   const composite = []
   let yOffset = 0
 
-  for (let i = 0; i < buffers.length; i++) {
-    const meta = metas[i]
-    const w = meta.width || 0
-    const h = meta.height || 0
-    const x = Math.round((maxWidth - w) / 2)
+  for (let i = 0; i < files.length; i++) {
+    const w = metas[i].width || 0
+    const h = metas[i].height || 0
 
     composite.push({
-      input: buffers[i],
-      left: x,
+      input: files[i].buffer,
+      left: Math.round((maxWidth - w) / 2),
       top: yOffset,
     })
     yOffset += h + gap
@@ -112,25 +128,25 @@ async function stitchVertical(files, { bg, gap }) {
 }
 
 async function stitchHorizontal(files, { bg, gap }) {
-  const buffers = await Promise.all(files.map(f => sharp(f.buffer).toBuffer()))
-  const metas = await Promise.all(buffers.map(b => sharp(b).metadata()))
+  const metas = await Promise.all(files.map(f => sharp(f.buffer).metadata()))
 
   const maxHeight = Math.max(...metas.map(m => m.height || 0))
   const totalWidth = metas.reduce((sum, m) => sum + (m.width || 0), 0) + gap * (files.length - 1)
 
+  const sizeError = checkCanvasSize(totalWidth, maxHeight)
+  if (sizeError) throw httpError(413, sizeError)
+
   const composite = []
   let xOffset = 0
 
-  for (let i = 0; i < buffers.length; i++) {
-    const meta = metas[i]
-    const w = meta.width || 0
-    const h = meta.height || 0
-    const y = Math.round((maxHeight - h) / 2)
+  for (let i = 0; i < files.length; i++) {
+    const w = metas[i].width || 0
+    const h = metas[i].height || 0
 
     composite.push({
-      input: buffers[i],
+      input: files[i].buffer,
       left: xOffset,
-      top: y,
+      top: Math.round((maxHeight - h) / 2),
     })
     xOffset += w + gap
   }
@@ -149,12 +165,9 @@ async function stitchHorizontal(files, { bg, gap }) {
 }
 
 async function stitchCustom(files, { layout, bg, bgImageBuffer, canvasWidth, canvasHeight }) {
-  const fileMap = {}
-  for (const f of files) {
-    const idx = parseInt(f.fieldname.replace('images', ''), 10)
-    fileMap[idx] = f.buffer
-  }
-
+  // 前端把所有图片都塞在同一个 images 字段里，layout[].index 就是它们的上传顺序。
+  // 原来这里按 fieldname.replace('images','') 取下标，对 'images' 得到 parseInt('') = NaN，
+  // 于是 fileMap 只有一个 NaN 键、layout 里的 index 永远查不到 —— 自定义拼接从来没贴上过任何一张图。
   const composite = []
 
   if (bgImageBuffer) {
@@ -165,13 +178,17 @@ async function stitchCustom(files, { layout, bg, bgImageBuffer, canvasWidth, can
   }
 
   for (const item of layout) {
-    const buf = fileMap[item.index]
+    const buf = files[item.index]?.buffer
     if (!buf) continue
 
     let input = sharp(buf)
 
-    if (item.width && item.height) {
-      input = input.resize(Math.round(item.width), Math.round(item.height), { fit: 'fill' })
+    // layout 来自前端 JSON，宽高必须夹紧：resize 到几万像素同样会把内存吃光
+    const itemWidth = item.width ? Math.min(Math.max(Math.round(item.width), 1), canvasWidth) : 0
+    const itemHeight = item.height ? Math.min(Math.max(Math.round(item.height), 1), canvasHeight) : 0
+
+    if (itemWidth && itemHeight) {
+      input = input.resize(itemWidth, itemHeight, { fit: 'fill' })
     }
 
     if (item.rotation) {
@@ -181,8 +198,8 @@ async function stitchCustom(files, { layout, bg, bgImageBuffer, canvasWidth, can
     const processed = await input.toBuffer()
     const meta = await sharp(processed).metadata()
 
-    const left = Math.round(item.x + ((item.width || meta.width) - meta.width) / 2)
-    const top = Math.round(item.y + ((item.height || meta.height) - meta.height) / 2)
+    const left = Math.round((Number(item.x) || 0) + ((itemWidth || meta.width) - meta.width) / 2)
+    const top = Math.round((Number(item.y) || 0) + ((itemHeight || meta.height) - meta.height) / 2)
 
     composite.push({ input: processed, left, top })
   }
