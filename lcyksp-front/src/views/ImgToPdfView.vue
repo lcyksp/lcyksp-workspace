@@ -2,6 +2,7 @@
 import { ref, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { PDFDocument } from 'pdf-lib'
+import { Loading, Picture, UploadFilled } from '@element-plus/icons-vue'
 
 const mode = ref('none')
 const fileList = ref([])

@@ -11,6 +11,7 @@ const trendingCache = new Map()
 const searchCache = new Map()
 let githubApiCooldownUntil = 0
 export const MIN_GITHUB_STARS = 100
+const AMBIGUOUS_SEARCH_TERMS = new Set(['机械', '材料', '机器人', 'skill', 'code'])
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
@@ -33,8 +34,8 @@ export async function fetchTrendingGithubRepositories({ since = 'daily', limit =
   let match
   while ((match = articlePattern.exec(html)) && items.length < limit) {
     const block = match[1]
-    const repoMatch = block.match(/href="\/([^"/?]+\/[^"/?]+)"/)
-    if (!repoMatch) continue
+    const repoMatch = block.match(/<h2[^>]*>[\s\S]*?href="\/([^"/?]+\/[^"/?]+)"/i)
+    if (!repoMatch || repoMatch[1].toLowerCase().startsWith('sponsors/')) continue
     const fullName = repoMatch[1]
     const description = (block.match(/<p[^>]*>([\s\S]*?)<\/p>/)?.[1] || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim()
     const language = (block.match(/itemprop="programmingLanguage">\s*([^<]+)/)?.[1] || '').trim()
@@ -42,7 +43,7 @@ export async function fetchTrendingGithubRepositories({ since = 'daily', limit =
     const starNumbers = [...starsText.matchAll(/\d+/g)].map((m) => Number(m[0])).filter(Number.isFinite)
     const stars = starNumbers.at(-1) || 0
     if (stars < MIN_GITHUB_STARS) continue
-    items.push({ fullName, url: 'https://github.com/' + fullName, description, language, topics: [], stars, forks: 0, trending: true })
+    items.push({ fullName, url: 'https://github.com/' + fullName, description, language, topics: [], stars, forks: 0, trending: true, trendingRank: items.length + 1, trendingSince: since })
   }
   trendingCache.set(cacheKey, { at: Date.now(), items })
   return items
@@ -81,9 +82,15 @@ async function githubFetch(path, params = {}) {
 }
 
 export async function discoverGithubRepositories({ query = '', categoryKeywords = [], language = '', limit = 30 } = {}) {
-  const terms = [...new Set([query, ...categoryKeywords].map((item) => String(item || '').trim()).filter(Boolean))]
-  const groups = terms.length ? terms.slice(0, 4).map((term) => [term]) : [[]]
-  const cacheKey = JSON.stringify({ query, categoryKeywords: categoryKeywords.slice(0, 8), language, limit })
+  const directQuery = String(query || '').trim()
+  const categoryTerms = [...new Set(categoryKeywords.map((item) => String(item || '').trim()).filter(Boolean).filter((item) => item !== directQuery && !AMBIGUOUS_SEARCH_TERMS.has(item.toLowerCase())))]
+  const slots = Math.max(0, 4 - (directQuery ? 1 : 0))
+  const cycle = Math.floor(Date.now() / (4 * 60 * 60 * 1000))
+  const start = categoryTerms.length ? (cycle * Math.max(1, slots)) % categoryTerms.length : 0
+  const rotatedTerms = Array.from({ length: Math.min(slots, categoryTerms.length) }, (_, index) => categoryTerms[(start + index) % categoryTerms.length])
+  const selectedTerms = [...(directQuery ? [directQuery] : []), ...rotatedTerms]
+  const groups = selectedTerms.length ? selectedTerms.map((term) => [term]) : [[]]
+  const cacheKey = JSON.stringify({ selectedTerms, language, limit })
   const cached = searchCache.get(cacheKey)
   if (cached && Date.now() - cached.at < 30 * 60 * 1000) return cached.items
   const results = []
@@ -158,9 +165,10 @@ async function upsertRepository(item, capturedAt) {
   const existing = await dbGet('SELECT id FROM github_repositories WHERE full_name = ?', [item.fullName])
   if (existing) {
     await dbRun('UPDATE github_repositories SET url = ?, description = ?, language = ?, topics = ?, stars = ?, forks = ?, last_seen_at = ?, updated_at = ? WHERE id = ?', [item.url, item.description, item.language, JSON.stringify(item.topics), item.stars, item.forks, capturedAt, capturedAt, existing.id])
+    if (item.trending) await dbRun('UPDATE github_repositories SET trending_rank = ?, trending_since = ?, trending_seen_at = ? WHERE id = ?', [item.trendingRank || null, item.trendingSince || '', capturedAt, existing.id])
     return { id: existing.id, isNew: false }
   }
-  const result = await dbRun('INSERT INTO github_repositories (full_name, url, description, language, topics, stars, forks, first_seen_at, last_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.fullName, item.url, item.description, item.language, JSON.stringify(item.topics), item.stars, item.forks, capturedAt, capturedAt, capturedAt])
+  const result = await dbRun('INSERT INTO github_repositories (full_name, url, description, language, topics, stars, forks, trending_rank, trending_since, trending_seen_at, first_seen_at, last_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.fullName, item.url, item.description, item.language, JSON.stringify(item.topics), item.stars, item.forks, item.trending ? item.trendingRank || null : null, item.trending ? item.trendingSince || '' : '', item.trending ? capturedAt : null, capturedAt, capturedAt, capturedAt])
   return { id: result.lastID, isNew: true }
 }
 
@@ -174,17 +182,20 @@ export async function saveGithubSnapshot(item, capturedAt = new Date().toISOStri
 export async function calculateGithubGrowth(repositoryId, now = new Date()) {
   const rows = await dbAll('SELECT stars, captured_at FROM github_star_snapshots WHERE repository_id = ? ORDER BY captured_at DESC LIMIT 100', [repositoryId])
   const current = rows[0]
-  if (!current) return { daily: null, weekly: null, monthly: null }
+  if (!current) return { daily: null, weekly: null, monthly: null, observed: null, latestCapturedAt: null }
   const findBefore = (days) => rows.find((row) => now.getTime() - new Date(row.captured_at).getTime() >= days * 86400000)
   const delta = (row) => row ? Math.max(0, current.stars - row.stars) : null
-  return { daily: delta(findBefore(1)), weekly: delta(findBefore(7)), monthly: delta(findBefore(30)), currentStars: current.stars }
+  const currentAge = now.getTime() - new Date(current.captured_at).getTime()
+  const freshDelta = (days, maxAgeDays) => currentAge <= maxAgeDays * 86400000 ? delta(findBefore(days)) : null
+  const observed = rows.length > 1 ? Math.max(0, Math.max(...rows.map((row) => row.stars)) - Math.min(...rows.map((row) => row.stars))) : null
+  return { daily: freshDelta(1, 1.5), weekly: freshDelta(7, 8), monthly: freshDelta(30, 31), observed, currentStars: current.stars, latestCapturedAt: current.captured_at }
 }
 
 export async function getRepositoryCandidatesForSubscription(subscription) {
   const categoryIds = parseJson(subscription.category_ids, []).map(Number).filter(Number.isInteger)
   const keywords = parseJson(subscription.keywords, [])
   const placeholders = categoryIds.map(() => '?').join(',')
-  const categories = categoryIds.length ? await dbAll('SELECT keywords, languages FROM github_categories WHERE id IN (' + placeholders + ')', categoryIds) : []
+  const categories = categoryIds.length ? await dbAll('SELECT name, description, keywords, languages FROM github_categories WHERE id IN (' + placeholders + ')', categoryIds) : []
   const categoryKeywords = categories.flatMap((row) => parseJson(row.keywords, []))
   const languages = categories.flatMap((row) => parseJson(row.languages, []))
   const results = []
@@ -192,4 +203,15 @@ export async function getRepositoryCandidatesForSubscription(subscription) {
     results.push(...await discoverGithubRepositories({ query: keywords[0] || '', categoryKeywords: [...keywords.slice(1), ...categoryKeywords], language, limit: 20 }))
   }
   return [...new Map(results.map((item) => [item.fullName, item])).values()]
+}
+
+export async function getGithubSubscriptionFocus(subscription) {
+  const categoryIds = parseJson(subscription.category_ids, []).map(Number).filter(Number.isInteger)
+  const placeholders = categoryIds.map(() => '?').join(',')
+  const categories = categoryIds.length ? await dbAll('SELECT name, description, keywords FROM github_categories WHERE id IN (' + placeholders + ')', categoryIds) : []
+  return {
+    names: categories.map((row) => row.name),
+    descriptions: categories.map((row) => row.description).filter(Boolean),
+    keywords: [...new Set([...parseJson(subscription.keywords, []), ...categories.flatMap((row) => parseJson(row.keywords, []))])],
+  }
 }

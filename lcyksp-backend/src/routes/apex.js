@@ -1,14 +1,22 @@
 import { Router } from 'express';
 
 const router = Router();
-const ALS_API_KEY = '1d096ca7b1f78852a73c8c0754851566';
+// ALS(Apex Legends Status) API Key — 从环境变量读取，勿硬编码进源码
+const ALS_API_KEY = process.env.ALS_API_KEY || '';
 
-// Platform map: origin -> PC, psn -> PS4, xbl -> X1
+// Platform map: origin -> PC, psn -> PS4, xbl -> X1, switch -> SWITCH
 const platformMap = {
   origin: 'PC',
   psn: 'PS4',
-  xbl: 'X1'
+  xbl: 'X1',
+  switch: 'SWITCH',
 };
+
+// 纯数字视为玩家 UID，走 uid= 参数（更精确）；否则用玩家名
+function buildPlayerParam(username) {
+  const v = String(username || '').trim();
+  return /^\d+$/.test(v) ? `uid=${encodeURIComponent(v)}` : `player=${encodeURIComponent(v)}`;
+}
 
 // Get player profile
 router.get('/profile', async (req, res, next) => {
@@ -21,10 +29,10 @@ router.get('/profile', async (req, res, next) => {
 
     const mappedPlatform = platformMap[platform.toLowerCase()];
     if (!mappedPlatform) {
-      return res.status(400).json({ error: '无效的平台参数，必须为 origin, psn 或 xbl' });
+      return res.status(400).json({ error: '无效的平台参数，必须为 origin, psn, xbl 或 switch' });
     }
 
-    const url = `https://api.mozambiquehe.re/bridge?player=${encodeURIComponent(username)}&platform=${mappedPlatform}&auth=${ALS_API_KEY}`;
+    const url = `https://api.mozambiquehe.re/bridge?${buildPlayerParam(username)}&platform=${mappedPlatform}&auth=${ALS_API_KEY}`;
 
     const response = await fetch(url, {
       method: 'GET',
@@ -41,9 +49,9 @@ router.get('/profile', async (req, res, next) => {
           errDetail = data.Error;
         }
       } catch (e) {}
-      
+
       if (errDetail.includes('low priority') || errDetail.includes('Player not found')) {
-        errDetail = '未在数据库中找到该玩家。首次查询的新玩家，需先在 https://apexlegendsstatus.com 搜索一次建立缓存，或当前 EA 官方查询接口繁忙。';
+        errDetail = '未在数据库中找到该玩家。请确认输入的是 EA 账号名（Origin ID）而非 Steam 昵称；若为首次查询，可先到 https://apexlegendsstatus.com 搜索一次建立缓存，或直接输入玩家的数字 UID。';
       }
       return res.status(404).json({ error: errDetail });
     }
@@ -84,10 +92,10 @@ router.get('/sessions', async (req, res, next) => {
 
     const mappedPlatform = platformMap[platform.toLowerCase()];
     if (!mappedPlatform) {
-      return res.status(400).json({ error: '无效的平台参数，必须为 origin, psn 或 xbl' });
+      return res.status(400).json({ error: '无效的平台参数，必须为 origin, psn, xbl 或 switch' });
     }
 
-    const url = `https://api.mozambiquehe.re/bridge?player=${encodeURIComponent(username)}&platform=${mappedPlatform}&auth=${ALS_API_KEY}&history=1&action=get`;
+    const url = `https://api.mozambiquehe.re/bridge?${buildPlayerParam(username)}&platform=${mappedPlatform}&auth=${ALS_API_KEY}&history=1&action=get`;
 
     const response = await fetch(url, {
       method: 'GET',

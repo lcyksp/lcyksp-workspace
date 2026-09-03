@@ -1,43 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
+
+// 首页是落地页，保持静态引入，避免首屏多一次 chunk 往返；其余路由全部懒加载
 import HomePageView from '../views/HomePageView.vue'
-import TransmitView from '../views/TransmitView.vue'
-import CompressView from '../views/CompressView.vue'
-import ConvertView from '../views/ConvertView.vue'
-import GalleryView from '../views/GalleryView.vue'
-import ReceiveView from '../views/ReceiveView.vue'
-import AdminView from '../views/AdminView.vue'
-import RecipeView from '../views/RecipeView.vue'
-import PixelArtView from '../views/PixelArtConverter.vue'
-import ObfuscateView from '../views/ObfuscateView.vue'
-import PdfMergeView from '../views/PdfMergeView.vue'
-import PdfSplitView from '../views/PdfSplitView.vue'
-import ImgToPdfView from '../views/ImgToPdfView.vue'
-import PdfToImgView from '../views/PdfToImgView.vue'
-import PdfExtractTextView from '../views/PdfExtractTextView.vue'
-import PdfPageEditorView from '../views/PdfPageEditorView.vue'
-import PdfWatermarkView from '../views/PdfWatermarkView.vue'
-import PdfSignView from '../views/PdfSignView.vue'
-import PdfToWordView from '../views/PdfToWordView.vue'
-import VideoDownloadView from '../views/VideoDownloadView.vue'
-import TvDownloadView from '../views/TvDownloadView.vue'
-import MembershipView from '../views/MembershipView.vue'
-import ScreenRecordingView from '../views/ScreenRecordingView.vue'
-import PhotopeaView from '../views/PhotopeaView.vue'
-import IpLookupView from '../views/IpLookupView.vue'
-import IdPhotoView from '../views/IdPhotoView.vue'
-import FakeUpdateView from '../views/FakeUpdateView.vue'
-import RollCallView from '../views/RollCallView.vue'
-import WatermarkView from '../views/WatermarkView.vue'
-import ZipToolView from '../views/ZipToolView.vue'
-import ImageUpscaleView from '../views/ImageUpscaleView.vue'
-import StitchView from '../views/StitchView.vue'
-import LyricsView from '../views/LyricsView.vue'
-import TrendsView from '../views/TrendsView.vue'
-import WeatherView from '../views/WeatherView.vue'
-import WebCaptureView from '../views/WebCaptureView.vue'
-import ApexView from '../views/ApexView.vue'
-import GithubRadarView from '../views/GithubRadarView.vue'
 
 function readCurrentUser() {
   try {
@@ -56,43 +21,54 @@ function canAccessGallery(user) {
 
 const routes = [
   { path: '/', name: 'home', component: HomePageView },
-  { path: '/transmit', name: 'transmit', component: TransmitView },
-  { path: '/transmit/:id', name: 'receive', component: ReceiveView },
-  { path: '/compress', name: 'compress', component: CompressView },
-  { path: '/convert', name: 'convert', component: ConvertView },
-  { path: '/recipe', name: 'recipe', component: RecipeView },
-  { path: '/gallery', name: 'gallery', component: GalleryView },
-  { path: '/pixel-art', name: 'pixel-art', component: PixelArtView },
-  { path: '/obfuscate', name: 'obfuscate', component: ObfuscateView },
-  { path: '/watermark', name: 'watermark', component: WatermarkView },
-  { path: '/pdf-merge', name: 'pdf-merge', component: PdfMergeView },
-  { path: '/pdf-split', name: 'pdf-split', component: PdfSplitView },
-  { path: '/img-to-pdf', name: 'img-to-pdf', component: ImgToPdfView },
-  { path: '/pdf-to-img', name: 'pdf-to-img', component: PdfToImgView },
-  { path: '/pdf-extract-text', name: 'pdf-extract-text', component: PdfExtractTextView },
-  { path: '/pdf-page-editor', name: 'pdf-page-editor', component: PdfPageEditorView },
-  { path: '/pdf-watermark', name: 'pdf-watermark', component: PdfWatermarkView },
-  { path: '/pdf-sign', name: 'pdf-sign', component: PdfSignView },
-  { path: '/pdf-to-word', name: 'pdf-to-word', component: PdfToWordView },
-  { path: '/video-download', name: 'video-download', component: VideoDownloadView },
-  { path: '/tv-download', name: 'tv-download', component: TvDownloadView },
-  { path: '/screen-recording', name: 'screen-recording', component: ScreenRecordingView },
-  { path: '/photopea', name: 'photopea', component: PhotopeaView },
-  { path: '/ip-lookup', name: 'ip-lookup', component: IpLookupView },
-  { path: '/id-photo', name: 'id-photo', component: IdPhotoView },
-  { path: '/win-update', name: 'win-update', component: FakeUpdateView },
-  { path: '/roll-call', name: 'roll-call', component: RollCallView },
-  { path: '/membership', name: 'membership', component: MembershipView },
-  { path: '/zip-tool', name: 'zip-tool', component: ZipToolView },
-  { path: '/image-upscale', name: 'image-upscale', component: ImageUpscaleView },
-  { path: '/stitch', name: 'stitch', component: StitchView },
-  { path: '/lyrics', name: 'lyrics', component: LyricsView },
-  { path: '/trends', name: 'trends', component: TrendsView },
-  { path: '/weather', name: 'weather', component: WeatherView },
-  { path: '/web-capture', name: 'web-capture', component: WebCaptureView },
-  { path: '/apex', name: 'apex', component: ApexView },
-  { path: '/github-radar', name: 'GitHub日报', component: GithubRadarView, meta: { requiresPremium: true } },
-  { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAdmin: true } },
+  { path: '/transmit', name: 'transmit', component: () => import('../views/TransmitView.vue') },
+  { path: '/transmit/:id', name: 'receive', component: () => import('../views/ReceiveView.vue') },
+  { path: '/compress', name: 'compress', component: () => import('../views/CompressView.vue') },
+  { path: '/convert', name: 'convert', component: () => import('../views/ConvertView.vue') },
+  { path: '/recipe', name: 'recipe', component: () => import('../views/RecipeView.vue') },
+  { path: '/gallery', name: 'gallery', component: () => import('../views/GalleryView.vue') },
+  { path: '/pixel-art', name: 'pixel-art', component: () => import('../views/PixelArtConverter.vue') },
+  { path: '/obfuscate', name: 'obfuscate', component: () => import('../views/ObfuscateView.vue') },
+  { path: '/watermark', name: 'watermark', component: () => import('../views/WatermarkView.vue') },
+  { path: '/pdf-merge', name: 'pdf-merge', component: () => import('../views/PdfMergeView.vue') },
+  { path: '/pdf-split', name: 'pdf-split', component: () => import('../views/PdfSplitView.vue') },
+  { path: '/img-to-pdf', name: 'img-to-pdf', component: () => import('../views/ImgToPdfView.vue') },
+  { path: '/pdf-to-img', name: 'pdf-to-img', component: () => import('../views/PdfToImgView.vue') },
+  { path: '/pdf-extract-text', name: 'pdf-extract-text', component: () => import('../views/PdfExtractTextView.vue') },
+  { path: '/pdf-page-editor', name: 'pdf-page-editor', component: () => import('../views/PdfPageEditorView.vue') },
+  { path: '/pdf-watermark', name: 'pdf-watermark', component: () => import('../views/PdfWatermarkView.vue') },
+  { path: '/pdf-sign', name: 'pdf-sign', component: () => import('../views/PdfSignView.vue') },
+  { path: '/pdf-to-word', name: 'pdf-to-word', component: () => import('../views/PdfToWordView.vue') },
+  { path: '/video-download', name: 'video-download', component: () => import('../views/VideoDownloadView.vue') },
+  { path: '/tv-download', name: 'tv-download', component: () => import('../views/TvDownloadView.vue') },
+  { path: '/screen-recording', name: 'screen-recording', component: () => import('../views/ScreenRecordingView.vue') },
+  { path: '/photopea', name: 'photopea', component: () => import('../views/PhotopeaView.vue') },
+  { path: '/ip-lookup', name: 'ip-lookup', component: () => import('../views/IpLookupView.vue') },
+  { path: '/id-photo', name: 'id-photo', component: () => import('../views/IdPhotoView.vue') },
+  { path: '/win-update', name: 'win-update', component: () => import('../views/FakeUpdateView.vue') },
+  { path: '/roll-call', name: 'roll-call', component: () => import('../views/RollCallView.vue') },
+  { path: '/membership', name: 'membership', component: () => import('../views/MembershipView.vue') },
+  { path: '/zip-tool', name: 'zip-tool', component: () => import('../views/ZipToolView.vue') },
+  { path: '/image-upscale', name: 'image-upscale', component: () => import('../views/ImageUpscaleView.vue') },
+  { path: '/stitch', name: 'stitch', component: () => import('../views/StitchView.vue') },
+  { path: '/lyrics', name: 'lyrics', component: () => import('../views/LyricsView.vue') },
+  { path: '/trends', name: 'trends', component: () => import('../views/TrendsView.vue') },
+  { path: '/weather', name: 'weather', component: () => import('../views/WeatherView.vue') },
+  { path: '/web-capture', name: 'web-capture', component: () => import('../views/WebCaptureView.vue') },
+  { path: '/apex', name: 'apex', component: () => import('../views/ApexView.vue') },
+  { path: '/algs', name: 'algs', component: () => import('../views/AlgsView.vue') },
+  {
+    path: '/github-radar',
+    name: 'GitHub日报',
+    component: () => import('../views/GithubRadarView.vue'),
+    meta: { requiresPremium: true },
+  },
+  {
+    path: '/admin',
+    name: 'admin',
+    component: () => import('../views/AdminView.vue'),
+    meta: { requiresAdmin: true },
+  },
 ]
 
 const router = createRouter({

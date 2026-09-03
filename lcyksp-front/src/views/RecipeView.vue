@@ -8,6 +8,7 @@
 import { ref, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
+import { Loading, MagicStick, Plus, Refresh, Search, WarningFilled } from '@element-plus/icons-vue'
 
 // ---------- 轻量 Markdown → HTML 转换 ----------
 function renderMarkdown(text) {
@@ -204,7 +205,7 @@ async function submitAdd() {
         placeholder="输入关键词搜索菜谱，如「番茄」「牛肉」…"
         size="large"
         clearable
-        :prefix-icon="'Search'"
+        :prefix-icon="Search"
         @input="onSearchInput"
         @keyup.enter="doSearch"
       />
@@ -317,7 +318,7 @@ async function submitAdd() {
           <el-button
             v-if="!aiStreaming"
             type="warning"
-            :icon="'Refresh'"
+            :icon="Refresh"
             @click="retryAiStream"
           >
             重新生成

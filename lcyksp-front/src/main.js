@@ -3,7 +3,6 @@ import ElementPlus from 'element-plus'
 import { ElMessage } from 'element-plus'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
-import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import axios from 'axios'
 import router from './router/index.js'
 import App from './App.vue'
@@ -30,6 +29,10 @@ axios.interceptors.request.use(
 axios.interceptors.response.use(
   (res) => res,
   (error) => {
+    // 轮询类请求传 config.silent 自行处理错误，不弹全局提示
+    if (error.config?.silent) {
+      return Promise.reject(error)
+    }
     if (error.response) {
       const status = error.response.status
       const data = error.response.data
@@ -134,10 +137,6 @@ export function getCurrentTheme() {
 }
 
 const app = createApp(App)
-
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
-  app.component(key, component)
-}
 
 app.use(ElementPlus)
 app.use(router)
