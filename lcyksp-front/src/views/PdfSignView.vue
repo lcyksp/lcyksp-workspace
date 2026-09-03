@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import * as pdfjsLib from 'pdfjs-dist'
 import { PDFDocument, degrees } from 'pdf-lib'
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
+import { Document, UploadFilled } from '@element-plus/icons-vue'
 pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker()
 
 const mode = ref('none')

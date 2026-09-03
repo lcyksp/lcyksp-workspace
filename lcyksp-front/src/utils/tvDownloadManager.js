@@ -77,17 +77,18 @@ export const tvDownloadManager = reactive({
       }
 
       try {
-        const res = await axios.get('/api/tv/download-status/' + taskId)
+        // silent: 404 等错误由这里自行处理，不走全局拦截器弹窗
+        const res = await axios.get('/api/tv/download-status/' + taskId, { silent: true })
         if (res.data.status === 'completed') {
           clearInterval(interval)
           task.progress = { size: '100%', speed: '下载中...', time: '' }
-          
+
           ElMessage.success(task.epName + ' 服务器合成完成！正在获取并保存到本地...')
-          
+
           try {
             const token = localStorage.getItem('lcyksp_token') || ''
             const downloadUrl = '/api/tv/download-file/' + taskId + '?token=' + encodeURIComponent(token)
-            
+
             const link = document.createElement('a')
             link.href = downloadUrl
             link.download = key + '.mp4'
@@ -112,6 +113,14 @@ export const tvDownloadManager = reactive({
           }
         }
       } catch (err) {
+        // 任务在服务端不存在（服务重启会清空内存队列）：标记失效、停止轮询，只提示一次
+        if (err.response?.status === 404) {
+          clearInterval(interval)
+          ElMessage.warning(task.epName + ' 的下载任务已失效（服务器已重启），请重新添加下载')
+          delete this.activeTasks[key]
+          this.saveToStorage()
+          return
+        }
         console.warn('Polling status failed for task:', taskId, err)
       }
     }, 3000)

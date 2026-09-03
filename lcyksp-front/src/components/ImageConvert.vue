@@ -6,6 +6,7 @@
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
+import { MagicStick, UploadFilled } from '@element-plus/icons-vue'
 
 const file = ref(null)
 const converting = ref(false)

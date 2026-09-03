@@ -3,6 +3,7 @@ import { ref, computed, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as pdfjsLib from 'pdfjs-dist'
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
+import { Document, Download, Loading, Picture, UploadFilled } from '@element-plus/icons-vue'
 
 pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker()
 

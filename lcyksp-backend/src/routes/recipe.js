@@ -3,6 +3,7 @@ import { getDb } from '../config/db.js';
 import { authMiddleware, requireAuth } from '../middleware/auth.js';
 import { requirePremiumOrAdmin } from '../middleware/access.js';
 import { decrypt } from '../utils/crypto.js';
+import { normalizeEndpoint } from '../utils/llmEndpoint.js';
 
 var router = Router();
 
@@ -53,13 +54,6 @@ function loadLlmEndpoint() {
       resolve({ apiUrl: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' });
     }
   });
-}
-
-function normalizeEndpoint(url) {
-  if (!url || typeof url !== 'string') return 'https://api.deepseek.com/chat/completions';
-  var trimmed = url.trim();
-  if (trimmed.indexOf('/chat/completions') !== -1) return trimmed;
-  return trimmed.replace(/\/$/, '') + '/chat/completions';
 }
 
 async function streamRecipeSteps(recipe, res, signal) {

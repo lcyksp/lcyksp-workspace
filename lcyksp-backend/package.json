@@ -1,6 +1,6 @@
 {
   "name": "lcyksp-backend",
-  "version": "1.0.0",
+  "version": "4.0.0",
   "description": "lcyksp.xyz 全栈工具箱后端服务",
   "type": "module",
   "main": "src/app.js",

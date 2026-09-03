@@ -7,6 +7,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
+import { Delete, Download, Loading, Plus, Upload, User } from '@element-plus/icons-vue'
 
 const photos = ref([])
 const loading = ref(false)

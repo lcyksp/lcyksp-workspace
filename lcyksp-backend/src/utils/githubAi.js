@@ -1,4 +1,5 @@
 import { decrypt } from './crypto.js'
+import { normalizeEndpoint } from './llmEndpoint.js'
 import { getDb } from '../config/db.js'
 import { ProxyAgent } from 'undici'
 
@@ -26,7 +27,7 @@ async function loadConfig() {
 function parse(value) { const text = String(value || '').trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim(); try { return JSON.parse(text) } catch { return null } }
 async function callModel(url, key, model, prompt) {
   await acquireModelSlot(model)
-  const endpoint = url.endsWith('/chat/completions') ? url : url + '/chat/completions'
+  const endpoint = normalizeEndpoint(url)
   const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: JSON.stringify({ model, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }), ...(dispatcher ? { dispatcher } : {}), signal: AbortSignal.timeout(45000) })
   const data = response.ok ? await response.json() : null
   const content = data?.choices?.[0]?.message?.content || ''
@@ -47,4 +48,38 @@ export async function reviewGithubRepository(repository, { codeContext = false }
   await dbRun('UPDATE github_repositories SET last_ai_review_id = ?, updated_at = ? WHERE id = ?', [review.lastID, new Date().toISOString(), repository.id])
   console.log(`[GitHub Radar] AI review success repo=${repository.full_name} provider=${provider} confidence=${finalConfidence}`)
   return { id: review.lastID, worthPush: Boolean(result.parsed.worthPush), confidence: finalConfidence }
+}
+
+export async function reviewGithubSubscriptionRelevance(repository, focus) {
+  const config = await loadConfig(); if (!config?.url || !config.key || !config.model) return null
+  const relevanceThreshold = 0.85
+  const prompt = [
+    '你是 GitHub 技术趋势的严格选题编辑。只输出 JSON，不要 Markdown。',
+    '{"relevant":true,"confidence":0.0,"reason":"不超过80字的中文判断依据"}',
+    '判断仓库是否直接、明确地符合订阅方向。只有仓库的核心用途或核心技术属于该方向时 relevant 才能为 true。',
+    '仅在 README、描述或摘要里顺带提到关键词，或只是通用工具、泛化资源清单、泛化教程合集、纯算法论文时，必须判为 false。',
+    '高度垂直且可直接用于该方向的应用、插件、提示词工程、模板库或技术资产可以判为 true，不能仅因为仓库名含 awesome 就否决。',
+    'AI 方向包括大模型应用、Agent、RAG、MCP、提示词工程、AI生成创作、图像/视频生成、多模态应用、AI编程工具、Coding Agent/Harness、Claude Code/Codex 工具和 Skill 技能生态；排除无直接关系的普通开发工具。',
+    'Trending 排名只能提高审核优先级，不能替代订阅关键词和方向判断；不符合订阅方向时必须判为 false。',
+    '机械材料方向尤其要求直接涉及机械设计制造、增材制造、材料与机械自动化、材料科学、材料成型、SolidWorks、机器人、CAD/CAE 或工业制造。',
+    '订阅方向：' + JSON.stringify(focus.names || []),
+    '方向说明：' + JSON.stringify(focus.descriptions || []),
+    '订阅关键词：' + JSON.stringify(focus.keywords || []),
+    '仓库：' + repository.full_name,
+    '描述：' + (repository.description || '无'),
+    '语言：' + (repository.language || '未知'),
+    'Topics：' + JSON.stringify(repository.topics || []),
+    '已有中文摘要：' + (repository.summary || '无'),
+  ].join('\n')
+  let provider = 'primary'; let model = config.model; let result = await callModel(config.url, config.key, model, prompt)
+  const confidence = Number(result.parsed?.confidence || 0)
+  if ((!result.response.ok || !result.parsed || confidence < relevanceThreshold) && config.fallback?.url && config.fallback.key && config.fallback.model) {
+    provider = 'fallback'; model = config.fallback.model
+    result = await callModel(config.fallback.url, config.fallback.key, model, prompt + '\n主模型判断不够确定，请更严格地复核。')
+  }
+  if (!result.response.ok) throw new Error('AI relevance HTTP ' + result.response.status)
+  if (!result.parsed || typeof result.parsed.relevant !== 'boolean') throw new Error('AI 相关性返回格式无法解析')
+  const finalConfidence = Math.max(0, Math.min(1, Number(result.parsed.confidence) || 0))
+  const relevant = result.parsed.relevant === true && finalConfidence >= relevanceThreshold
+  return { relevant, confidence: finalConfidence, reason: String(result.parsed.reason || '').replace(/[*_#`]/g, '').replace(/\s+/g, ' ').trim().slice(0, 160), provider, model }
 }

@@ -6,6 +6,7 @@
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
+import { Close, PictureFilled, Refresh } from '@element-plus/icons-vue'
 
 // ---------- 客户端预缩放：大于 5MB 的大图先用 Canvas 等比缩到 2048px ----------
 const CLIENT_MAX_PX = 2048

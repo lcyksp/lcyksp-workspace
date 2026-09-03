@@ -21,6 +21,7 @@ import {
   Sunny,
   RefreshRight,
   ChatDotRound,
+  Trophy,
 } from '@element-plus/icons-vue'
 import AuthDialog from './components/AuthDialog.vue'
 import VideoBackground from './components/VideoBackground.vue'
@@ -38,7 +39,7 @@ const authDialogVisible = ref(false)
 const feedbackDialogVisible = ref(false)
 const accessDialogVisible = ref(false)
 const currentUser = ref(null)
-const sidebarCollapsed = ref(false)
+const sidebarCollapsed = ref(typeof window !== 'undefined' && window.innerWidth < 768)
 const currentTheme = ref(getCurrentTheme())
 const currentThemeMode = ref(localStorage.getItem(THEME_MODE_KEY) || 'auto')
 const feedbackSubmitting = ref(false)
@@ -66,9 +67,13 @@ const isPremiumOrAdmin = computed(() => {
   return ['admin', 'premium', 'pro'].includes(currentUser.value.role)
 })
 const isDesktop = ref(typeof window !== 'undefined' ? window.innerWidth >= DESKTOP_BREAKPOINT : true)
+// 记忆大厅（玻璃首页）已下架：这里恒为 false，于是顶栏切换按钮隐藏、glass-shell 皮肤不生效、
+// 背景视频永不加载，已开过的用户下次进来 localStorage 会被 syncGlassHomeAvailability 清掉。
+// 恢复方式：把 return false 换成下面注释里那行，并放开 HomePageView.vue 里的 HomeGlassView 分支。
 const canUseGlassHome = computed(() => {
-  if (!currentUser.value) return false
-  return ['admin', 'pro'].includes(currentUser.value.role) && isDesktop.value
+  return false
+  // if (!currentUser.value) return false
+  // return ['admin', 'pro'].includes(currentUser.value.role) && isDesktop.value
 })
 const glassHomeMode = ref(localStorage.getItem(GLASS_HOME_KEY) === 'true' && canUseGlassHome.value)
 const showGlassHomeToggle = computed(() => canUseGlassHome.value)
@@ -176,8 +181,6 @@ const menuItems = reactive([
     name: '生活工具',
     icon: KnifeFork,
     children: [
-      { name: '赛博菜谱', path: '/recipe' },
-      { name: '共享相册', path: '/gallery' },
       {
         name: '影音娱乐',
         isFolder: true,
@@ -199,9 +202,17 @@ const menuItems = reactive([
           { name: 'IP归属地查询', path: '/ip-lookup' },
           { name: '随机小助手', path: '/roll-call' },
           { name: '系统更新模拟', path: '/win-update' },
-          { name: 'Apex 战绩查询', path: '/apex' },
         ],
       },
+    ],
+    isOpen: false,
+  },
+  {
+    name: '游戏助手',
+    icon: Trophy,
+    children: [
+      { name: 'Apex 战绩查询', path: '/apex' },
+      { name: 'ALGS 赛事数据', path: '/algs' },
     ],
     isOpen: false,
   },

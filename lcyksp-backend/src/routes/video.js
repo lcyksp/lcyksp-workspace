@@ -12,6 +12,7 @@ import { ACTION_ANALYZE, ACTION_DOWNLOAD, PLAN_FREE, buildQuotaExceededMessage, 
 import { getClientIp } from '../utils/turnstile.js'
 import { logDownload } from '../utils/logger.js'
 import { getDb } from '../config/db.js'
+import { assertPublicUrl } from '../utils/ssrf.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = express.Router()
@@ -49,6 +50,8 @@ const IMAGE_CONTENT_TYPES = {
 }
 const DOUYIN_DEBUG_DIR = path.join(DATA_DIR, 'debug')
 const DOUYIN_ANALYZE_CACHE_TTL_MS = 10 * 60 * 1000
+// 容量上限：防止只增不减的缓存导致内存缓慢增长
+const DOUYIN_ANALYZE_CACHE_MAX_SIZE = 300
 const DOUYIN_IMAGE_HOST_ALLOWLIST = ['byteimg.com', 'douyinpic.com', 'tos-cn', 'p3-pc-sign', 'p6-sign', 'p9-pc-sign']
 const DOUYIN_IMAGE_URL_BLOCKLIST = [
   'douyinstatic.com',
@@ -109,6 +112,14 @@ function detectPlatform(url) {
   if (value.includes('douyin.com') || value.includes('iesdouyin.com') || value.includes('v.douyin.com')) return 'douyin'
   if (value.includes('youtube.com') || value.includes('youtu.be')) return 'youtube'
   return 'generic'
+}
+
+// 平台白名单：仅允许抖音 / B站 域名，拒绝 generic 任意 URL（防 SSRF）
+const ALLOWED_PLATFORM_DOMAINS = ['douyin.com', 'bilibili.com', 'b23.tv']
+
+function isAllowedPlatformUrl(url) {
+  const lower = String(url || '').toLowerCase()
+  return ALLOWED_PLATFORM_DOMAINS.some((domain) => lower.includes(domain))
 }
 
 function parseCookieLine(line) {
@@ -726,6 +737,11 @@ function getDouyinAnalyzeCache(url) {
 }
 
 function setDouyinAnalyzeCache(url, data) {
+  // 超出容量时淘汰最旧的一条（Map 保持插入顺序）
+  if (douyinAnalyzeCache.size >= DOUYIN_ANALYZE_CACHE_MAX_SIZE) {
+    const oldestKey = douyinAnalyzeCache.keys().next().value
+    if (oldestKey !== undefined) douyinAnalyzeCache.delete(oldestKey)
+  }
   douyinAnalyzeCache.set(url, { createdAt: Date.now(), data })
 }
 
@@ -1539,6 +1555,13 @@ router.post('/analyze', async (req, res) => {
     return res.json({ success: false, message: '当前暂仅支持抖音和 B站，YouTube 解析入口已暂时关闭。' })
   }
 
+  // 防 SSRF：resolveShareUrl 会由服务端发起请求，先校验原始 URL
+  try {
+    await assertPublicUrl(url)
+  } catch (err) {
+    return res.json({ success: false, message: err.message || '链接不合法' })
+  }
+
   let tempCookiePath = ''
   try {
     let customCookie = req.body.customCookie
@@ -1662,6 +1685,16 @@ router.post('/analyze', async (req, res) => {
         elapsedMs: Date.now() - startedAt,
       })
 
+      // 防 SSRF + 平台白名单：跳转后的目标也必须为公网抖音/B站链接
+      try {
+        await assertPublicUrl(finalUrl)
+      } catch (err) {
+        return res.json({ success: false, message: err.message || '链接不合法' })
+      }
+      if (!isAllowedPlatformUrl(finalUrl)) {
+        return res.json({ success: false, message: '当前仅支持解析抖音和 B站链接' })
+      }
+
       if (detectPlatform(finalUrl) === 'douyin') {
         const douyinResult = await runDouyinPrimaryFlow(finalUrl)
         return res.json({ success: true, data: douyinResult.data, message: douyinResult.message })
@@ -1767,6 +1800,13 @@ router.post('/download', async (req, res) => {
     return res.status(400).json({ error: '当前暂仅支持抖音和 B站，YouTube 下载入口已暂时关闭。' })
   }
 
+  // 防 SSRF：resolveShareUrl 会由服务端发起请求，先校验原始 URL
+  try {
+    await assertPublicUrl(url)
+  } catch (err) {
+    return res.status(400).json({ error: err.message || '链接不合法' })
+  }
+
   let tempCookiePath = ''
   let tempDir = ''
   try {
@@ -1806,6 +1846,16 @@ router.post('/download', async (req, res) => {
     }
 
     const finalUrl = await resolveShareUrl(url)
+
+    // 防 SSRF + 平台白名单：跳转后的目标也必须为公网抖音/B站链接
+    try {
+      await assertPublicUrl(finalUrl)
+    } catch (err) {
+      return res.status(400).json({ error: err.message || '链接不合法' })
+    }
+    if (!isAllowedPlatformUrl(finalUrl)) {
+      return res.status(400).json({ error: '当前仅支持解析抖音和 B站链接' })
+    }
 
     if (source && source !== 'yt-dlp' && browserDirectUrl) {
       tempDir = createTempDownloadDir()
@@ -1942,6 +1992,13 @@ router.get('/preview-image', async (req, res) => {
     const mediaUrl = String(req.query.url || '').trim()
     if (!/^https?:\/\//i.test(mediaUrl)) {
       return res.status(400).json({ error: '无效的图片地址' })
+    }
+
+    // 防 SSRF：图片代理不得访问内网地址
+    try {
+      await assertPublicUrl(mediaUrl)
+    } catch (err) {
+      return res.status(400).json({ error: err.message || '无效的图片地址' })
     }
 
     let customCookieHeader = null
