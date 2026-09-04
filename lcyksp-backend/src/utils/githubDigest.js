@@ -28,7 +28,16 @@ async function loadPushHistory(subscriptionId, type, now = new Date()) {
 
 async function recordDigestPushes(subscriptionId, type, repositoryIds, now = new Date()) {
   for (const repositoryId of repositoryIds) {
-    await dbRun('INSERT INTO github_digest_pushes (subscription_id, repository_id, job_type, pushed_at, push_count) VALUES (?, ?, ?, ?, 1) ON CONFLICT(subscription_id, repository_id, job_type) DO UPDATE SET pushed_at = excluded.pushed_at, push_count = push_count + 1', [subscriptionId, type, repositoryId, now.toISOString()])
+    const repository = await dbGet('SELECT id FROM github_repositories WHERE id = ?', [repositoryId])
+    if (!repository) {
+      console.warn(`[GitHub Radar] skip push history for missing repository=${repositoryId}`)
+      continue
+    }
+    try {
+      await dbRun('INSERT INTO github_digest_pushes (subscription_id, repository_id, job_type, pushed_at, push_count) VALUES (?, ?, ?, ?, 1) ON CONFLICT(subscription_id, repository_id, job_type) DO UPDATE SET pushed_at = excluded.pushed_at, push_count = push_count + 1', [subscriptionId, repositoryId, type, now.toISOString()])
+    } catch (error) {
+      console.error(`[GitHub Radar] push history write failed repository=${repositoryId}:`, error.message)
+    }
   }
 }
 
