@@ -55,6 +55,29 @@ function precompress() {
   }
 }
 
+// 着色器源码写在模板字符串里，压缩器一个字节都不会碰，注释会原样发到浏览器。构建时把
+// /* glsl */ 标记过的模板里的整行注释和空行剥掉：仓库里那些推导过程照旧留着，产物里没有
+function stripGlsl() {
+  return {
+    name: 'lcyksp-strip-glsl',
+    apply: 'build',
+    enforce: 'pre',
+    transform(code) {
+      if (!code.includes('/* glsl */')) return null
+      // GLSL 里没有字符串字面量，`//` 只可能是注释；模板里也没有反引号和 ${}，
+      // 所以「配到下一个反引号」就是完整的一段着色器
+      const out = code.replace(/\/\* glsl \*\/ `([^`]*)`/g, (_, body) => {
+        const kept = body.split('\n').filter((line) => {
+          const t = line.trim()
+          return t && !t.startsWith('//')
+        })
+        return `\`\n${kept.join('\n')}\n\``
+      })
+      return out === code ? null : { code: out, map: null }
+    },
+  }
+}
+
 // vendor 分包：把体积大且版本稳定的库拆成独立 chunk，配 1 年长缓存后业务代码更新不会连带失效。
 function manualChunks(id) {
   const p = id.replace(/\\/g, '/')
@@ -85,7 +108,7 @@ function manualChunks(id) {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [vue(), precompress()],
+  plugins: [vue(), stripGlsl(), precompress()],
   build: {
     rollupOptions: {
       output: { manualChunks },

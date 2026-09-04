@@ -134,6 +134,8 @@ varying vec2 vUv;
 varying vec3 vWorldNormal;
 
 const float SRGB = 2.2;
+// 羽化带半宽，约占月面直径 5%：月球没大气，界线本该锐，宽了就成糊
+const float TERM = 0.05;
 
 void main() {
   // uMapUv 把等距圆柱贴图的一段拉满 [0,1]：桌面那张只存了正对地球的半张，
@@ -141,9 +143,11 @@ void main() {
   vec2 uv = vec2((vUv.x - uMapUv.y) * uMapUv.x, vUv.y);
   vec3 albedo = mix(uFlat, pow(texture2D(uMap, uv).rgb, vec3(SRGB)), uReal);
   float sun = dot(normalize(vWorldNormal), uSunDir);
-  // 月球没有大气，明暗界线本该是锐的。0.55 次方模拟月壤的反向散射
-  // （月面接近 Lommel-Seeliger 而非朗伯），满月才会像一枚平盘而不是球
-  float lit = pow(max(sun, 0.0), 0.55);
+  // 0.55 次方模拟月壤的反向散射（接近 Lommel-Seeliger 而非朗伯），满月才像平盘而非球。
+  // 它在 sun=0 处导数无穷大，晨昏线会硬切一刀；用二次曲线把这个拐角磨圆：-TERM 处值与
+  // 斜率同时归零，+TERM 处与原直线相切，差值恰是 (sun-TERM)^2/4TERM，带外一像素未动
+  float t = clamp(sun / TERM, -1.0, 1.0);
+  float lit = pow(max(sun, TERM * 0.25 * (t + 1.0) * (t + 1.0)), 0.55);
   gl_FragColor = vec4(pow(albedo * (lit * 1.15 + uEarthshine), vec3(1.0 / SRGB)), 1.0);
 }
 `
