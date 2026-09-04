@@ -11,7 +11,6 @@ const supportOptions = [
 ]
 
 const now = ref(new Date())
-const wide = ref(false)
 const ready = ref(false)
 const supportDialogVisible = ref(false)
 const supportChannel = ref('wechat')
@@ -44,11 +43,17 @@ function onReady(api) {
   ready.value = true
 }
 
-// 现在点哪都只是在两个缩放状态之间切换，行星信息卡将来从 pick 的 key 接上
-function onPick() {
+// 点到天体就去那个天体：月球→月球特写，地球→地球特写；行星和太阳留在全景里不动，
+// 信息卡将来从同一个 key 接上。点空处是一来一回的开关：特写里退到太阳系全景，全景里
+// 回地月系 —— 全景里的地球只有几十个像素，没有这条退路就只能靠瞄那个小点，等于出不来。
+// 滚轮和捏合只改远近，不参与切换
+function onPick(key) {
   if (!engine.value) return
-  wide.value = !wide.value
-  engine.value.setZoom(wide.value ? 1 : 0)
+  const pano = engine.value.getZoom() > 0.5
+  if (key === 'moon') engine.value.setZoom(-1)
+  else if (key === 'earth') engine.value.setZoom(0)
+  else if (!pano) engine.value.setZoom(1)
+  else if (!key) engine.value.setZoom(0)
 }
 function openSupportDialog() {
   supportChannel.value = 'wechat'
