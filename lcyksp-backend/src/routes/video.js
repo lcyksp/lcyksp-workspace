@@ -53,6 +53,7 @@ const DOUYIN_DEBUG_DIR = path.join(DATA_DIR, 'debug')
 const DOUYIN_ANALYZE_CACHE_TTL_MS = 10 * 60 * 1000
 // 容量上限：防止只增不减的缓存导致内存缓慢增长
 const DOUYIN_ANALYZE_CACHE_MAX_SIZE = 300
+const DOUYIN_SIGNED_API_RETRY_DELAYS = [700, 1600, 3200]
 const DOUYIN_IMAGE_HOST_ALLOWLIST = ['byteimg.com', 'douyinpic.com', 'tos-cn', 'p3-pc-sign', 'p6-sign', 'p9-pc-sign']
 const DOUYIN_IMAGE_URL_BLOCKLIST = [
   'douyinstatic.com',
@@ -746,6 +747,42 @@ function setDouyinAnalyzeCache(url, data) {
   douyinAnalyzeCache.set(url, { createdAt: Date.now(), data })
 }
 
+// 抖音对同 IP 短时间内的 detail 请求会随机下发 403（实测约 1/3 概率），退避重试即可恢复
+async function fetchDouyinSignedDetailBody(awemeId, cookieHeader) {
+  let lastStatus = 0
+  for (let attempt = 0; attempt <= DOUYIN_SIGNED_API_RETRY_DELAYS.length; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, DOUYIN_SIGNED_API_RETRY_DELAYS[attempt - 1]))
+    }
+
+    const query = buildDouyinDetailParams(awemeId).toString()
+    const aBogus = generateABogus(query, DESKTOP_UA)
+    const response = await fetch(
+      `https://www.douyin.com/aweme/v1/web/aweme/detail/?${query}&a_bogus=${encodeURIComponent(aBogus)}`,
+      {
+        method: 'GET',
+        headers: {
+          'User-Agent': DESKTOP_UA,
+          Referer: 'https://www.douyin.com/',
+          Origin: 'https://www.douyin.com',
+          Accept: 'application/json, text/plain, */*',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          Cookie: cookieHeader,
+          'x-requested-with': 'XMLHttpRequest',
+        },
+      },
+    )
+
+    const text = await response.text()
+    if (response.ok && text) return text
+
+    lastStatus = response.status
+    if (response.status !== 403 && response.status !== 429 && response.status < 500) break
+  }
+
+  throw new Error(`douyin signed api failed: HTTP ${lastStatus}`)
+}
+
 async function analyzeDouyinViaSignedApi(url, options = {}) {
   const finalUrl = await resolveShareUrl(url)
   const cached = getDouyinAnalyzeCache(finalUrl)
@@ -763,26 +800,7 @@ async function analyzeDouyinViaSignedApi(url, options = {}) {
     }
   }
 
-  const params = buildDouyinDetailParams(awemeId)
-  const query = params.toString()
-  const aBogus = generateABogus(query, DESKTOP_UA)
-  const endpoint = `https://www.douyin.com/aweme/v1/web/aweme/detail/?${query}&a_bogus=${encodeURIComponent(aBogus)}`
-  const response = await fetch(endpoint, {
-    method: 'GET',
-    headers: {
-      'User-Agent': DESKTOP_UA,
-      Referer: 'https://www.douyin.com/',
-      Origin: 'https://www.douyin.com',
-      Accept: 'application/json, text/plain, */*',
-      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-      Cookie: cookieHeader,
-      'x-requested-with': 'XMLHttpRequest',
-    },
-  })
-
-  const text = await response.text()
-  if (!response.ok) throw new Error(`douyin signed api failed: HTTP ${response.status}`)
-  if (!text) throw new Error('douyin signed api returned empty body')
+  const text = await fetchDouyinSignedDetailBody(awemeId, cookieHeader)
 
   writeDouyinDebugFile('douyin-signed-api-response.json', text)
 
@@ -810,6 +828,35 @@ async function analyzeDouyinViaSignedApi(url, options = {}) {
   if (!result.formats.length) throw new Error('douyin signed api did not return usable media')
   setDouyinAnalyzeCache(finalUrl, result)
   return result
+}
+
+// 下载时按 formatId 的语义（图/音/视频）回到签名链路取直链，不依赖前端回传，也兼容 yt-dlp 兜底出的格式 id
+async function resolveDouyinDownloadTarget(finalUrl, formatId, options) {
+  let data = null
+  try {
+    data = await analyzeDouyinViaSignedApi(finalUrl, options)
+  } catch (error) {
+    console.error('[Video] douyin download resolve failed:', error?.message || String(error))
+    return null
+  }
+
+  const formats = data?.formats || []
+  const id = String(formatId || '')
+  const imageIndex = /^image-(\d+)$/.exec(id)
+
+  if (imageIndex) {
+    const picked = formats.filter((item) => item.mediaType === 'image')[Number(imageIndex[1]) - 1]
+    return picked?.directUrl ? { formatId: id, directUrl: picked.directUrl, audioUrl: '' } : null
+  }
+
+  const wantAudio = /audio/i.test(id)
+  const picked = formats.find((item) => item.mediaType === (wantAudio ? 'audio' : 'video'))
+  if (!picked?.directUrl) return null
+  return {
+    formatId: wantAudio ? 'direct-audio' : 'direct-video',
+    directUrl: picked.directUrl,
+    audioUrl: picked.audioUrl || '',
+  }
 }
 
 function extractJsonObjectsFromScripts(scripts) {
@@ -1047,11 +1094,12 @@ function normalizeVideoError(errorMessage, url, cookiesMeta) {
     return `B站拒绝了当前抓取请求（HTTP 412）。通常需要新的 B站 cookies。${cookieHint}`
   }
 
-  if (
-    platform === 'douyin' &&
-    (/fresh cookies/i.test(message) || /cookies/i.test(message) || /403|forbidden/i.test(message))
-  ) {
-    return `抖音当前要求使用新鲜 cookies 才能解析。${cookieHint}`
+  if (platform === 'douyin' && /403|forbidden|fresh cookies/i.test(message)) {
+    return '抖音接口临时限流，请隔几秒再试一次。若反复失败，说明该作品在抖音已不可见。'
+  }
+
+  if (platform === 'douyin' && /cookies/i.test(message)) {
+    return `抖音解析被拒绝。${cookieHint}`
   }
 
   if (
@@ -1889,6 +1937,17 @@ router.post('/download', heavyLimiter, async (req, res) => {
     }
     if (!isAllowedPlatformUrl(finalUrl)) {
       return res.status(400).json({ error: '当前仅支持解析抖音和 B站链接' })
+    }
+
+    // 抖音走不通 yt-dlp，前端没回传直链、或直链来自 yt-dlp 兜底时，由服务端自己签名解析
+    if (detectPlatform(finalUrl) === 'douyin' && (!browserDirectUrl || !source || source === 'yt-dlp')) {
+      const resolved = await resolveDouyinDownloadTarget(finalUrl, formatId, { customCookieHeader })
+      if (resolved) {
+        formatId = resolved.formatId
+        browserDirectUrl = resolved.directUrl
+        browserAudioUrl = resolved.audioUrl
+        source = 'signed-api'
+      }
     }
 
     if (source && source !== 'yt-dlp' && browserDirectUrl) {
