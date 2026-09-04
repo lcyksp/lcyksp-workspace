@@ -12,6 +12,12 @@ function cleanSummary(value) { return String(value || '').replace(/```[\s\S]*?``
 
 // 推送冷却期：上次入选后 N 天内的项目不参与常规补位，先由趋势榜/近期热门补位，仍不满才让冷却期内的快速增长项目垫底，避免同一项目连续霸榜
 const DIGEST_COOLDOWN_DAYS = { daily: 3, weekly: 21, monthly: 60 }
+const DIGEST_SEND_MAX_ATTEMPTS = 5
+const DIGEST_SEND_RETRY_BASE_MS = 5 * 60 * 1000
+const DIGEST_CATCHUP_START_MINUTE = 7 * 60 + 31
+const DIGEST_CATCHUP_END_MINUTE = 22 * 60
+const DIGEST_CATCHUP_INTERVAL_MS = 10 * 60 * 1000
+let lastDigestCatchupAt = 0
 const digestRelevanceWarmups = new Map()
 
 function isPushCooled(pushHistory, repositoryId, cooldownDays) {
@@ -44,15 +50,6 @@ async function recordDigestPushes(subscriptionId, type, repositoryIds, now = new
 function beijingParts(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short' }).formatToParts(now)
   return Object.fromEntries(parts.map((part) => [part.type, part.value]))
-}
-
-function dueTypes(now = new Date()) {
-  const parts = beijingParts(now)
-  if (parts.hour !== '08') return []
-  const types = ['daily']
-  if (parts.weekday === 'Mon') types.push('weekly')
-  if (parts.day === '01') types.push('monthly')
-  return types
 }
 
 function isDigestTypeDue(parts, type) {
@@ -188,32 +185,16 @@ export function renderGithubDigestHtml(items, type = 'daily', dateKey = '') {
   return `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.65;color:#24243a;max-width:680px"><h2 style="margin:0 0 8px;font-size:22px;font-weight:600">GitHub ${title}</h2><p style="margin:0 0 18px;color:#667085">近期 Star 增长较快的项目简报</p><ol style="padding-left:24px;margin:0">${htmlItems}</ol><p style="color:#98a2b3;font-size:12px;margin-top:20px">数据按北京时间统计。新发现项目可能暂时缺少完整周期增长数据。</p><p style="color:#98a2b3;font-size:12px;margin-top:8px">本邮件由系统自动发送，无需回复。</p></div>`
 }
 
-async function sendFor(subscription, type, dateKey) {
-  const jobKey = 'github-digest:' + type + ':' + dateKey + ':' + subscription.id
-  const existing = await dbGet('SELECT id FROM github_job_runs WHERE job_key = ?', [jobKey])
-  if (existing) return false
-  const startedAt = new Date().toISOString()
-  await dbRun('INSERT INTO github_job_runs (job_key, job_type, status, started_at) VALUES (?, ?, \'running\', ?)', [jobKey, type, startedAt])
-  try {
-    const items = await buildDigest(subscription, type)
-    const html = renderGithubDigestHtml(items, type, dateKey)
-    const title = type === 'daily' ? '日报' : type === 'weekly' ? '周报' : '月报'
-    await sendGithubDigestEmail(subscription.email, '【GitHub' + title + '】' + dateKey, html)
-    await dbRun("UPDATE github_job_runs SET status = 'success', details = ?, finished_at = ? WHERE job_key = ?", [JSON.stringify({ itemCount: items.length, subscriptionId: subscription.id }), new Date().toISOString(), jobKey])
-    await dbRun("INSERT INTO github_email_delivery_logs (subscription_id, user_id, email, kind, status) VALUES (?, ?, ?, ?, 'success')", [subscription.id, subscription.user_id, subscription.email, type])
-    await recordDigestPushes(subscription.id, type, items.map((item) => item.row.id))
-    return true
-  } catch (error) {
-    await dbRun("UPDATE github_job_runs SET status = 'failed', details = ?, finished_at = ? WHERE job_key = ?", [error.message || '发送失败', new Date().toISOString(), jobKey])
-    await dbRun("INSERT INTO github_email_delivery_logs (subscription_id, user_id, email, kind, status, error_message) VALUES (?, ?, ?, ?, 'failed', ?)", [subscription.id, subscription.user_id, subscription.email, type, error.message || '发送失败'])
-    console.error('[GitHub Radar] digest failed:', subscription.email, type, error.message)
-    return false
-  }
-}
-
 async function prepareGithubDigestDrafts(now = new Date()) {
   const parts = beijingParts(now)
-  if (parts.hour !== '07' || Number(parts.minute) > 30) return 0
+  const minuteOfDay = Number(parts.hour) * 60 + Number(parts.minute)
+  const inLockWindow = parts.hour === '07' && Number(parts.minute) <= 30
+  // 正常锁稿窗口是 07:00–07:30；若进程当时不在线，则当天 22:00 前补锁一次，避免整天不发。
+  if (!inLockWindow) {
+    if (minuteOfDay < DIGEST_CATCHUP_START_MINUTE || minuteOfDay > DIGEST_CATCHUP_END_MINUTE) return 0
+    if (now.getTime() - lastDigestCatchupAt < DIGEST_CATCHUP_INTERVAL_MS) return 0
+    lastDigestCatchupAt = now.getTime()
+  }
   const dateKey = parts.year + '-' + parts.month + '-' + parts.day
   const subscriptions = await dbAll("SELECT * FROM github_subscriptions WHERE status = 'active'")
   let index = 0
@@ -224,17 +205,26 @@ async function prepareGithubDigestDrafts(now = new Date()) {
       if (!isDigestTypeDue(parts, type)) continue
       const draftKey = 'github-draft:' + type + ':' + dateKey + ':' + subscription.id
       if (await dbGet('SELECT id FROM github_digest_drafts WHERE draft_key = ?', [draftKey])) continue
-      const items = await buildDigest(subscription, type)
-      // 07:25 前不足 10 个时暂不锁稿，留给后续轮询继续审核和补位。
-      if (items.length < 10 && Number(parts.minute) < 25) {
-        console.log(`[GitHub Radar] digest draft waiting subscription=${subscription.id} type=${type} items=${items.length}`)
-        continue
+      try {
+        const items = await buildDigest(subscription, type)
+        // 07:25 前不足 10 个时暂不锁稿，留给后续轮询继续审核和补位。
+        if (inLockWindow && items.length < 10 && Number(parts.minute) < 25) {
+          console.log(`[GitHub Radar] digest draft waiting subscription=${subscription.id} type=${type} items=${items.length}`)
+          continue
+        }
+        if (!inLockWindow && !items.length) continue
+        const html = renderGithubDigestHtml(items, type, dateKey)
+        const sendAt = inLockWindow
+          ? new Date(new Date(`${dateKey}T07:50:00+08:00`).getTime() + Math.min(index * 5000, 9 * 60 * 1000 + 5000)).toISOString()
+          : new Date(now.getTime() + index * 5000).toISOString()
+        const itemIds = JSON.stringify(items.map((item) => item.row.id))
+        await dbRun('INSERT INTO github_digest_drafts (draft_key,subscription_id,job_type,date_key,html,item_count,item_ids,status,send_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)', [draftKey, subscription.id, type, dateKey, html, items.length, itemIds, 'locked', sendAt, now.toISOString()])
+        if (!inLockWindow) console.log(`[GitHub Radar] digest draft caught up subscription=${subscription.id} type=${type} items=${items.length}`)
+        index += 1
+      } catch (error) {
+        // 单个订阅出错不能拖累其它订阅锁稿
+        console.error(`[GitHub Radar] digest draft failed subscription=${subscription.id} type=${type}:`, error.message)
       }
-      const html = renderGithubDigestHtml(items, type, dateKey)
-      const sendAt = new Date(new Date(`${dateKey}T07:50:00+08:00`).getTime() + Math.min(index * 5000, 9 * 60 * 1000 + 5000)).toISOString()
-      const itemIds = JSON.stringify(items.map((item) => item.row.id))
-      await dbRun('INSERT INTO github_digest_drafts (draft_key,subscription_id,job_type,date_key,html,item_count,item_ids,status,send_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)', [draftKey, subscription.id, type, dateKey, html, items.length, itemIds, 'locked', sendAt, now.toISOString()])
-      index += 1
     }
   }
   return index
@@ -254,7 +244,17 @@ async function sendLockedGithubDigestDrafts(now = new Date()) {
         await recordDigestPushes(draft.subscription_id, draft.job_type, JSON.parse(draft.item_ids || '[]'))
       } catch (error) { console.error('[GitHub Radar] record digest pushes failed:', draft.email, error.message) }
       sent += 1
-    } catch (error) { console.error('[GitHub Radar] locked digest failed:', draft.email, error.message) }
+    } catch (error) {
+      const attempts = Number(draft.send_attempts || 0) + 1
+      // 发送失败按 5/10/15… 分钟退避重试，超过上限就标记 failed，避免每 60 秒无限重试。
+      const giveUp = attempts >= DIGEST_SEND_MAX_ATTEMPTS
+      await dbRun("UPDATE github_digest_drafts SET send_attempts=?, status=?, send_at=? WHERE id=?", [attempts, giveUp ? 'failed' : 'locked', new Date(now.getTime() + attempts * DIGEST_SEND_RETRY_BASE_MS).toISOString(), draft.id])
+      if (giveUp) {
+        await dbRun("INSERT OR REPLACE INTO github_job_runs (job_key,job_type,status,details,started_at,finished_at) VALUES (?,?,'failed',?,?,?)", ['github-digest:' + draft.job_type + ':' + draft.date_key + ':' + draft.subscription_id, draft.job_type, error.message || '发送失败', draft.created_at, new Date().toISOString()])
+        await dbRun("INSERT INTO github_email_delivery_logs (subscription_id,user_id,email,kind,status,error_message) VALUES (?,?,?,?,'failed',?)", [draft.subscription_id, draft.user_id, draft.email, draft.job_type, error.message || '发送失败'])
+      }
+      console.error(`[GitHub Radar] locked digest failed (${attempts}/${DIGEST_SEND_MAX_ATTEMPTS}${giveUp ? ' 放弃' : ''}):`, draft.email, error.message)
+    }
   }
   return sent
 }
