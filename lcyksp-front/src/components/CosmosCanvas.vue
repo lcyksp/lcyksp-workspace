@@ -47,61 +47,121 @@ onBeforeUnmount(() => {
   engine = null
 })
 
-// 横拖满一个画面宽 ≈ 180°，这样手机和桌面拖同样的比例转过同样的角度
+// 横拖满一个画面宽、竖拖满一个画面高都 ≈ 180°，手机和桌面拖同样的比例就转过同样的
+// 角度；俯角总行程只有上下各 88°，所以一屏高刚好从南极上方摇到北极上方
 const DRAG_TURN = Math.PI
 // 位移超过这个值就算拖拽，不再当成点击去 pick
 const CLICK_SLOP = 6
 // 松手前最后一次移动早于这个间隔，就当人是停住之后才放手的，不给惯性
 const FLICK_STALE_MS = 90
+// 滚轮一格把相机距离乘/除 1.15：地球从默认取景拉到贴满画框大约十格
+const WHEEL_ZOOM = 1.15
 
 let pointerId = null
 let dragActive = false
-let radPerPx = 0
+let radPerPxX = 0
+let radPerPxY = 0
 let lastX = 0
+let lastY = 0
 let lastTime = 0
 let moved = 0
-let flickVel = 0
+let flickX = 0
+let flickY = 0
+// 双指捏合要同时跟踪两根手指，单个 pointerId 不够用
+const points = new Map()
+let pinchDist = 0
+
+function fingerDist() {
+  const [a, b] = points.values()
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
 
 function onPointerDown(event) {
-  if (!engine || pointerId !== null || event.button !== 0) return
+  if (!engine) return
   const rect = canvasRef.value.getBoundingClientRect()
-  if (!rect.width) return
+  if (!rect.width || !rect.height) return
+  points.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  if (points.size === 2) {
+    // 第二根手指落下就从拖拽切成捏合：先把手上的惯性收掉，再记下初始指距。
+    // 顺手把 moved 抬到点击阈值以上，捏完抬手时浏览器补的那次 click 就不会去 pick
+    if (dragActive) engine.endDrag(0, 0)
+    dragActive = false
+    pointerId = null
+    pinchDist = fingerDist()
+    moved += CLICK_SLOP + 1
+    return
+  }
+  if (pointerId !== null || event.button !== 0) return
   pointerId = event.pointerId
-  radPerPx = DRAG_TURN / rect.width
+  radPerPxX = DRAG_TURN / rect.width
+  radPerPxY = DRAG_TURN / rect.height
   lastX = event.clientX
+  lastY = event.clientY
   lastTime = event.timeStamp
   moved = 0
-  flickVel = 0
+  flickX = 0
+  flickY = 0
   canvasRef.value.setPointerCapture(pointerId)
-  // 拖拽只在地球特写里开放。太阳系全景和缩放过渡期间照旧只跟踪位移，
-  // 好让全景里的划动不会被误判成一次点击
+  // 镜头奔着地球或月球特写去就开放旋转（飞行途中拖只是改飞行路径）；太阳系全景里不转。
+  // 不转也照旧累加 moved，好让全景里的划动不会在抬手时被误判成一次点击
   dragActive = engine.getZoom() <= 0.02
   if (dragActive) engine.beginDrag()
 }
 
 function onPointerMove(event) {
+  const point = points.get(event.pointerId)
+  if (point) {
+    point.x = event.clientX
+    point.y = event.clientY
+  }
+  if (points.size >= 2) {
+    const dist = fingerDist()
+    // 指距张开一倍就把相机距离缩一半，这正是「捏着的那块画面跟着手指走」的映射
+    if (pinchDist && dist) engine.dollyBy(pinchDist / dist)
+    pinchDist = dist
+    return
+  }
   if (pointerId !== event.pointerId) return
   const dx = event.clientX - lastX
+  const dy = event.clientY - lastY
   const dt = (event.timeStamp - lastTime) / 1000
   lastX = event.clientX
+  lastY = event.clientY
   lastTime = event.timeStamp
-  moved += Math.abs(dx)
+  moved += Math.hypot(dx, dy)
   if (!dragActive) return
-  // 相机是绕着地球转的，往右拖要让方位角减小，画面上的地表才跟着手指往右走
-  const rad = -dx * radPerPx
-  engine.dragBy(rad)
+  // 相机是绕着地球转的：往右拖要让方位角减小，往下拖要让相机升高，
+  // 这样画面上的地表才跟着手指走
+  const radAzimuth = -dx * radPerPxX
+  const radElevation = dy * radPerPxY
+  engine.dragBy(radAzimuth, radElevation)
   // 单帧除以极小的 dt 会把一两像素的抖动放大成很大的速度，夹一个下限再平滑一次
-  const inst = rad / Math.max(dt, 0.008)
-  flickVel = flickVel ? flickVel * 0.5 + inst * 0.5 : inst
+  const perSecond = 1 / Math.max(dt, 0.008)
+  const instX = radAzimuth * perSecond
+  const instY = radElevation * perSecond
+  flickX = flickX ? flickX * 0.5 + instX * 0.5 : instX
+  flickY = flickY ? flickY * 0.5 + instY * 0.5 : instY
 }
 
 function onPointerUp(event) {
+  points.delete(event.pointerId)
+  if (points.size < 2) pinchDist = 0
   if (pointerId !== event.pointerId) return
   pointerId = null
   if (!dragActive) return
   dragActive = false
   const stale = event.type !== 'pointerup' || event.timeStamp - lastTime > FLICK_STALE_MS
-  engine?.endDrag(stale ? 0 : flickVel)
+  engine?.endDrag(stale ? 0 : flickX, stale ? 0 : flickY)
+}
+
+// 滚轮只改「离当前天体多远」，不换天体：换天体一律靠点击。首页是 overflow:hidden
+// 的一屏，本来也没有滚动可以劫持
+function onWheel(event) {
+  if (!engine) return
+  // deltaMode 1 是「行」，Firefox 一格给 3 行，先换算成像素再归一
+  const px = event.deltaMode === 1 ? event.deltaY * 33 : event.deltaY
+  // 往下滚是推远、往上滚是拉近，跟地图一致
+  engine.dollyBy(WHEEL_ZOOM ** Math.max(-1, Math.min(1, px / 100)))
 }
 
 function onClick(event) {
@@ -120,6 +180,7 @@ function onClick(event) {
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
+    @wheel.prevent="onWheel"
   />
 </template>
 
@@ -128,8 +189,9 @@ function onClick(event) {
   display: block;
   width: 100%;
   height: 100%;
-  /* 只吃横向手势，纵向留给浏览器；不写 none 是为了不劫持移动端的下拉刷新 */
-  touch-action: pan-y;
+  /* 上下拖也要，所以两个方向的手势都得从浏览器手里收过来。首页本身是
+     overflow:hidden 的一屏，没有滚动可劫持，代价只是这一页没有下拉刷新 */
+  touch-action: none;
   cursor: grab;
 }
 
