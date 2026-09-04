@@ -443,6 +443,7 @@ export async function initDb() {
   ).catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_github_digest_pushes_lookup ON github_digest_pushes(subscription_id, job_type, pushed_at)').catch(() => {})
   await run("ALTER TABLE github_digest_drafts ADD COLUMN item_ids TEXT NOT NULL DEFAULT '[]'").catch(() => {})
+  await run('ALTER TABLE github_digest_drafts ADD COLUMN send_attempts INTEGER NOT NULL DEFAULT 0').catch(() => {})
   await run(
     `INSERT OR IGNORE INTO github_categories (name, description, keywords, languages) VALUES
       ('AI应用/大模型应用/AI开发编程', '关注可落地的大模型应用、Agent、RAG、MCP、提示词工程、AI生成创作、图像/视频与多模态应用、AI编程工具、Coding Agent/Harness 和 Skill 技能生态；排除纯算法论文及无直接关系的通用工具', '["LLM application","AI agent framework","RAG application","MCP server","prompt engineering","prompt library","generative AI content creation","AI creative tools","AI image generation","AI video generation","multimodal AI application","AI coding tool","coding agent","coding agent harness","agent harness","LLM harness","Claude Code tool","Codex tool","AI agent skill","Claude skill","Codex skill","agent skills","大模型应用","智能体应用","提示词工程","提示词库","AI生成创作","AI内容创作","AI编程工具","编码智能体","智能体框架","AI技能","Skill生态"]', '["Python","TypeScript","JavaScript","Go","Rust"]'),
