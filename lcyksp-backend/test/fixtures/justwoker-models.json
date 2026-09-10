@@ -1,0 +1,10 @@
+{
+  "success": true,
+  "data": {
+    "models": [
+      { "id": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "price": 1 },
+      { "model_id": "deepseek-v3", "display_name": "DeepSeek V3" },
+      { "id": "gpt-4.1-mini", "name": "Duplicate should be ignored" }
+    ]
+  }
+}

@@ -18,17 +18,46 @@ function normalizeMailbox(value, fallback = '') {
   const address = String(match?.[1] || '').trim()
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address) ? address : fallback
 }
-function readResponse(socket) { return new Promise((resolve, reject) => { let buffer = ''; const onData = (chunk) => { buffer += chunk.toString(); const lines = buffer.split(/\r?\n/); const last = lines.filter(Boolean).at(-1) || ''; if (/^\d{3} /.test(last)) { socket.off('data', onData); resolve({ code: Number(last.slice(0, 3)), text: buffer.trim() }) } }; socket.on('data', onData); socket.once('error', reject) }) }
+function readResponse(socket) {
+  return new Promise((resolve, reject) => {
+    let buffer = ''
+    const cleanup = () => {
+      socket.off('data', onData)
+      socket.off('error', onError)
+      socket.off('timeout', onTimeout)
+      socket.off('close', onClose)
+    }
+    const fail = (error) => { cleanup(); reject(error) }
+    const onError = (error) => fail(error)
+    const onTimeout = () => fail(new Error('SMTP connection timed out'))
+    const onClose = () => fail(new Error('SMTP connection closed before a complete response'))
+    const onData = (chunk) => {
+      buffer += chunk.toString()
+      // SMTP multiline replies end with "NNN text"; continuation lines use "NNN-text".
+      const last = buffer.split(/\r?\n/).filter(Boolean).at(-1) || ''
+      if (/^\d{3} /.test(last)) {
+        cleanup()
+        resolve({ code: Number(last.slice(0, 3)), text: buffer.trim() })
+      }
+    }
+    socket.on('data', onData)
+    socket.once('error', onError)
+    socket.once('timeout', onTimeout)
+    socket.once('close', onClose)
+  })
+}
 async function command(socket, value, expected = []) { socket.write(`${value}\r\n`); const r = await readResponse(socket); if (expected.length && !expected.includes(r.code)) throw new Error(`SMTP ${r.code}: ${r.text}`); return r }
 function dotStuff(value) { return value.split(/\r?\n/).map((line) => line.startsWith('.') ? `.${line}` : line).join('\r\n') }
 function encodeHeader(value) { return `=?UTF-8?B?${Buffer.from(String(value)).toString('base64')}?=` }
 
 export async function sendGithubTestEmail(to) { return sendSmtpMessage({ to, subject: 'GitHub 项目订阅测试邮件', body: '这是一封测试邮件，用于确认您的邮箱可以正常接收 GitHub 项目订阅推送，无需回复。\n\n如果您没有主动申请 GitHub 日报订阅，请忽略此邮件。' }) }
 export async function sendGithubDigestEmail(to, subject, html) { return sendSmtpMessage({ to, subject, body: html, contentType: 'text/html' }) }
+// 网站监测复用同一条 SMTP 通道，只替换发件人显示名，避免再维护一套连接与鉴权逻辑。
+export async function sendSiteMonitorEmail(to, subject, html) { return sendSmtpMessage({ to, subject, body: html, contentType: 'text/html', fromName: 'lcyksp.xyz 网站监测' }) }
 export async function smtpConfigured() { const c = await getConfig(); return Boolean(c.user && c.password) }
 export async function getGithubMailConfig() { return getConfig() }
 
-async function sendSmtpMessage({ to, subject, body, contentType = 'text/plain' }) {
+async function sendSmtpMessage({ to, subject, body, contentType = 'text/plain', fromName = 'lcyksp.xyz Github项目日报' }) {
   const c = await getConfig(); c.user = normalizeMailbox(c.user); c.from = normalizeMailbox(c.from, c.user); const recipient = normalizeMailbox(to)
   if (!c.user || !c.password) throw new Error('尚未配置 163 邮箱 SMTP 授权码')
   if (!recipient) throw new Error('收件邮箱格式不正确')
@@ -42,7 +71,7 @@ async function sendSmtpMessage({ to, subject, body, contentType = 'text/plain' }
     if (!secure) { stage = 'starttls'; await command(socket, 'STARTTLS', [220]); stage = 'tls'; s = await new Promise((resolve, reject) => { const upgraded = tls.connect({ socket, host: c.host, servername: c.host }, () => resolve(upgraded)); upgraded.once('error', reject) }); await command(s, 'EHLO lcyksp.xyz', [250]) }
     stage = 'auth'; await command(s, 'AUTH LOGIN', [334]); await command(s, Buffer.from(c.user).toString('base64'), [334]); await command(s, Buffer.from(c.password).toString('base64'), [235])
     stage = 'mail'; await command(s, `MAIL FROM:<${c.user}>`, [250]); await command(s, `RCPT TO:<${recipient}>`, [250, 251]); await command(s, 'DATA', [354])
-    const message = [`From: ${encodeHeader('lcyksp.xyz Github项目日报')} <${c.from}>`, `To: <${recipient}>`, `Subject: ${encodeHeader(subject)}`, 'MIME-Version: 1.0', `Content-Type: ${contentType}; charset=UTF-8`, 'Content-Transfer-Encoding: 8bit', '', body].join('\r\n')
+    const message = [`From: ${encodeHeader(fromName)} <${c.from}>`, `To: <${recipient}>`, `Subject: ${encodeHeader(subject)}`, 'MIME-Version: 1.0', `Content-Type: ${contentType}; charset=UTF-8`, 'Content-Transfer-Encoding: 8bit', '', body].join('\r\n')
     s.write(`${dotStuff(message)}\r\n.\r\n`); const delivered = await readResponse(s); if (delivered.code < 200 || delivered.code >= 400) throw new Error(`SMTP ${delivered.code}: ${delivered.text}`)
     console.log(`[GitHub Mail] sent host=${c.host} to=${safeAddress(to)} code=${delivered.code}`); await command(s, 'QUIT', [221]); s.end()
   } catch (error) { console.error(`[GitHub Mail] failed stage=${stage} host=${c.host} port=${c.port} user=${safeAddress(c.user)} message=${String(error?.message || 'unknown').slice(0, 240)}`); throw error } finally { socket.destroy() }

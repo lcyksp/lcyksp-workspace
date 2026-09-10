@@ -6,10 +6,13 @@ import sqlite3 from 'sqlite3'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const DB_DIR = path.resolve(__dirname, '../../data/db')
+const DB_DIR = process.env.LCYKSP_DB_DIR
+  ? path.resolve(process.env.LCYKSP_DB_DIR)
+  : path.resolve(__dirname, '../../data/db')
 const DB_PATH = path.join(DB_DIR, 'database.db')
 
 let db = null
+let siteMonitorDb = null
 
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -23,6 +26,32 @@ function run(sql, params = []) {
 export function getDb() {
   if (!db) throw new Error('数据库尚未初始化，请先调用 initDb()')
   return db
+}
+
+export function getDbPath() {
+  return DB_PATH
+}
+
+/**
+ * Website-monitor transactions use a second connection. SQLite then enforces isolation with its
+ * write lock instead of allowing unrelated statements on the process-wide connection to become
+ * part of an open monitor transaction.
+ */
+export function getSiteMonitorDb() {
+  if (!siteMonitorDb) throw new Error('网站监测数据库连接尚未初始化，请先调用 initDb()')
+  return siteMonitorDb
+}
+
+function closeConnection(connection) {
+  if (!connection) return Promise.resolve()
+  return new Promise((resolve, reject) => connection.close((error) => (error ? reject(error) : resolve())))
+}
+
+export async function closeDb() {
+  const connections = [siteMonitorDb, db].filter(Boolean)
+  siteMonitorDb = null
+  db = null
+  for (const connection of connections) await closeConnection(connection)
 }
 
 export async function initDb() {
@@ -499,6 +528,131 @@ export async function initDb() {
     fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`).catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_algs_snapshots_event ON algs_snapshots(season, league, region, id)').catch(() => {})
+
+  // Website monitor configuration and durable state. The scheduler interval is fixed per source;
+  // credentials (when configured) are encrypted before they are written to auth_secret.
+  await run(`CREATE TABLE IF NOT EXISTS site_monitors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL UNIQUE CHECK(source IN ('justwoker_models', 'hzu_postgraduate')),
+    display_name TEXT NOT NULL,
+    target_url TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
+    interval_seconds INTEGER NOT NULL,
+    recipient_email TEXT NOT NULL DEFAULT '1296757861@qq.com',
+    auth_type TEXT NOT NULL DEFAULT 'none' CHECK(auth_type IN ('none', 'cookie', 'bearer')),
+    auth_secret TEXT DEFAULT NULL,
+    etag TEXT DEFAULT NULL,
+    last_modified TEXT DEFAULT NULL,
+    baseline_ready INTEGER NOT NULL DEFAULT 0 CHECK(baseline_ready IN (0, 1)),
+    last_checked_at TEXT DEFAULT NULL,
+    last_success_at TEXT DEFAULT NULL,
+    next_run_at TEXT DEFAULT NULL,
+    last_status TEXT NOT NULL DEFAULT 'idle' CHECK(last_status IN ('idle', 'running', 'success', 'failed', 'disabled')),
+    consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures >= 0),
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK((source = 'justwoker_models' AND interval_seconds = 1800)
+       OR (source = 'hzu_postgraduate' AND interval_seconds = 3600))
+  )`)
+
+  await run(`CREATE TABLE IF NOT EXISTS site_monitor_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    monitor_id INTEGER NOT NULL REFERENCES site_monitors(id) ON DELETE CASCADE,
+    item_key TEXT NOT NULL,
+    item_type TEXT NOT NULL CHECK(item_type IN ('model', 'announcement')),
+    title TEXT NOT NULL,
+    url TEXT NOT NULL DEFAULT '',
+    published_at TEXT DEFAULT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+    missing_count INTEGER NOT NULL DEFAULT 0 CHECK(missing_count >= 0),
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    removed_at TEXT DEFAULT NULL,
+    UNIQUE(monitor_id, item_key)
+  )`)
+
+  await run(`CREATE TABLE IF NOT EXISTS site_monitor_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    monitor_id INTEGER NOT NULL REFERENCES site_monitors(id) ON DELETE CASCADE,
+    trigger_type TEXT NOT NULL DEFAULT 'schedule' CHECK(trigger_type IN ('schedule', 'manual', 'diagnose', 'baseline')),
+    status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'success', 'not_modified', 'failed')),
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT DEFAULT NULL,
+    http_status INTEGER DEFAULT NULL,
+    item_count INTEGER NOT NULL DEFAULT 0 CHECK(item_count >= 0),
+    added_count INTEGER NOT NULL DEFAULT 0 CHECK(added_count >= 0),
+    removed_count INTEGER NOT NULL DEFAULT 0 CHECK(removed_count >= 0),
+    duration_ms INTEGER DEFAULT NULL CHECK(duration_ms IS NULL OR duration_ms >= 0),
+    error_message TEXT NOT NULL DEFAULT ''
+  )`)
+
+  await run(`CREATE TABLE IF NOT EXISTS site_monitor_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    monitor_id INTEGER NOT NULL REFERENCES site_monitors(id) ON DELETE CASCADE,
+    run_id INTEGER DEFAULT NULL REFERENCES site_monitor_runs(id) ON DELETE SET NULL,
+    event_key TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL CHECK(event_type IN ('model_added', 'model_removed', 'announcement_added', 'monitor_failed', 'monitor_recovered')),
+    title TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`)
+
+  await run(`CREATE TABLE IF NOT EXISTS site_monitor_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    monitor_id INTEGER NOT NULL REFERENCES site_monitors(id) ON DELETE CASCADE,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    event_ids_json TEXT NOT NULL DEFAULT '[]',
+    recipient_email TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body_html TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sending', 'sent', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_attempt_at TEXT DEFAULT NULL,
+    sent_at TEXT DEFAULT NULL,
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`)
+
+  await run('CREATE INDEX IF NOT EXISTS idx_site_monitors_due ON site_monitors(enabled, next_run_at)')
+  await run('CREATE INDEX IF NOT EXISTS idx_site_monitor_items_active ON site_monitor_items(monitor_id, is_active, item_type)')
+  await run('CREATE INDEX IF NOT EXISTS idx_site_monitor_runs_recent ON site_monitor_runs(monitor_id, started_at DESC)')
+  await run('CREATE INDEX IF NOT EXISTS idx_site_monitor_events_recent ON site_monitor_events(monitor_id, created_at DESC)')
+  await run('CREATE INDEX IF NOT EXISTS idx_site_monitor_deliveries_due ON site_monitor_deliveries(status, next_attempt_at)')
+
+  // Preserve administrator changes on restart: defaults are inserted only when a source is absent.
+  await run(
+    `INSERT INTO site_monitors
+      (source, display_name, target_url, enabled, interval_seconds, recipient_email, auth_type, last_status)
+     VALUES (?, ?, ?, 0, ?, ?, 'none', 'idle')
+     ON CONFLICT(source) DO NOTHING`,
+    ['justwoker_models', 'JustWoker 模型广场', 'https://api.justwoker.icu/api/pricing', 1800, '1296757861@qq.com'],
+  )
+  // `/pricing` is the SPA document. The authenticated model JSON is served by `/api/pricing`.
+  // Migrate only the obsolete built-in URL so any future administrator-owned target is preserved.
+  await run(
+    `UPDATE site_monitors SET target_url = ?, etag = NULL, last_modified = NULL,
+       last_status = 'idle', consecutive_failures = 0, last_error = '', next_run_at = NULL,
+       updated_at = datetime('now')
+     WHERE source = 'justwoker_models' AND target_url = ?`,
+    ['https://api.justwoker.icu/api/pricing', 'https://api.justwoker.icu/pricing'],
+  )
+  await run(
+    `INSERT INTO site_monitors
+      (source, display_name, target_url, enabled, interval_seconds, recipient_email, auth_type, last_status)
+     VALUES (?, ?, ?, 0, ?, ?, 'none', 'idle')
+     ON CONFLICT(source) DO NOTHING`,
+    ['hzu_postgraduate', '惠州学院研究生招生', 'https://www.hzu.edu.cn/yjszs/list.htm', 3600, '1296757861@qq.com'],
+  )
+
+  await new Promise((resolve, reject) => {
+    siteMonitorDb = new sqlite3.Database(DB_PATH, (err) => (err ? reject(err) : resolve()))
+  })
+  await new Promise((resolve, reject) => siteMonitorDb.run('PRAGMA busy_timeout=10000;', (err) => (err ? reject(err) : resolve())))
+  await new Promise((resolve, reject) => siteMonitorDb.run('PRAGMA foreign_keys=ON;', (err) => (err ? reject(err) : resolve())))
 
   console.log('[DB] Schema ready')
 }

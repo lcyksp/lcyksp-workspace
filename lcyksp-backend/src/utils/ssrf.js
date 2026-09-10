@@ -57,19 +57,25 @@ function isBlockedIpv6(ip) {
  * - 支持 IP 字面量与域名（DNS 解析，任一解析结果命中即拦截，防 DNS rebinding）
  * - 解析失败一律视为不可信
  */
+export function isBlockedAddress(address) {
+  const value = String(address || '').trim()
+  if (!net.isIP(value)) return true
+  return net.isIPv4(value) ? isBlockedIpv4(value) : isBlockedIpv6(value)
+}
+
 export async function isBlockedHostname(hostname) {
   const host = String(hostname || '').trim().toLowerCase().replace(/\.$/, '')
   if (!host) return true
 
   if (net.isIP(host)) {
-    return net.isIPv4(host) ? isBlockedIpv4(host) : isBlockedIpv6(host)
+    return isBlockedAddress(host)
   }
 
   try {
     const records = await dnsPromises.lookup(host, { all: true, verbatim: true })
     if (!records || records.length === 0) return true
     return records.some((record) =>
-      net.isIPv4(record.address) ? isBlockedIpv4(record.address) : isBlockedIpv6(record.address),
+      isBlockedAddress(record.address),
     )
   } catch {
     return true

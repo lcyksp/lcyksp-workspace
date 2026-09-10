@@ -4,6 +4,8 @@ import { fetchBilibiliHot } from './trends/bilibili.js';
 import { fetchDouyinHot } from './trends/douyin.js';
 import { discoverActiveGithubSubscriptions } from './githubJobs.js';
 import { runGithubDigests, runPendingGithubSimulations } from './githubDigest.js';
+import { processSiteMonitorDeliveries } from './siteMonitorMailer.js';
+import { recoverInterruptedSiteMonitorRuns, runDueSiteMonitors } from './siteMonitorService.js';
 
 const INTERVAL_MS = 5 * 60 * 1000;
 let timer = null;
@@ -73,15 +75,35 @@ async function snapshotTrends() {
   }
 }
 
+// 站点监测：到期判断由数据库里的 next_run_at 决定，心跳只负责唤醒，实际周期仍是 30/60 分钟。
+// 抓取与投递分两段容错，抓取失败不影响已入队的邮件继续重试。
+async function runSiteMonitorHeartbeat() {
+  try {
+    await runDueSiteMonitors();
+  } catch (error) {
+    console.error('[Site Monitor] due sweep failed:', error.message);
+  }
+  try {
+    await processSiteMonitorDeliveries();
+  } catch (error) {
+    console.error('[Site Monitor] delivery pass failed:', error.message);
+  }
+}
+
 export function startCron() {
   if (timer) return;
   console.log('[清道夫] 定时任务已启动（每 5 分钟维护轮询，GitHub 采集仍按 4 小时冷却）');
   cleanExpiredRecords();
   discoverActiveGithubSubscriptions().catch((error) => console.error('[GitHub Radar] initial run failed:', error.message));
   lastGithubRadarRun = Date.now();
+  recoverInterruptedSiteMonitorRuns()
+    .then((count) => { if (count) console.log(`[Site Monitor] 已把 ${count} 条中断的运行记录标记为失败`); })
+    .then(() => runSiteMonitorHeartbeat())
+    .catch((error) => console.error('[Site Monitor] startup recovery failed:', error.message));
   // snapshotTrends(); // 已下架
   timer = setInterval(() => {
     cleanExpiredRecords();
+    runSiteMonitorHeartbeat();
     const beijing = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()).reduce((acc, p) => { acc[p.type] = p.value; return acc }, {})
     const dailyKey = `${beijing.year}-${beijing.month}-${beijing.day}`
     if (beijing.hour === '06' && Number(beijing.minute) >= 45 && lastDailyGithubPrepKey !== dailyKey) {

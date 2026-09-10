@@ -154,6 +154,177 @@ async function saveGithubAdminSubscription() {
 async function deleteGithubAdminSubscription(row) { try { await ElMessageBox.confirm(`确定删除 ${row.email} 的订阅吗？`, '删除订阅', { type: 'warning' }); await axios.delete(`/api/admin/github-radar/subscriptions/${row.id}`); ElMessage.success('订阅已删除'); await loadGithubAdminSubscriptions() } catch (error) { if (error !== 'cancel') ElMessage.error(error.response?.data?.error || '删除失败') } }
 async function scheduleGithubSimulation() { try { const { value } = await ElMessageBox.prompt('模拟日报发送到哪个邮箱？', '安排模拟日报', { inputValue: githubAdminSubscriptionForm.email || '', inputPattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, inputErrorMessage: '请输入有效邮箱' }); const res = await axios.post('/api/admin/github-radar/simulation', { email: value.trim(), delayMinutes: 30, type: 'daily' }); ElMessage.success(`模拟日报已安排：${new Date(res.data.runAt).toLocaleString()}`) } catch (error) { if (error !== 'cancel') ElMessage.error(error.response?.data?.error || '安排模拟日报失败') } }
 
+const SITE_MONITOR_EVENT_META = {
+  model_added: { label: '新增模型', type: 'success' },
+  model_removed: { label: '下架模型', type: 'danger' },
+  announcement_added: { label: '新公告', type: 'warning' },
+  monitor_failed: { label: '监测失败', type: 'info' },
+  monitor_recovered: { label: '监测恢复', type: 'info' },
+}
+const SITE_MONITOR_TRIGGER_LABEL = { schedule: '定时', manual: '手动', diagnose: '诊断', baseline: '基线' }
+const SITE_MONITOR_EVENT_PAGE_SIZE = 10
+
+const siteMonitorLoading = ref(false)
+const siteMonitorTesting = ref(false)
+const siteMonitorSmtpConfigured = ref(false)
+const siteMonitorHeartbeatSeconds = ref(300)
+const siteMonitors = ref([])
+const siteMonitorForms = reactive({})
+const siteMonitorBusy = reactive({})
+const siteMonitorEventSource = ref('')
+const siteMonitorEvents = ref([])
+const siteMonitorEventsTotal = ref(0)
+const siteMonitorEventsPage = ref(1)
+const siteMonitorEventsLoading = ref(false)
+
+// 后端存的是 SQLite 的 UTC 字符串（YYYY-MM-DD HH:MM:SS），不补 Z 会被当成本地时间，显示差 8 小时。
+function siteMonitorTime(value) {
+  if (!value) return '—'
+  const text = String(value)
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text) ? `${text.replace(' ', 'T')}Z` : text
+  const date = new Date(normalized)
+  return Number.isNaN(date.getTime()) ? text : date.toLocaleString('zh-CN', { hour12: false })
+}
+function siteMonitorEventMeta(type) { return SITE_MONITOR_EVENT_META[type] || { label: type, type: 'info' } }
+function siteMonitorTriggerLabel(type) { return SITE_MONITOR_TRIGGER_LABEL[type] || type }
+function siteMonitorBusyWith(source) { return siteMonitorBusy[source] || '' }
+
+async function withSiteMonitorBusy(source, action, task) {
+  if (siteMonitorBusy[source]) return
+  siteMonitorBusy[source] = action
+  try { await task() } finally { siteMonitorBusy[source] = '' }
+}
+
+function siteMonitorActionError(error, fallback) {
+  const data = error.response?.data
+  const message = data?.error || fallback
+  ElMessage.error(data?.credentialRejected ? `${message}（登录会话或临时 Token 已失效，请更新后重试）` : message)
+}
+
+async function loadSiteMonitors() {
+  siteMonitorLoading.value = true
+  try {
+    const res = await axios.get('/api/admin/site-monitor')
+    siteMonitorSmtpConfigured.value = Boolean(res.data?.smtpConfigured)
+    siteMonitorHeartbeatSeconds.value = Number(res.data?.heartbeatSeconds || 300)
+    siteMonitors.value = res.data?.monitors || []
+    for (const monitor of siteMonitors.value) {
+      // 凭据只在内存里停留到保存为止，任何时候都不写 localStorage，接口也只回掩码。
+      if (!siteMonitorForms[monitor.source]) siteMonitorForms[monitor.source] = { authType: 'none', authSecret: '', recipientEmail: '' }
+      const form = siteMonitorForms[monitor.source]
+      form.authType = monitor.authType
+      form.recipientEmail = monitor.recipientEmail
+      form.authSecret = ''
+      if (!siteMonitorBusy[monitor.source]) siteMonitorBusy[monitor.source] = ''
+    }
+    if (!siteMonitorEventSource.value && siteMonitors.value.length) {
+      siteMonitorEventSource.value = siteMonitors.value[0].source
+      await loadSiteMonitorEvents()
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载网站监测失败')
+  } finally {
+    siteMonitorLoading.value = false
+  }
+}
+
+async function loadSiteMonitorEvents() {
+  if (!siteMonitorEventSource.value) return
+  siteMonitorEventsLoading.value = true
+  try {
+    const res = await axios.get(`/api/admin/site-monitor/${siteMonitorEventSource.value}/events`, {
+      params: { page: siteMonitorEventsPage.value, pageSize: SITE_MONITOR_EVENT_PAGE_SIZE },
+    })
+    siteMonitorEvents.value = res.data?.events || []
+    siteMonitorEventsTotal.value = Number(res.data?.total || 0)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载变更记录失败')
+  } finally {
+    siteMonitorEventsLoading.value = false
+  }
+}
+function switchSiteMonitorEventSource() { siteMonitorEventsPage.value = 1; loadSiteMonitorEvents() }
+function changeSiteMonitorEventsPage(page) { siteMonitorEventsPage.value = page; loadSiteMonitorEvents() }
+
+async function saveSiteMonitorConfig(monitor) {
+  const form = siteMonitorForms[monitor.source]
+  const payload = { authType: form.authType, recipientEmail: form.recipientEmail }
+  if (form.authType !== 'none' && form.authSecret.trim()) payload.authSecret = form.authSecret.trim()
+  await withSiteMonitorBusy(monitor.source, 'save', async () => {
+    try {
+      await axios.post(`/api/admin/site-monitor/${monitor.source}/config`, payload)
+      form.authSecret = ''
+      ElMessage.success('配置已保存')
+      await loadSiteMonitors()
+    } catch (error) { ElMessage.error(error.response?.data?.error || '保存失败') }
+  })
+}
+
+async function toggleSiteMonitor(monitor, enabled) {
+  await withSiteMonitorBusy(monitor.source, 'toggle', async () => {
+    try {
+      await axios.post(`/api/admin/site-monitor/${monitor.source}/config`, { enabled })
+      ElMessage.success(enabled ? '监测已开启' : '监测已关闭')
+    } catch (error) { ElMessage.error(error.response?.data?.error || '切换失败') }
+    // 无论成功失败都重新拉一次，开关状态以服务端为准。
+    await loadSiteMonitors()
+  })
+}
+
+async function diagnoseSiteMonitor(monitor) {
+  await withSiteMonitorBusy(monitor.source, 'diagnose', async () => {
+    try {
+      const res = await axios.post(`/api/admin/site-monitor/${monitor.source}/diagnose`)
+      ElMessage.success(`诊断通过，解析到 ${res.data.itemCount} 项`)
+    } catch (error) { siteMonitorActionError(error, '诊断失败') }
+    await loadSiteMonitors()
+  })
+}
+
+async function checkSiteMonitor(monitor) {
+  await withSiteMonitorBusy(monitor.source, 'check', async () => {
+    try {
+      const res = await axios.post(`/api/admin/site-monitor/${monitor.source}/check`)
+      const added = res.data.added?.length || 0
+      const removed = res.data.removed?.length || 0
+      if (res.data.status === 'baseline') ElMessage.success('已建立首轮基线，本次不发送通知')
+      else if (!added && !removed) ElMessage.success('检查完成，没有变化')
+      else {
+        const mail = res.data.delivery?.sent ? '，通知已发出' : res.data.queuedEmail ? '，通知已入队' : ''
+        ElMessage.success(`新增 ${added} / 下架 ${removed}${mail}`)
+      }
+    } catch (error) { siteMonitorActionError(error, '检查失败') }
+    await loadSiteMonitors()
+    await loadSiteMonitorEvents()
+  })
+}
+
+async function rebuildSiteMonitorBaseline(monitor) {
+  try {
+    await ElMessageBox.confirm(`重建「${monitor.displayName}」基线会清空当前快照并重新抓取一次，本次不发送通知。`, '重建基线', { type: 'warning' })
+  } catch { return }
+  await withSiteMonitorBusy(monitor.source, 'baseline', async () => {
+    try {
+      const res = await axios.post(`/api/admin/site-monitor/${monitor.source}/rebuild-baseline`)
+      ElMessage.success(`基线已重建，共 ${res.data.itemCount} 项`)
+    } catch (error) { siteMonitorActionError(error, '重建基线失败') }
+    await loadSiteMonitors()
+  })
+}
+
+async function sendSiteMonitorTestEmail() {
+  siteMonitorTesting.value = true
+  try {
+    const recipient = siteMonitors.value[0]?.recipientEmail || ''
+    const res = await axios.post('/api/admin/site-monitor/test-email', recipient ? { recipient } : {})
+    ElMessage.success(`测试邮件已发送至 ${res.data.recipient}`)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '测试邮件发送失败')
+  } finally {
+    siteMonitorTesting.value = false
+  }
+}
+
 const MAX_HISTORY = 5
 const HISTORY_KEYS = {
   url: 'llmUrlHistory',
@@ -1051,6 +1222,7 @@ onMounted(() => {
   loadLlmConfig()
   loadGithubRadarConfig()
   loadGithubAdminSubscriptions()
+  loadSiteMonitors()
   loadMembershipConfig()
   loadMembershipCards()
   loadFeedback()
@@ -1428,6 +1600,121 @@ onMounted(() => {
             </el-table>
           </section>
         </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="网站监测">
+        <div class="tab-header">
+          <span class="tab-count monitor-header-tags">
+            <el-tag size="small" effect="dark" :type="siteMonitorSmtpConfigured ? 'success' : 'danger'">SMTP {{ siteMonitorSmtpConfigured ? '已配置' : '未配置' }}</el-tag>
+            <el-tag size="small" effect="plain">心跳 {{ Math.round(siteMonitorHeartbeatSeconds / 60) }} 分钟</el-tag>
+          </span>
+          <div class="tab-actions">
+            <el-button size="small" :loading="siteMonitorTesting" @click="sendSiteMonitorTestEmail">测试邮件</el-button>
+            <el-button size="small" :loading="siteMonitorLoading" @click="loadSiteMonitors"><el-icon><Refresh /></el-icon>刷新</el-button>
+          </div>
+        </div>
+
+        <div class="monitor-grid" v-loading="siteMonitorLoading">
+          <section v-for="monitor in siteMonitors" :key="monitor.source" class="single-panel monitor-card">
+            <header class="monitor-card-head">
+              <div class="monitor-title">
+                <span class="monitor-dot" :class="`is-${monitor.lastStatus}`"></span>
+                <strong>{{ monitor.displayName }}</strong>
+                <el-tag size="small" effect="plain">{{ monitor.intervalLabel }}</el-tag>
+                <el-tag v-if="!monitor.baselineReady" size="small" effect="plain" type="warning">无基线</el-tag>
+              </div>
+              <el-switch
+                :model-value="monitor.enabled"
+                :loading="siteMonitorBusyWith(monitor.source) === 'toggle'"
+                @change="(value) => toggleSiteMonitor(monitor, value)"
+              />
+            </header>
+
+            <div class="monitor-stats">
+              <div class="monitor-stat"><b>{{ monitor.baselineCount }}</b><small>基线</small></div>
+              <div class="monitor-stat"><b>{{ monitor.eventCount }}</b><small>变更</small></div>
+              <div class="monitor-stat" :class="{ 'is-bad': (monitor.deliveries?.failed || 0) > 0 }"><b>{{ monitor.deliveries?.waiting || 0 }}</b><small>待发</small></div>
+              <div class="monitor-stat" :class="{ 'is-bad': monitor.consecutiveFailures > 0 }"><b>{{ monitor.consecutiveFailures }}</b><small>连败</small></div>
+            </div>
+
+            <dl class="monitor-meta">
+              <div><dt>最近成功</dt><dd>{{ siteMonitorTime(monitor.lastSuccessAt) }}</dd></div>
+              <div><dt>下次检查</dt><dd>{{ monitor.enabled ? siteMonitorTime(monitor.nextRunAt) : '已关闭' }}</dd></div>
+            </dl>
+            <p v-if="monitor.lastError" class="monitor-error">{{ monitor.lastError }}</p>
+
+            <el-form label-position="top" size="small" class="monitor-form">
+              <el-form-item label="认证方式">
+                <el-select v-model="siteMonitorForms[monitor.source].authType" style="width: 128px">
+                  <el-option label="无需认证" value="none" />
+                  <el-option :label="monitor.source === 'justwoker_models' ? '登录会话 Cookie（推荐）' : 'Cookie'" value="cookie" />
+                  <el-option :label="monitor.source === 'justwoker_models' ? '临时 Bearer Token（仅诊断）' : 'Bearer'" value="bearer" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="siteMonitorForms[monitor.source].authType !== 'none'" label="凭据">
+                <el-input
+                  v-model="siteMonitorForms[monitor.source].authSecret"
+                  type="password"
+                  show-password
+                  clearable
+                  :placeholder="monitor.authConfigured ? `已配置 ${monitor.authMask}（${monitor.authLength} 字符），留空保持不变` : (monitor.source === 'justwoker_models' && siteMonitorForms[monitor.source].authType === 'cookie' ? '粘贴登录会话 Cookie' : '粘贴 Cookie 或 Token')"
+                />
+                <div v-if="monitor.source === 'justwoker_models'" class="monitor-auth-help">
+                  <template v-if="siteMonitorForms[monitor.source].authType === 'cookie'">请在已登录 JustWoker 的浏览器开发者工具中，从 <code>/api/user/auth/refresh</code> 请求复制完整 Cookie 请求头。服务端每次先刷新短期 Token，再读取模型；不会保存 Token。</template>
+                  <template v-else-if="siteMonitorForms[monitor.source].authType === 'bearer'">Bearer Token 有效期较短，仅适合临时诊断，不建议用于半小时定时监测。</template>
+                </div>
+              </el-form-item>
+              <el-form-item label="收件邮箱">
+                <el-input v-model="siteMonitorForms[monitor.source].recipientEmail" />
+              </el-form-item>
+            </el-form>
+
+            <div class="monitor-actions">
+              <el-button type="primary" size="small" :loading="siteMonitorBusyWith(monitor.source) === 'save'" @click="saveSiteMonitorConfig(monitor)">保存</el-button>
+              <el-button size="small" :loading="siteMonitorBusyWith(monitor.source) === 'diagnose'" @click="diagnoseSiteMonitor(monitor)">诊断</el-button>
+              <el-button size="small" :loading="siteMonitorBusyWith(monitor.source) === 'check'" @click="checkSiteMonitor(monitor)">立即检查</el-button>
+              <el-button size="small" :loading="siteMonitorBusyWith(monitor.source) === 'baseline'" @click="rebuildSiteMonitorBaseline(monitor)">重建基线</el-button>
+            </div>
+
+            <div v-if="monitor.recentRuns?.length" class="monitor-runs">
+              <div v-for="run in monitor.recentRuns" :key="run.id" class="monitor-run">
+                <span class="monitor-dot" :class="`is-${run.status}`"></span>
+                <span class="monitor-run-time">{{ siteMonitorTime(run.startedAt) }}</span>
+                <el-tag size="small" effect="plain">{{ siteMonitorTriggerLabel(run.triggerType) }}</el-tag>
+                <span class="monitor-run-count">{{ run.itemCount }} 项 · +{{ run.addedCount }} / -{{ run.removedCount }}</span>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section class="single-panel monitor-events-panel">
+          <div class="panel-title"><h3>变更记录</h3></div>
+          <el-radio-group v-model="siteMonitorEventSource" size="small" @change="switchSiteMonitorEventSource">
+            <el-radio-button v-for="monitor in siteMonitors" :key="monitor.source" :value="monitor.source">{{ monitor.displayName }}</el-radio-button>
+          </el-radio-group>
+          <el-table v-loading="siteMonitorEventsLoading" :data="siteMonitorEvents" size="small" style="margin-top: 10px" empty-text="暂无变更">
+            <el-table-column label="时间" width="170"><template #default="{ row }">{{ siteMonitorTime(row.createdAt) }}</template></el-table-column>
+            <el-table-column label="类型" width="100"><template #default="{ row }"><el-tag size="small" effect="dark" :type="siteMonitorEventMeta(row.eventType).type">{{ siteMonitorEventMeta(row.eventType).label }}</el-tag></template></el-table-column>
+            <el-table-column label="内容" min-width="240">
+              <template #default="{ row }">
+                <a v-if="row.url" class="monitor-event-link" :href="row.url" target="_blank" rel="noopener noreferrer">{{ row.title }}</a>
+                <span v-else>{{ row.title }}</span>
+                <small v-if="row.publishedAt" class="monitor-event-date">{{ row.publishedAt }}</small>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-pagination
+            v-if="siteMonitorEventsTotal > SITE_MONITOR_EVENT_PAGE_SIZE"
+            size="small"
+            background
+            layout="prev, pager, next"
+            style="margin-top: 10px"
+            :total="siteMonitorEventsTotal"
+            :page-size="SITE_MONITOR_EVENT_PAGE_SIZE"
+            :current-page="siteMonitorEventsPage"
+            @current-change="changeSiteMonitorEventsPage"
+          />
+        </section>
       </el-tab-pane>
 
       <el-tab-pane label="会员配置">
@@ -2537,5 +2824,206 @@ onMounted(() => {
   background: linear-gradient(135deg, #1a1a2e 0%, #c9a84c 100%) !important;
   border-color: #c9a84c !important;
   color: #fff !important;
+}
+
+.monitor-header-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.monitor-card {
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.monitor-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.monitor-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.monitor-title strong {
+  font-size: 1rem;
+}
+
+.monitor-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-muted);
+}
+
+.monitor-dot.is-success,
+.monitor-dot.is-not_modified {
+  background: #3ddc97;
+}
+
+.monitor-dot.is-failed {
+  background: #ff6b6b;
+}
+
+.monitor-dot.is-running {
+  background: #4d9dff;
+}
+
+.monitor-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.monitor-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-input) 86%, transparent);
+}
+
+.monitor-stat b {
+  font-size: 1.05rem;
+}
+
+.monitor-stat small {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.monitor-stat.is-bad b {
+  color: #ff6b6b;
+}
+
+.monitor-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.monitor-meta div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.monitor-meta dt {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.monitor-meta dd {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.monitor-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  color: #ff9b9b;
+  background: color-mix(in srgb, #ff6b6b 12%, transparent);
+  word-break: break-all;
+}
+
+.monitor-form {
+  margin: 0;
+}
+
+.monitor-form :deep(.el-form-item) {
+  margin-bottom: 10px;
+}
+
+.monitor-auth-help {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.monitor-auth-help code {
+  color: #8dbbff;
+  word-break: break-all;
+}
+
+.monitor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.monitor-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.monitor-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.monitor-run-time {
+  min-width: 138px;
+}
+
+.monitor-run-count {
+  white-space: nowrap;
+}
+
+.monitor-events-panel {
+  max-width: none;
+}
+
+.monitor-event-link {
+  color: #4d9dff;
+  text-decoration: none;
+}
+
+.monitor-event-link:hover {
+  text-decoration: underline;
+}
+
+.monitor-event-date {
+  margin-left: 8px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+  .monitor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .monitor-run-time {
+    min-width: 0;
+  }
 }
 </style>
