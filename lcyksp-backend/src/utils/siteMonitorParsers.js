@@ -56,10 +56,28 @@ function validateModelTitle(value) {
   return title
 }
 
+function modelMetadata(entry, id, title) {
+  const metadata = { id, name: title }
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+    // `/v1/models` also reports the vendor and the endpoint families. A model name on its own does not
+    // tell the reader what the model is, so these are carried into the notification.
+    const vendor = normalizeText(entry.owned_by)
+    if (vendor && vendor.length <= 64) metadata.vendor = vendor
+    if (Array.isArray(entry.supported_endpoint_types)) {
+      const endpoints = entry.supported_endpoint_types
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
+        .slice(0, 8)
+      if (endpoints.length) metadata.endpoints = endpoints
+    }
+  }
+  return metadata
+}
+
 function normalizeModelEntry(entry, index) {
   if (typeof entry === 'string') {
     const title = validateModelTitle(entry)
-    return { itemKey: canonicalKey(title), title, metadata: { id: title, name: title } }
+    return { itemKey: canonicalKey(title), title, metadata: modelMetadata(null, title, title) }
   }
 
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -76,7 +94,7 @@ function normalizeModelEntry(entry, index) {
   return {
     itemKey: canonicalKey(id),
     title,
-    metadata: { id, name: title },
+    metadata: modelMetadata(entry, id, title),
   }
 }
 
@@ -149,6 +167,92 @@ function htmlToText(html) {
       .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
       .replace(/<[^>]+>/g, ' '),
   ))
+}
+
+const MAX_ANNOUNCEMENT_BODY = 2000
+// Only guards against an empty or near-empty capture; a legitimately short announcement must survive.
+const MIN_ANNOUNCEMENT_BODY = 10
+
+/**
+ * Tag-stripping for article bodies. Deliberately does NOT run the NFKC normalisation that
+ * `htmlToText` applies, because NFKC rewrites full-width punctuation (`，` becomes `,`), which would
+ * visibly mangle Chinese prose in the notification.
+ */
+function htmlToPlainText(html) {
+  return decodeHtmlEntities(
+    String(html ?? '')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+      .replace(/<[^>]+>/g, ' '),
+  ).replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Slice the article container by tracking <div> depth. A plain non-greedy regex stops at the first
+ * nested `</div>`, which truncates (or empties) bodies that embed markup — the CMS wraps embedded PDF
+ * players in their own div, for example.
+ */
+function sliceContainerBody(source) {
+  const open = source.match(/<div\b[^>]*(?:wp_articlecontent|v_news_content|article-content)[^>]*>/i)
+  if (!open) return ''
+  const start = open.index + open[0].length
+  const tagPattern = /<div\b[^>]*>|<\/div\s*>/gi
+  tagPattern.lastIndex = start
+  let depth = 1
+  let match
+  while ((match = tagPattern.exec(source)) !== null) {
+    if (match[0].startsWith('</')) {
+      depth -= 1
+      if (depth === 0) return source.slice(start, match.index)
+    } else {
+      depth += 1
+    }
+  }
+  // Unbalanced markup: prefer the remainder of the page over dropping the body entirely.
+  return source.slice(start)
+}
+
+/**
+ * Pull the announcement body out of an article page. The school site is built on a CMS whose article
+ * container is `wp_articlecontent` (some templates use `v_news_content`). A container change must
+ * degrade to "title + link only" rather than mailing navigation junk, so an empty or near-empty
+ * capture is treated as absent.
+ */
+export function extractAnnouncementBody(html, { maxLength = MAX_ANNOUNCEMENT_BODY } = {}) {
+  const source = String(html ?? '')
+  if (!source.trim()) return ''
+  const text = htmlToPlainText(sliceContainerBody(source))
+  if (text.length < MIN_ANNOUNCEMENT_BODY) return ''
+  return text.slice(0, maxLength)
+}
+
+/**
+ * Some announcements carry no prose at all: the whole announcement is an attached file (the CMS renders
+ * it as a player div holding `pdfsrc` plus a display title). Reporting the attachment is far more
+ * useful than reporting nothing, so it is extracted when there is no body text.
+ */
+export function extractAnnouncementAttachment(html, articleUrl) {
+  const source = String(html ?? '')
+  if (!source.trim()) return null
+
+  const player = source.match(/<div\b[^>]*pdfsrc\s*=\s*"([^"]+)"/i) || source.match(/<div\b[^>]*pdfsrc\s*=\s*'([^']+)'/i)
+  const fileLink = source.match(/href\s*=\s*"([^"]+\.(?:pdf|docx?|xlsx?|zip))"/i)
+  const rawPath = decodeHtmlEntities((player ? player[1] : (fileLink ? fileLink[1] : '')) || '').trim()
+  if (!rawPath) return null
+
+  let url
+  try {
+    url = new URL(rawPath, articleUrl || 'https://www.hzu.edu.cn/').href
+  } catch {
+    return null
+  }
+
+  const attributeMatch = source.match(/sudyfile-attr\s*=\s*"([^"]*)"/i) || source.match(/sudyfile-attr\s*=\s*'([^']*)'/i)
+  const titleMatch = attributeMatch ? decodeHtmlEntities(attributeMatch[1]).match(/'title'\s*:\s*'([^']*)'/) : null
+  const fallbackName = decodeURIComponent(url.split('/').pop() || '').trim()
+  const title = normalizeText(titleMatch ? titleMatch[1] : fallbackName)
+
+  return { url: url.slice(0, 1000), title: (title || '公告附件').slice(0, 200) }
 }
 
 function dateFromPath(year, monthDay) {

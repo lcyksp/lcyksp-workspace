@@ -293,6 +293,61 @@ test('the administrator test mail is sent directly and never enters the queue', 
   await assert.rejects(sendSiteMonitorTestEmail('', { sendImpl: sender }), /收件邮箱/)
 })
 
+test('announcement bodies and model vendor are rendered, trimmed and escaped', () => {
+  const { html } = renderSiteMonitorEmail('测试源', [
+    {
+      eventType: 'announcement_added',
+      eventKey: 'a',
+      title: '公告二',
+      url: 'https://www.hzu.edu.cn/2026/0902/c11241a102/page.htm',
+      publishedAt: '2026-09-02',
+      content: '正文<script>alert(1)</script>，这是公告内容。',
+    },
+    {
+      eventType: 'model_added',
+      eventKey: 'b',
+      title: 'gpt-5.6-luna',
+      metadata: { vendor: 'claude', endpoints: ['anthropic', 'openai'] },
+    },
+  ])
+
+  // The point of the feature: the mail must say what was announced and what the model is.
+  assert.match(html, /这是公告内容。/)
+  assert.match(html, /厂商 claude/)
+  assert.match(html, /接口 anthropic\/openai/)
+  assert.match(html, /2026-09-02/)
+  // Upstream text is untrusted: it is escaped, never injected.
+  assert.equal(html.includes('<script>'), false)
+  assert.match(html, /正文&lt;script&gt;/)
+
+  // An announcement whose content is a file links the file.
+  const withAttachment = renderSiteMonitorEmail('测试源', [{
+    eventType: 'announcement_added',
+    eventKey: 'd',
+    title: '招生目录',
+    url: 'https://www.hzu.edu.cn/2025/0926/c11241a270450/page.htm',
+    attachment: { url: 'https://www.hzu.edu.cn/_upload/article/files/aa/bb/cc.pdf', title: '招生目录.pdf' },
+  }])
+  assert.match(withAttachment.html, /附件：<a href="https:\/\/www\.hzu\.edu\.cn\/_upload\/article\/files\/aa\/bb\/cc\.pdf"/)
+  assert.match(withAttachment.html, /招生目录\.pdf/)
+
+  // A non-http attachment url must never become a link.
+  const badAttachment = renderSiteMonitorEmail('测试源', [{
+    eventType: 'announcement_added',
+    eventKey: 'e',
+    title: 'x',
+    attachment: { url: 'javascript:alert(1)', title: '坏附件' },
+  }])
+  assert.equal(badAttachment.html.includes('javascript:'), false)
+
+  // One long announcement must not be able to dominate the mail.
+  const long = renderSiteMonitorEmail('测试源', [
+    { eventType: 'announcement_added', eventKey: 'c', title: 'x', content: '甲'.repeat(1000) },
+  ])
+  assert.equal(long.html.includes('甲'.repeat(600)), true)
+  assert.equal(long.html.includes('甲'.repeat(601)), false)
+})
+
 test.after(async () => {
   await closeDb()
   await rm(tempDir, { recursive: true, force: true })

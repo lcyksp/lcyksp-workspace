@@ -9,6 +9,7 @@ const MAX_RETRY_SECONDS = 3600
 const STALE_SENDING_MINUTES = 10
 const MAX_BATCH = 5
 const MAX_LISTED_EVENTS = 100
+const MAX_LISTED_CONTENT = 600
 const MAX_SUBJECT_LENGTH = 200
 
 const EVENT_SECTIONS = [
@@ -63,14 +64,37 @@ function safeLink(url) {
   return /^https:\/\/[^\s"'<>]+$/i.test(text) ? text : ''
 }
 
+/** Vendor and endpoint families are what make a model name actionable; the date matters for articles. */
+function eventMetaLine(event) {
+  const metadata = event?.metadata || {}
+  const parts = []
+  if (metadata.vendor) parts.push(`厂商 ${metadata.vendor}`)
+  if (Array.isArray(metadata.endpoints) && metadata.endpoints.length) parts.push(`接口 ${metadata.endpoints.join('/')}`)
+  if (event?.publishedAt) parts.push(String(event.publishedAt))
+  return parts.join(' · ')
+}
+
 function renderEventRow(event) {
   const link = safeLink(event.url)
   const title = escapeHtml(event.title)
-  const meta = event.publishedAt ? `<div style="color:#98a2b3;font-size:12px;margin-top:2px">${escapeHtml(event.publishedAt)}</div>` : ''
+  const metaText = eventMetaLine(event)
+  const meta = metaText ? `<div style="color:#98a2b3;font-size:12px;margin-top:2px">${escapeHtml(metaText)}</div>` : ''
   const heading = link
     ? `<a href="${escapeHtml(link)}" style="color:#1677ff;text-decoration:none">${title}</a>`
     : title
-  return `<li style="margin:0 0 10px"><div style="font-size:15px;color:#172033">${heading}</div>${meta}</li>`
+  // An announcement title alone does not say what was announced, so the body travels with the mail.
+  const content = headerText(event.content)
+  const excerpt = content.length > MAX_LISTED_CONTENT ? `${content.slice(0, MAX_LISTED_CONTENT)}…` : content
+  const body = excerpt
+    ? `<div style="font-size:13px;color:#475467;margin-top:6px">${escapeHtml(excerpt)}</div>`
+    : ''
+  // Attachment-only announcements have no prose at all; the file itself is the content.
+  const attachment = event.attachment && typeof event.attachment === 'object' ? event.attachment : null
+  const attachmentUrl = attachment ? safeLink(attachment.url) : ''
+  const attachmentHtml = attachmentUrl
+    ? `<div style="font-size:13px;color:#475467;margin-top:6px">附件：<a href="${escapeHtml(attachmentUrl)}" style="color:#1677ff;text-decoration:none">${escapeHtml(headerText(attachment.title) || '公告附件')}</a></div>`
+    : ''
+  return `<li style="margin:0 0 10px"><div style="font-size:15px;color:#172033">${heading}</div>${meta}${body}${attachmentHtml}</li>`
 }
 
 /** Build the frozen subject and body for one batch of events. */

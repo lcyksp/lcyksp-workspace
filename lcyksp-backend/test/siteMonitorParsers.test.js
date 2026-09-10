@@ -5,6 +5,8 @@ import {
   createEventKey,
   decodeHtmlEntities,
   diffItems,
+  extractAnnouncementAttachment,
+  extractAnnouncementBody,
   parseHzuAnnouncements,
   parseJustWokerModels,
 } from '../src/utils/siteMonitorParsers.js'
@@ -50,6 +52,56 @@ test('model parser supports the OpenAI-compatible /v1/models shape used by an AP
   assert.equal(models[0].title, 'gpt-5.6-luna')
   // An empty list must fail loudly rather than look like "every model was removed".
   assert.throws(() => parseJustWokerModels({ object: 'list', data: [] }))
+})
+
+test('article body extraction takes the CMS container and degrades to nothing otherwise', () => {
+  const page = '<html><head><style>.x{}</style></head><body><div class="nav">导航</div>'
+    + "<div class='wp_articlecontent'><p>第一段内容&nbsp;带实体，长度足够触发正文抽取。</p><p>第二段内容。</p><script>bad()</script></div>"
+    + '<div class="foot">版权</div></body></html>'
+  const body = extractAnnouncementBody(page)
+  assert.equal(body.includes('第一段内容 带实体，长度足够触发正文抽取。'), true)
+  assert.equal(body.includes('第二段内容。'), true)
+  assert.equal(body.includes('导航'), false)
+  assert.equal(body.includes('版权'), false)
+  assert.equal(body.includes('bad()'), false)
+
+  // A template change must yield "no body" rather than navigation junk.
+  assert.equal(extractAnnouncementBody('<html><body><div class="nav">只有导航</div></body></html>'), '')
+  assert.equal(extractAnnouncementBody('<html><body><div class="wp_articlecontent">短</div></body></html>'), '')
+  assert.equal(extractAnnouncementBody(''), '')
+  assert.equal(extractAnnouncementBody(null), '')
+  // Length is capped so a huge page cannot bloat the event payload or the mail.
+  const long = `<div class="wp_articlecontent"><p>${'甲'.repeat(3000)}</p></div>`
+  assert.equal(extractAnnouncementBody(long).length, 2000)
+  assert.equal(extractAnnouncementBody(long, { maxLength: 50 }).length, 50)
+})
+
+test('model parser carries the vendor and endpoint families from /v1/models', () => {
+  const models = parseJustWokerModels({
+    object: 'list',
+    data: [{ id: 'gpt-5.6-terra', object: 'model', owned_by: 'claude', supported_endpoint_types: ['anthropic', 'openai'] }],
+  })
+  assert.equal(models[0].metadata.vendor, 'claude')
+  assert.deepEqual(models[0].metadata.endpoints, ['anthropic', 'openai'])
+  // Shapes without those fields stay unchanged rather than gaining empty ones.
+  const bare = parseJustWokerModels({ data: [{ model_name: 'plain-model' }] })
+  assert.deepEqual(bare[0].metadata, { id: 'plain-model', name: 'plain-model' })
+})
+
+test('attachment-only announcements yield the file instead of nothing', () => {
+  const page = '<html><body><div class="entry"><div class=\'wp_articlecontent\'>'
+    + '<p><div pdfsrc="/_upload/article/files/aa/bb/cc.pdf" sudyfile-attr="{\'title\':\'惠州学院2026年硕士学位研究生招生目录.pdf\'}" class="wp_pdf_player"></div></p>'
+    + '</div></div></body></html>'
+  // No prose at all: the container holds only an embedded player.
+  assert.equal(extractAnnouncementBody(page), '')
+
+  const attachment = extractAnnouncementAttachment(page, 'https://www.hzu.edu.cn/2025/0926/c11241a270450/page.htm')
+  assert.equal(attachment.url, 'https://www.hzu.edu.cn/_upload/article/files/aa/bb/cc.pdf')
+  assert.equal(attachment.title, '惠州学院2026年硕士学位研究生招生目录.pdf')
+
+  // Nothing to point at → null, so the mail simply shows title + link.
+  assert.equal(extractAnnouncementAttachment('<div class="wp_articlecontent"><p>纯文字正文，没有附件。</p></div>', 'https://www.hzu.edu.cn/x/page.htm'), null)
+  assert.equal(extractAnnouncementAttachment('', 'https://www.hzu.edu.cn/x/page.htm'), null)
 })
 
 test('model parser normalizes cosmetic case and whitespace for stable keys', () => {
