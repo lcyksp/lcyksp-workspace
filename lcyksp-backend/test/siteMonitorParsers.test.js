@@ -36,6 +36,22 @@ test('model parser supports the live JustWoker /api/pricing response shape', () 
   assert.equal(models[1].title, 'gpt-5.6-sol')
 })
 
+test('model parser supports the OpenAI-compatible /v1/models shape used by an API token', () => {
+  // The long-lived-token route reads GET /v1/models instead of the login-gated /api/pricing.
+  // No parser change is needed for it: `data` is an array and each entry carries `id`.
+  const models = parseJustWokerModels({
+    object: 'list',
+    data: [
+      { id: 'gpt-5.6-luna', object: 'model', created: 1757000000, owned_by: 'justwoker' },
+      { id: 'gpt-5.6-sol', object: 'model', created: 1757000001, owned_by: 'justwoker' },
+    ],
+  })
+  assert.deepEqual(models.map(({ itemKey }) => itemKey), ['gpt-5.6-luna', 'gpt-5.6-sol'])
+  assert.equal(models[0].title, 'gpt-5.6-luna')
+  // An empty list must fail loudly rather than look like "every model was removed".
+  assert.throws(() => parseJustWokerModels({ object: 'list', data: [] }))
+})
+
 test('model parser normalizes cosmetic case and whitespace for stable keys', () => {
   const models = parseJustWokerModels({ models: [' GPT-4.1  Mini ', 'gpt-4.1 mini'] })
   assert.equal(models.length, 1)
