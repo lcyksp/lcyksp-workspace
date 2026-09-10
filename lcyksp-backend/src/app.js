@@ -9,6 +9,7 @@ import convertRouter from './routes/convert.js';
 import authRouter from './routes/auth.js';
 import galleryRouter from './routes/gallery.js';
 import adminRouter from './routes/admin.js';
+import siteMonitorRouter from './routes/siteMonitor.js';
 import recipeRouter from './routes/recipe.js';
 import videoRouter from './routes/video.js';
 import feedbackRouter from './routes/feedback.js';
@@ -67,6 +68,8 @@ app.use('/api/compress', heavyLimiter, imageJobGate, compressRouter);
 app.use('/api/convert', heavyLimiter, convertRouter);
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/gallery', galleryRouter);
+// 更具体的前缀必须先挂，否则请求会先走一遍 adminRouter 的鉴权再落到这里，白做一次校验。
+app.use('/api/admin/site-monitor', siteMonitorRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/recipe', recipeRouter);
 app.use('/api/video', videoRouter);
