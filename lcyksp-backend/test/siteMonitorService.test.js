@@ -215,3 +215,105 @@ test('rotated JustWoker session cookie is encrypted and access token is never pe
   const runs = await dbAll("SELECT error_message FROM site_monitor_runs WHERE monitor_id = (SELECT id FROM site_monitors WHERE source = 'justwoker_models')")
   assert.equal(JSON.stringify({ row, runs }).includes('memory-only-token'), false)
 })
+
+test('a new announcement carries its body into the event and into the email', async () => {
+  const monitorId = await resetMonitor('hzu_postgraduate')
+  const listA = '<a href="/2026/0901/c11241a101/page.htm">公告一</a>'
+  const listB = '<a href="/2026/0902/c11241a102/page.htm">公告二</a>'
+  await runSiteMonitor('hzu_postgraduate', { hostnameValidator: noDnsBlock, fetchImpl: async () => htmlResponse(listA) })
+  await dbRun('DELETE FROM site_monitor_deliveries')
+
+  const article = '<html><body><div class="entry">'
+    + "<div class='wp_articlecontent'><p>这是公告二的正文，用来验证邮件里会带上公告内容。</p></div>"
+    + '</div></body></html>'
+  const requested = []
+  await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => {
+      requested.push(String(url))
+      if (String(url).includes('list.htm')) return htmlResponse(listA + listB)
+      return htmlResponse(article)
+    },
+  })
+
+  // Exactly one extra request, and only for the article that is actually new.
+  assert.equal(requested.length, 2)
+  assert.equal(requested[1], 'https://www.hzu.edu.cn/2026/0902/c11241a102/page.htm')
+
+  const event = await dbGet("SELECT payload_json FROM site_monitor_events WHERE monitor_id = ? AND event_type = 'announcement_added'", [monitorId])
+  assert.equal(JSON.parse(event.payload_json).content.includes('这是公告二的正文'), true)
+
+  const delivery = await dbGet('SELECT body_html FROM site_monitor_deliveries WHERE monitor_id = ?', [monitorId])
+  assert.equal(delivery.body_html.includes('这是公告二的正文'), true)
+  assert.equal(delivery.body_html.includes('公告二'), true)
+})
+
+test('a failed or unusable announcement body still notifies with title and link', async () => {
+  const monitorId = await resetMonitor('hzu_postgraduate')
+  const listA = '<a href="/2026/0901/c11241a101/page.htm">公告一</a>'
+  const listB = '<a href="/2026/0902/c11241a102/page.htm">公告二</a>'
+  await runSiteMonitor('hzu_postgraduate', { hostnameValidator: noDnsBlock, fetchImpl: async () => htmlResponse(listA) })
+  await dbRun('DELETE FROM site_monitor_deliveries')
+
+  const result = await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => (String(url).includes('list.htm')
+      ? htmlResponse(listA + listB)
+      : new Response('', { status: 500 })),
+  })
+
+  // The run itself must succeed: a body fetch is an enrichment, never a precondition.
+  assert.equal(result.status, 'success')
+  assert.equal(result.added.length, 1)
+  const monitor = await dbGet('SELECT last_status, consecutive_failures FROM site_monitors WHERE id = ?', [monitorId])
+  assert.deepEqual(monitor, { last_status: 'success', consecutive_failures: 0 })
+  const event = await dbGet("SELECT payload_json FROM site_monitor_events WHERE monitor_id = ? AND event_type = 'announcement_added'", [monitorId])
+  assert.equal(JSON.parse(event.payload_json).content, undefined)
+  const delivery = await dbGet('SELECT body_html FROM site_monitor_deliveries WHERE monitor_id = ?', [monitorId])
+  assert.equal(delivery.body_html.includes('公告二'), true)
+})
+
+test('an attachment-only announcement reports the file instead of an empty body', async () => {
+  await resetMonitor('hzu_postgraduate')
+  const listA = '<a href="/2026/0901/c11241a101/page.htm">公告一</a>'
+  const listB = '<a href="/2026/0902/c11241a102/page.htm">公告二</a>'
+  await runSiteMonitor('hzu_postgraduate', { hostnameValidator: noDnsBlock, fetchImpl: async () => htmlResponse(listA) })
+  await dbRun('DELETE FROM site_monitor_deliveries')
+
+  const pdfPage = '<html><body><div class="entry"><div class=\'wp_articlecontent\'>'
+    + '<p><div pdfsrc="/_upload/article/files/aa/bb/cc.pdf" sudyfile-attr="{\'title\':\'招生目录.pdf\'}" class="wp_pdf_player"></div></p>'
+    + '</div></div></body></html>'
+  await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => (String(url).includes('list.htm') ? htmlResponse(listA + listB) : htmlResponse(pdfPage)),
+  })
+
+  const event = await dbGet("SELECT payload_json FROM site_monitor_events WHERE event_type = 'announcement_added'")
+  const payload = JSON.parse(event.payload_json)
+  assert.equal(payload.content, undefined)
+  assert.equal(payload.attachment.url, 'https://www.hzu.edu.cn/_upload/article/files/aa/bb/cc.pdf')
+  assert.equal(payload.attachment.title, '招生目录.pdf')
+
+  const delivery = await dbGet('SELECT body_html FROM site_monitor_deliveries')
+  assert.equal(delivery.body_html.includes('附件：'), true)
+  assert.equal(delivery.body_html.includes('招生目录.pdf'), true)
+})
+
+test('announcement bodies are never fetched for a fresh or rebuilt baseline', async () => {
+  await resetMonitor('hzu_postgraduate')
+  const list = '<a href="/2026/0901/c11241a101/page.htm">公告一</a>'
+  const requested = []
+  await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => { requested.push(String(url)); return htmlResponse(list) },
+  })
+  // A baseline emits no events, so it must not crawl the articles either.
+  assert.equal(requested.length, 1)
+
+  requested.length = 0
+  await rebuildSiteMonitorBaseline('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => { requested.push(String(url)); return htmlResponse(list) },
+  })
+  assert.equal(requested.length, 1)
+})
