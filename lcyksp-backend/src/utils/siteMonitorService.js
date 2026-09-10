@@ -2,7 +2,7 @@ import { getSiteMonitorDb } from '../config/db.js'
 import { decrypt, encrypt } from './crypto.js'
 import { fetchMonitorResponse } from './siteMonitorFetch.js'
 import { queueSiteMonitorAlertDelivery, queueSiteMonitorDelivery } from './siteMonitorMailer.js'
-import { createEventKey, parseHzuAnnouncements, parseJustWokerModels } from './siteMonitorParsers.js'
+import { createEventKey, extractAnnouncementAttachment, extractAnnouncementBody, parseHzuAnnouncements, parseJustWokerModels } from './siteMonitorParsers.js'
 import { enqueueSiteMonitorDbWork } from './siteMonitorQueue.js'
 
 const inFlightMonitors = new Map()
@@ -12,6 +12,9 @@ const STALE_RUN_MINUTES = 15
 // it is worth an email, so a single network blip or one 502 stays silent.
 const FAILURE_ALERT_THRESHOLD = 3
 const CREDENTIAL_FAILURE_CODES = new Set(['AUTH_REJECTED', 'AUTH_MISSING', 'AUTH_INVALID'])
+// One request per new announcement, capped so an unexpected flood cannot turn into a crawl of the
+// upstream site. Bodies past the cap still notify, just without the excerpt.
+const MAX_ANNOUNCEMENT_CONTENT_FETCHES = 10
 
 function dbGet(sql, params = []) {
   return new Promise((resolve, reject) => getSiteMonitorDb().get(sql, params, (error, row) => (error ? reject(error) : resolve(row))))
@@ -86,17 +89,28 @@ async function loadMonitor(source) {
   return { ...monitor, authSecret }
 }
 
-async function insertEvent(monitorId, runId, source, eventType, item) {
+async function insertEvent(monitorId, runId, source, eventType, item, extras = {}) {
   const eventKey = createEventKey(source, eventType, item.itemKey)
+  const payload = { ...item, ...extras }
   const result = await dbRun(
     `INSERT INTO site_monitor_events (monitor_id, run_id, event_key, event_type, title, payload_json)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(event_key) DO NOTHING`,
-    [monitorId, runId, eventKey, eventType, item.title, JSON.stringify(item)],
+    [monitorId, runId, eventKey, eventType, item.title, JSON.stringify(payload)],
   )
   // A conflicting key means the event was already notified, so it must not enter a new mail batch.
   if (result.changes === 0) return null
-  return { id: result.lastID, eventKey, eventType, title: item.title, url: item.url || '', publishedAt: item.publishedAt || null }
+  // Everything the mail template renders travels with the event, announcement body included.
+  return {
+    id: result.lastID,
+    eventKey,
+    eventType,
+    title: item.title,
+    url: item.url || '',
+    publishedAt: item.publishedAt || null,
+    metadata: item.metadata || {},
+    ...extras,
+  }
 }
 
 async function persistBaseline(monitor, items) {
@@ -115,7 +129,7 @@ async function persistBaseline(monitor, items) {
   await dbRun("UPDATE site_monitors SET baseline_ready = 1, updated_at = datetime('now') WHERE id = ?", [monitor.id])
 }
 
-async function persistChanges(monitor, runId, items) {
+async function persistChanges(monitor, runId, items, announcementBodies = new Map()) {
   const activeRows = await dbAll('SELECT * FROM site_monitor_items WHERE monitor_id = ? AND is_active = 1', [monitor.id])
   const currentByKey = new Map(items.map((item) => [item.itemKey, item]))
   const activeByKey = new Map(activeRows.map((row) => [row.item_key, row]))
@@ -151,7 +165,12 @@ async function persistChanges(monitor, runId, items) {
   const notifications = []
   for (const item of added) {
     const eventType = monitor.source === 'justwoker_models' ? 'model_added' : 'announcement_added'
-    const event = await insertEvent(monitor.id, runId, monitor.source, eventType, item)
+    // Only new announcements are enriched, so the mail says what was actually announced.
+    const enrichment = announcementBodies.get(item.itemKey) || {}
+    const extras = {}
+    if (enrichment.content) extras.content = enrichment.content
+    if (enrichment.attachment) extras.attachment = enrichment.attachment
+    const event = await insertEvent(monitor.id, runId, monitor.source, eventType, item, extras)
     if (event) notifications.push(event)
   }
   for (const item of removed) {
@@ -258,6 +277,42 @@ async function markRunFailure(monitor, runId, startedAt, error) {
   })
 }
 
+/**
+ * Fetch the body of each genuinely new announcement. Runs before the surrounding transaction opens,
+ * because network work must never happen inside it, and only new articles need a request at all —
+ * a steady state costs nothing. A failed or unrecognised body degrades that one mail to title + link;
+ * it can never fail the run or alter the snapshot.
+ */
+async function collectAnnouncementBodies(monitor, items, { fetchImpl, hostnameValidator, rebuildBaseline } = {}) {
+  if (monitor.source !== 'hzu_postgraduate') return new Map()
+  // A fresh or rebuilt baseline emits no events, so there is nothing to enrich.
+  if (!monitor.baseline_ready || rebuildBaseline) return new Map()
+
+  const activeRows = await dbAll('SELECT item_key FROM site_monitor_items WHERE monitor_id = ? AND is_active = 1', [monitor.id])
+  const known = new Set(activeRows.map((row) => row.item_key))
+  const fresh = items
+    .filter((item) => item.url && !known.has(item.itemKey))
+    .slice(0, MAX_ANNOUNCEMENT_CONTENT_FETCHES)
+
+  const bodies = new Map()
+  for (const item of fresh) {
+    try {
+      // Same security envelope as the list request: host allowlist, redirect checks, size and timeout caps.
+      const response = await fetchMonitorResponse(
+        { source: monitor.source, target_url: item.url, auth_type: 'none' },
+        { fetchImpl, hostnameValidator },
+      )
+      const content = extractAnnouncementBody(response.body)
+      // Some announcements are an attached file with no prose; report the attachment instead of nothing.
+      const attachment = content ? null : extractAnnouncementAttachment(response.body, item.url)
+      if (content || attachment) bodies.set(item.itemKey, { content, attachment })
+    } catch {
+      // Title and link still make a usable notification.
+    }
+  }
+  return bodies
+}
+
 async function executeMonitor(source, { triggerType = 'manual', diagnose = false, rebuildBaseline = false, fetchImpl, hostnameValidator } = {}) {
   if (!VALID_TRIGGERS.has(triggerType)) throw new Error('Invalid monitor trigger type')
   const monitor = await loadMonitor(source)
@@ -300,6 +355,9 @@ async function executeMonitor(source, { triggerType = 'manual', diagnose = false
       return { status: 'diagnose', itemCount: items.length, sample: items.slice(0, 3) }
     }
 
+    // Bodies are fetched here, outside the transaction below, so no network wait can hold the writer.
+    const announcementBodies = await collectAnnouncementBodies(monitor, items, { fetchImpl, hostnameValidator, rebuildBaseline })
+
     // Snapshot mutations, events, the queued mail batch, run completion and scheduling form one atomic commit.
     const changes = await transaction(async () => {
       let clearedItems = 0
@@ -313,7 +371,7 @@ async function executeMonitor(source, { triggerType = 'manual', diagnose = false
         detectedChanges = { added: [], removed: [], notifications: [] }
       } else {
         detectedChanges = monitor.baseline_ready
-          ? await persistChanges(monitor, run.lastID, items)
+          ? await persistChanges(monitor, run.lastID, items, announcementBodies)
           : (await persistBaseline(monitor, items), { added: [], removed: [], notifications: [] })
       }
       await dbRun(
