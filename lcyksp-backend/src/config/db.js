@@ -629,16 +629,23 @@ export async function initDb() {
       (source, display_name, target_url, enabled, interval_seconds, recipient_email, auth_type, last_status)
      VALUES (?, ?, ?, 0, ?, ?, 'none', 'idle')
      ON CONFLICT(source) DO NOTHING`,
-    ['justwoker_models', 'JustWoker 模型广场', 'https://api.justwoker.icu/api/pricing', 1800, '1296757861@qq.com'],
+    ['justwoker_models', 'JustWoker 模型广场', 'https://api.justwoker.icu/v1/models', 1800, '1296757861@qq.com'],
   )
-  // `/pricing` is the SPA document. The authenticated model JSON is served by `/api/pricing`.
-  // Migrate only the obsolete built-in URL so any future administrator-owned target is preserved.
+  // `/pricing` is the SPA document, and `/api/pricing` requires a *login session*, whose refresh
+  // token is revoked/rotated by upstream and cannot be kept alive unattended. `/v1/models` is the
+  // OpenAI-compatible relay endpoint: it accepts a long-lived `sk-` API token, so the monitor no
+  // longer depends on a browser session at all. Only the two obsolete built-in URLs are migrated, so
+  // any administrator-owned target is preserved.
   await run(
     `UPDATE site_monitors SET target_url = ?, etag = NULL, last_modified = NULL,
        last_status = 'idle', consecutive_failures = 0, last_error = '', next_run_at = NULL,
        updated_at = datetime('now')
-     WHERE source = 'justwoker_models' AND target_url = ?`,
-    ['https://api.justwoker.icu/api/pricing', 'https://api.justwoker.icu/pricing'],
+     WHERE source = 'justwoker_models' AND target_url IN (?, ?)`,
+    [
+      'https://api.justwoker.icu/v1/models',
+      'https://api.justwoker.icu/pricing',
+      'https://api.justwoker.icu/api/pricing',
+    ],
   )
   await run(
     `INSERT INTO site_monitors

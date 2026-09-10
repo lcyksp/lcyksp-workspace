@@ -1647,8 +1647,8 @@ onMounted(() => {
               <el-form-item label="认证方式">
                 <el-select v-model="siteMonitorForms[monitor.source].authType" style="width: 128px">
                   <el-option label="无需认证" value="none" />
-                  <el-option :label="monitor.source === 'justwoker_models' ? '登录会话 Cookie（推荐）' : 'Cookie'" value="cookie" />
-                  <el-option :label="monitor.source === 'justwoker_models' ? '临时 Bearer Token（仅诊断）' : 'Bearer'" value="bearer" />
+                  <el-option :label="monitor.source === 'justwoker_models' ? 'API 令牌（推荐，长期有效）' : 'Bearer'" value="bearer" />
+                  <el-option :label="monitor.source === 'justwoker_models' ? '登录会话 Cookie（易失效）' : 'Cookie'" value="cookie" />
                 </el-select>
               </el-form-item>
               <el-form-item v-if="siteMonitorForms[monitor.source].authType !== 'none'" label="凭据">
@@ -1657,11 +1657,11 @@ onMounted(() => {
                   type="password"
                   show-password
                   clearable
-                  :placeholder="monitor.authConfigured ? `已配置 ${monitor.authMask}（${monitor.authLength} 字符），留空保持不变` : (monitor.source === 'justwoker_models' && siteMonitorForms[monitor.source].authType === 'cookie' ? '粘贴登录会话 Cookie' : '粘贴 Cookie 或 Token')"
+                  :placeholder="monitor.authConfigured ? `已配置 ${monitor.authMask}（${monitor.authLength} 字符），留空保持不变` : (monitor.source === 'justwoker_models' ? (siteMonitorForms[monitor.source].authType === 'cookie' ? '粘贴登录会话 Cookie' : '粘贴 sk- 开头的 API 令牌') : '粘贴 Cookie 或 Token')"
                 />
                 <div v-if="monitor.source === 'justwoker_models'" class="monitor-auth-help">
-                  <template v-if="siteMonitorForms[monitor.source].authType === 'cookie'">请在已登录 JustWoker 的浏览器开发者工具中，从 <code>/api/user/auth/refresh</code> 请求复制完整 Cookie 请求头。服务端每次先刷新短期 Token，再读取模型；不会保存 Token。</template>
-                  <template v-else-if="siteMonitorForms[monitor.source].authType === 'bearer'">Bearer Token 有效期较短，仅适合临时诊断，不建议用于半小时定时监测。</template>
+                  <template v-if="siteMonitorForms[monitor.source].authType === 'bearer'"><strong>推荐</strong>。在 JustWoker 控制台「令牌」页新建一枚令牌（<code>sk-</code> 开头，有效期建议选<strong>永不过期</strong>），粘贴到上面的凭据框。服务端用 <code>GET /v1/models</code> 读取模型列表，不依赖登录会话、也不需要每轮刷新，令牌不是一次性凭据，可以长期无人值守。</template>
+                  <template v-else-if="siteMonitorForms[monitor.source].authType === 'cookie'"><strong>不推荐，容易失效。</strong>该会话的刷新令牌会被上游轮换并吊销，一旦被浏览器抢先消费就只能人工重贴。若仍要用：在已登录 JustWoker 的浏览器开发者工具中打开 Application → Cookies → justwoker.icu，取 <code>new_api_refresh</code> 的值并连名字一起填成 <code>new_api_refresh=值</code>；<strong>不要</strong>从 <code>/api/user/auth/refresh</code> 请求头里抄（那个值往往已被本次请求消费掉，抄下来必然 401）。取值后立刻保存并诊断。</template>
                 </div>
               </el-form-item>
               <el-form-item label="收件邮箱">

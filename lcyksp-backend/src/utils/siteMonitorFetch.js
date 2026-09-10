@@ -5,7 +5,7 @@ import { isBlockedAddress, isBlockedHostname } from './ssrf.js'
 const SOURCE_POLICIES = Object.freeze({
   justwoker_models: Object.freeze({
     hostname: 'api.justwoker.icu',
-    defaultUrl: 'https://api.justwoker.icu/api/pricing',
+    defaultUrl: 'https://api.justwoker.icu/v1/models',
     maxBytes: 2 * 1024 * 1024,
     acceptedTypes: ['application/json'],
   }),
@@ -158,6 +158,25 @@ async function readLimitedBody(body, maxBytes) {
   return Buffer.concat(chunks, total).toString('utf8')
 }
 
+/**
+ * Upstream auth failures carry a stable machine code such as AUTH_SESSION_REVOKED, and that code is
+ * what tells an administrator what to do: an expired session just needs a fresh cookie, a revoked one
+ * means something else already consumed it. The run record only keeps a short message, so the code is
+ * folded into the message instead of being dropped. The body is a tiny JSON error object; anything
+ * larger, unparseable, or oddly shaped is ignored so this can never mask the auth failure itself.
+ */
+async function describeAuthFailure(response) {
+  try {
+    const parsed = JSON.parse(await readLimitedBody(response.body, 1024))
+    const code = String(parsed?.code || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 64)
+    const message = String(parsed?.message || '').replace(/[\r\n]+/g, ' ').slice(0, 120)
+    const parts = [code, message].filter(Boolean)
+    return parts.length ? ` (${parts.join(': ')})` : ''
+  } catch {
+    return ''
+  }
+}
+
 function safeResponseHeader(response, name, maxLength = 2048) {
   const value = response.headers.get(name)
   return value && value.length <= maxLength ? value : null
@@ -169,7 +188,6 @@ export async function fetchMonitorResponse(monitor, { fetchImpl = fetch, signal,
 
   let url = validateMonitorUrl(monitor.source, monitor.target_url)
   let accessToken = ''
-  let rotatedCookie = ''
   const timeoutController = new AbortController()
   const timeout = setTimeout(() => timeoutController.abort(new Error('Monitor request timed out')), REQUEST_TIMEOUT_MS)
   timeout.unref?.()
@@ -192,8 +210,10 @@ export async function fetchMonitorResponse(monitor, { fetchImpl = fetch, signal,
         throw new SiteMonitorFetchError(code === 'TIMEOUT' ? 'Monitor request timed out' : 'Monitor session refresh failed', { code, cause })
       }
       if (refreshResponse.status === 401 || refreshResponse.status === 403) {
-        refreshResponse.body?.destroy?.()
-        throw new SiteMonitorFetchError('Monitor authentication was rejected', { code: 'AUTH_REJECTED', status: refreshResponse.status })
+        const detail = await describeAuthFailure(refreshResponse)
+        // Named separately from the model-request failure below: only the step tells an administrator
+        // whether the refresh session itself is dead or the token it produced was refused.
+        throw new SiteMonitorFetchError(`Monitor session refresh was rejected${detail}`, { code: 'AUTH_REJECTED', status: refreshResponse.status })
       }
       if ([301, 302, 303, 307, 308].includes(refreshResponse.status)) {
         refreshResponse.body?.destroy?.()
@@ -219,7 +239,14 @@ export async function fetchMonitorResponse(monitor, { fetchImpl = fetch, signal,
         throw new SiteMonitorFetchError('Monitor session refresh did not return a valid Bearer token', { code: 'AUTH_REJECTED', status: refreshResponse.status })
       }
       const mergedCookie = mergeSessionCookies(sessionCookie, getSetCookieHeaders(refreshResponse.headers))
-      if (mergedCookie && mergedCookie !== sessionCookie) rotatedCookie = mergedCookie
+      if (mergedCookie && mergedCookie !== sessionCookie) {
+        // The upstream revokes the refresh token it was handed the moment it issues a replacement, so
+        // the replacement must be persisted before anything else runs — even if the model request that
+        // follows fails. Waiting for that request to succeed (the original behaviour) meant a single
+        // failure left the revoked value in the database, and every later run then failed with
+        // AUTH_SESSION_REVOKED until an administrator pasted a new cookie by hand.
+        if (typeof onCredentialRefresh === 'function') await onCredentialRefresh(mergedCookie)
+      }
     }
 
     const headers = buildHeaders(monitor, { accessToken })
@@ -252,12 +279,11 @@ export async function fetchMonitorResponse(monitor, { fetchImpl = fetch, signal,
 
       if (response.status === 304) {
         response.body?.destroy?.()
-        if (rotatedCookie && typeof onCredentialRefresh === 'function') await onCredentialRefresh(rotatedCookie)
         return { status: 304, notModified: true, body: '', contentType: '', etag: monitor.etag || null, lastModified: monitor.last_modified || null, finalUrl: url.href }
       }
       if (response.status === 401 || response.status === 403) {
-        response.body?.destroy?.()
-        throw new SiteMonitorFetchError('Monitor authentication was rejected', { code: 'AUTH_REJECTED', status: response.status })
+        const detail = await describeAuthFailure(response)
+        throw new SiteMonitorFetchError(`Monitor authentication was rejected${detail}`, { code: 'AUTH_REJECTED', status: response.status })
       }
       if (!response.ok) {
         response.body?.destroy?.()
@@ -276,8 +302,6 @@ export async function fetchMonitorResponse(monitor, { fetchImpl = fetch, signal,
       }
       const body = await readLimitedBody(response.body, policy.maxBytes)
       if (!body.trim()) throw new SiteMonitorFetchError('Monitor returned an empty response', { code: 'EMPTY_BODY', status: response.status })
-
-      if (rotatedCookie && typeof onCredentialRefresh === 'function') await onCredentialRefresh(rotatedCookie)
 
       return {
         status: response.status,
