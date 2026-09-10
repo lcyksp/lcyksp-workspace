@@ -113,6 +113,56 @@ test('JustWoker session cookie refreshes a short-lived token before pricing fetc
   assert.equal(JSON.stringify(result).includes('sid='), false)
 })
 
+test('a rotated JustWoker session cookie is persisted even when the model request that follows fails', async () => {
+  const persisted = []
+  const monitor = { ...justwoker, auth_type: 'cookie', authSecret: 'sid=old' }
+  let call = 0
+  await assert.rejects(fetchMonitorResponse(monitor, {
+    hostnameValidator: publicHost,
+    onCredentialRefresh: async (cookie) => { persisted.push(cookie) },
+    fetchImpl: async () => {
+      call += 1
+      if (call === 1) {
+        return response(JSON.stringify({ success: true, data: { access_token: 'fresh-access', token_type: 'Bearer' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'set-cookie': 'sid=new; Path=/; HttpOnly' },
+        })
+      }
+      return response('', { status: 401 })
+    },
+  }), { code: 'AUTH_REJECTED' })
+  // The upstream revokes the presented refresh token as soon as it issues a replacement, so persisting
+  // only after a fully successful run would strand the monitor on an already-revoked credential.
+  assert.deepEqual(persisted, ['sid=new'])
+})
+
+test('auth failures keep the upstream error code, and a non-JSON failure body never hides them', async () => {
+  const monitor = { ...justwoker, auth_type: 'cookie', authSecret: 'sid=session' }
+  const revoked = response(JSON.stringify({ code: 'AUTH_SESSION_REVOKED', message: 'Unauthorized', success: false }), {
+    status: 401,
+    headers: { 'content-type': 'application/json' },
+  })
+  await assert.rejects(
+    fetchMonitorResponse(monitor, { hostnameValidator: publicHost, fetchImpl: async () => revoked }),
+    (error) => {
+      assert.equal(error.code, 'AUTH_REJECTED')
+      assert.equal(error.status, 401)
+      assert.equal(error.message.includes('AUTH_SESSION_REVOKED'), true)
+      return true
+    },
+  )
+  // "expired" and "revoked" need different administrator actions, so the code must survive; an
+  // unparseable body must still yield the plain auth failure rather than a parsing error.
+  await assert.rejects(
+    fetchMonitorResponse(monitor, { hostnameValidator: publicHost, fetchImpl: async () => response('<html>nope</html>', { status: 401 }) }),
+    (error) => {
+      assert.equal(error.code, 'AUTH_REJECTED')
+      assert.equal(error.message.includes('nope'), false)
+      return true
+    },
+  )
+})
+
 test('JustWoker session refresh rejects bad authentication and malformed token responses', async () => {
   const monitor = { ...justwoker, auth_type: 'cookie', authSecret: 'sid=session' }
   await assert.rejects(fetchMonitorResponse(monitor, { hostnameValidator: publicHost, fetchImpl: async () => response('', { status: 401 }) }), { code: 'AUTH_REJECTED' })

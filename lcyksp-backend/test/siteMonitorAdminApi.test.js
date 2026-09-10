@@ -81,7 +81,7 @@ test('the overview exposes fixed periods, health and no credential material', as
   const [justwoker, hzu] = response.json.monitors
   assert.equal(justwoker.source, 'justwoker_models')
   assert.equal(justwoker.intervalSeconds, 1800)
-  assert.equal(justwoker.targetUrl, 'https://api.justwoker.icu/api/pricing')
+  assert.equal(justwoker.targetUrl, 'https://api.justwoker.icu/v1/models')
   assert.equal(justwoker.intervalLabel, '30 分钟')
   assert.equal(justwoker.authConfigured, true)
   assert.equal(justwoker.authMask, '••••1234')
