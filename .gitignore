@@ -20,7 +20,11 @@ AGENTS.md
 .mimocode/
 CLAUDE.md
 HOMEPAGE-COSMOS.md
+
+# 内部文档（不入公开仓库，公开仓库只保留 README.md 项目介绍）
+HANDBOOK.md
 TASKS.md
+ISSUE.md
 
 # 本地备份与运维脚本（含服务器地址与口令流程）
 backups/
