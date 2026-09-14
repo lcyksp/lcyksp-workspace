@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# 环境变量文件（.env.production 里是 Turnstile site key，公开值但不入库以防未来夹带敏感项）
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

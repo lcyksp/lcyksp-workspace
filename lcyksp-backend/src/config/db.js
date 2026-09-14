@@ -88,6 +88,8 @@ export async function initDb() {
       'is_banned INTEGER NOT NULL DEFAULT 0,' +
       "banned_reason TEXT DEFAULT ''," +
       'group_id INTEGER DEFAULT NULL REFERENCES family_groups(id),' +
+      'last_ip TEXT DEFAULT NULL,' +
+      'last_login_at TEXT DEFAULT NULL,' +
       "created_at TEXT NOT NULL DEFAULT (datetime('now'))" +
     ')',
   )
@@ -204,6 +206,17 @@ export async function initDb() {
   )
 
   await run(
+    'CREATE TABLE IF NOT EXISTS login_attempts (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+      'username TEXT NOT NULL,' +
+      'window_start TEXT NOT NULL,' +
+      'count INTEGER NOT NULL DEFAULT 0,' +
+      "updated_at TEXT NOT NULL DEFAULT (datetime('now'))," +
+      'UNIQUE(username, window_start)' +
+    ')',
+  )
+
+  await run(
     'CREATE TABLE IF NOT EXISTS transfers (' +
       'id VARCHAR(32) PRIMARY KEY,' +
       'file_name TEXT NOT NULL,' +
@@ -249,6 +262,8 @@ export async function initDb() {
   await run('ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0').catch(() => {})
   await run("ALTER TABLE users ADD COLUMN banned_reason TEXT DEFAULT ''").catch(() => {})
   await run('ALTER TABLE users ADD COLUMN group_id INTEGER DEFAULT NULL REFERENCES family_groups(id)').catch(() => {})
+  await run('ALTER TABLE users ADD COLUMN last_ip TEXT DEFAULT NULL').catch(() => {})
+  await run('ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL').catch(() => {})
   await run('ALTER TABLE transfers ADD COLUMN owner_id INTEGER DEFAULT NULL REFERENCES users(id)').catch(() => {})
   await run('ALTER TABLE transfers ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0').catch(() => {})
 
@@ -263,6 +278,7 @@ export async function initDb() {
   await run('CREATE INDEX IF NOT EXISTS idx_membership_orders_provider_order ON membership_orders(provider, order_id)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_usage_counters_lookup ON usage_counters(subject_type, subject_key, action, window_start)').catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_registration_attempts_lookup ON registration_attempts(ip_address, window_start)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, window_start)').catch(() => {})
 
   await run(
     'CREATE TABLE IF NOT EXISTS trend_snapshots (' +
@@ -492,7 +508,14 @@ export async function initDb() {
   }
   await run("UPDATE github_categories SET enabled = 0 WHERE name IN ('AI / 大模型', '开发者工具', '基础设施 / 云原生', '嵌入式 / 硬件')").catch(() => {})
 
-  await run("UPDATE users SET role = 'admin', quota_plan = 'admin' WHERE id = 1").catch(() => {})
+  // 不再无条件把 id=1 提升为 admin —— 否则数据库一旦重建，第一个注册的人就是管理员。
+  // 需要引导管理员时，设置环境变量 LCYKSP_ADMIN_USERNAME=<用户名> 后启动一次即可。
+  const bootstrapAdmin = (process.env.LCYKSP_ADMIN_USERNAME || '').trim()
+  if (bootstrapAdmin) {
+    await run("UPDATE users SET role = 'admin', quota_plan = 'admin' WHERE username = ?", [bootstrapAdmin]).catch(
+      () => {},
+    )
+  }
 
   await run(`CREATE TABLE IF NOT EXISTS twitch_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

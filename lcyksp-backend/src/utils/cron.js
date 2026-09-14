@@ -23,6 +23,11 @@ async function cleanExpiredRecords() {
     if (err) console.error('[清道夫] 清理 7 天前下载日志失败:', err.message);
   });
 
+  // 登录失败计数只在当前 15 分钟窗口内有效，1 天前的行一定是陈旧残留
+  db.run("DELETE FROM login_attempts WHERE updated_at < datetime('now', '-1 day')", (err) => {
+    if (err) console.error('[清道夫] 清理登录失败计数失败:', err.message);
+  });
+
   db.run("DELETE FROM trend_snapshots WHERE created_at < datetime('now', '-30 days')", (err) => {
     if (err) console.error('[清道夫] 清理 30 天前趋势数据失败:', err.message);
   });

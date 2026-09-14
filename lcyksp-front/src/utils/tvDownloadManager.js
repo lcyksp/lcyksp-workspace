@@ -114,8 +114,10 @@ export const tvDownloadManager = reactive({
           ElMessage.success(task.epName + ' 服务器合成完成！正在获取并保存到本地...')
 
           try {
-            const token = localStorage.getItem('lcyksp_token') || ''
-            const downloadUrl = '/api/tv/download-file/' + taskId + '?token=' + encodeURIComponent(token)
+            // 先用登录态（Authorization 头自动附带）换一次性下载票据，再用票据触发直链下载。
+            // JWT 不再进 URL：?token= 会落进 Nginx 日志和浏览器历史，票据单次有效、5 分钟过期。
+            const ticketRes = await axios.post('/api/tv/download-file/' + taskId + '/ticket', {}, { silent: true })
+            const downloadUrl = '/api/tv/download-file/' + taskId + '?ticket=' + encodeURIComponent(ticketRes.data.ticket)
 
             const link = document.createElement('a')
             link.href = downloadUrl
