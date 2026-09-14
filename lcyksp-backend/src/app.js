@@ -21,6 +21,7 @@ import trendsRouter from './routes/trends.js';
 import apexRouter from './routes/apex.js';
 import githubSubscriptionsRouter from './routes/githubSubscriptions.js';
 import algsRouter from './routes/algs.js';
+import scheduleRouter from './routes/schedule.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
@@ -41,13 +42,17 @@ app.use(helmet({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// CORS — 允许前端 lcyksp.xyz 及其所有子域名，并在云端放行公网 IP
+// CORS — 白名单化：只对 lcyksp.xyz 及其所有子域（本地开发另放行 localhost 端口）
+// 回 ACAO 头；其余来源一律**不发**该头，浏览器同源策略自然拦截。
+// 旧行为把任意 Origin 原样反射（else 分支），等于允许任何网站跨域读接口，已收紧。
+// 注：curl / 服务端调用不受 CORS 约束，公开接口照常可达；站点前后端同域经 Nginx 反代，正常用户零感知。
+const CORS_ORIGIN_RE = /^https?:\/\/([a-z0-9-]+\.)*lcyksp\.xyz(:[0-9]+)?$/
+const CORS_LOCAL_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1):[0-9]+$/
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && /^https?:\/\/([a-z0-9-]+\.)*lcyksp\.xyz(:[0-9]+)?$/.test(origin)) {
+  if (origin && (CORS_ORIGIN_RE.test(origin) || CORS_LOCAL_ORIGIN_RE.test(origin))) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Transmit-Password');
@@ -82,6 +87,7 @@ app.use('/api/trends', trendsRouter);
 app.use('/api/apex', apexRouter);
 app.use('/api/github-subscriptions', githubSubscriptionsRouter);
 app.use('/api/algs', algsRouter);
+app.use('/api/schedule', scheduleRouter);
 
 // IP归属地查询接口
 app.get('/api/ip-lookup', async (req, res) => {

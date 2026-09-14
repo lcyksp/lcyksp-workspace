@@ -3,10 +3,15 @@ import bcrypt from 'bcrypt'
 import { getDb } from '../config/db.js'
 import { authMiddleware, buildFreshUserPayload, requireAuth, signToken } from '../middleware/auth.js'
 import { getRegistrationAttemptCount, recordRegistrationAttempt, roleToPlan } from '../utils/quota.js'
+import { clearLoginFailures, getLoginFailureCount, isLoginLocked, recordLoginFailure } from '../utils/loginGuard.js'
 import { getClientIp, verifyTurnstileToken } from '../utils/turnstile.js'
 
 const router = Router()
 const SALT_ROUNDS = 10
+
+// 预生成的哑 bcrypt 哈希（cost 10 与真实密码一致，单次比对耗时相同）。
+// 用户不存在时也跑一次同代价比对再返回，否则响应时间差会被用来枚举「哪些用户名存在」。
+const DUMMY_BCRYPT_HASH = '$2b$10$gaskz4Jv1nS7bmCBXnTOnOkmCGHrB80xED45CChyVcVTmg1y.Um6.'
 
 router.use(authMiddleware)
 
@@ -78,9 +83,11 @@ router.post('/register', async (req, res, next) => {
       [username.trim(), hashed, 'user', 'free'],
     )
 
-    if (result.id === 1) {
-      await dbRun("UPDATE users SET role = 'admin', quota_plan = 'admin' WHERE id = 1")
-    }
+    // 记录注册来源 IP，供后台「用户 IP」查看
+    await dbRun("UPDATE users SET last_ip = ?, last_login_at = datetime('now') WHERE id = ?", [
+      clientIp,
+      result.id,
+    ])
 
     const user = await buildFreshUserPayload(result.id)
     const userPayload = {
@@ -133,10 +140,24 @@ router.get('/me', requireAuth, async (req, res, next) => {
 
 router.post('/login', async (req, res, next) => {
   try {
-    const { username, password } = req.body
+    const { username, password, turnstileToken } = req.body
 
     if (!username || !password) {
       return res.status(400).json({ error: '用户名和密码不能为空' })
+    }
+
+    // 账号维度锁定（SQLite 持久化，重启不清零）：达到阈值直接拒绝，不再执行 bcrypt。
+    // 放在 Turnstile 之前：已锁定的账号不值得再花一次 Cloudflare 校验往返
+    const failureCount = await getLoginFailureCount(username)
+    if (isLoginLocked(failureCount)) {
+      return res.status(429).json({ error: '尝试次数过多，请 15 分钟后再试' })
+    }
+
+    // 与注册同强度：secret 未配置时跳过（本地开发行为不变）
+    const clientIp = getClientIp(req)
+    const turnstileResult = await verifyTurnstileToken(turnstileToken, clientIp)
+    if (!turnstileResult.success) {
+      return res.status(400).json({ error: turnstileResult.message || '人机验证未通过' })
     }
 
     const user = await dbGet(
@@ -144,18 +165,30 @@ router.post('/login', async (req, res, next) => {
       [username],
     )
 
-    if (!user) {
+    let valid = false
+    if (user) {
+      valid = await bcrypt.compare(password, user.password)
+    } else {
+      await bcrypt.compare(password, DUMMY_BCRYPT_HASH)
+    }
+
+    if (!valid) {
+      await recordLoginFailure(username)
       return res.status(401).json({ error: '用户名或密码错误' })
     }
 
-    const valid = await bcrypt.compare(password, user.password)
-    if (!valid) {
-      return res.status(401).json({ error: '用户名或密码错误' })
-    }
+    // 密码正确即清零失败计数（banned 账号也清：密码本身已被证明是对的）
+    await clearLoginFailures(username)
 
     if (user.is_banned) {
       return res.status(403).json({ error: user.banned_reason || '当前账号已被封禁' })
     }
+
+    // 记录本次登录 IP，供后台「用户 IP」查看
+    await dbRun("UPDATE users SET last_ip = ?, last_login_at = datetime('now') WHERE id = ?", [
+      clientIp,
+      user.id,
+    ])
 
     const freshUser = await buildFreshUserPayload(user.id)
     const userPayload = {
