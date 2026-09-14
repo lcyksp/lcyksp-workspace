@@ -80,7 +80,8 @@ function resetTurnstileWidget() {
 }
 
 async function renderTurnstile() {
-  if (!turnstileEnabled.value || mode.value !== 'register' || !dialogVisible.value) return
+  // 登录与注册同强度：两种模式都渲染 widget
+  if (!turnstileEnabled.value || !dialogVisible.value) return
   await ensureTurnstileScript()
   await nextTick()
   if (!turnstileContainer.value || !window.turnstile) return
@@ -128,7 +129,7 @@ async function handleSubmit() {
     ElMessage.warning('两次输入的密码不一致')
     return
   }
-  if (mode.value === 'register' && turnstileEnabled.value && !turnstileToken.value) {
+  if (turnstileEnabled.value && !turnstileToken.value) {
     ElMessage.warning('请先完成人机验证')
     return
   }
@@ -141,7 +142,7 @@ async function handleSubmit() {
       password: form.password,
     }
 
-    if (mode.value === 'register') {
+    if (turnstileEnabled.value) {
       payload.turnstileToken = turnstileToken.value
     }
 
@@ -159,8 +160,8 @@ async function handleSubmit() {
   }
 }
 
-watch([dialogVisible, mode], async ([visible, currentMode]) => {
-  if (visible && currentMode === 'register') {
+watch([dialogVisible, mode], async ([visible]) => {
+  if (visible) {
     await renderTurnstile()
   }
 })
@@ -197,9 +198,9 @@ onBeforeUnmount(() => {
         暂不支持找回密码，请务必记住你的密码。
       </div>
 
-      <el-form-item v-if="mode === 'register' && turnstileEnabled" label="人机验证">
+      <el-form-item v-if="turnstileEnabled" label="人机验证">
         <div ref="turnstileContainer" class="turnstile-box" />
-        <div class="turnstile-hint">请完成人机验证后再提交注册。</div>
+        <div class="turnstile-hint">请完成人机验证后再{{ mode === 'login' ? '登录' : '提交注册' }}。</div>
       </el-form-item>
     </el-form>
 

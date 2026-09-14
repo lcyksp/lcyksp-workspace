@@ -1,11 +1,11 @@
 import { Router } from 'express'
-import { createHash } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import { spawn, execSync, execFileSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { authMiddleware } from '../middleware/auth.js'
+import { authMiddleware, requireAuth } from '../middleware/auth.js'
 import { heavyLimiter } from '../middleware/rateLimit.js'
 import { ACTION_ANALYZE, ACTION_DOWNLOAD, buildQuotaExceededMessage, consumeQuota } from '../utils/quota.js'
 import { getClientIp } from '../utils/turnstile.js'
@@ -727,6 +727,41 @@ router.get('/download-status/:taskId', function (req, res) {
   })
 })
 
+// ---- 一次性下载票据 ----
+// JWT 不能进 URL（Nginx 日志 / 浏览器历史都会留痕）：改由前端带 Authorization 头
+// 换一张单次有效、5 分钟过期的随机票据，再用 ?ticket= 触发 <a href> 直链下载。
+// 票据泄露的后果收敛为「这一个文件的一次下载」，且原 download-file 此前根本没校验
+// req.user（authMiddleware 只解析不强制），票据同时把真鉴权补上。
+const DOWNLOAD_TICKET_TTL_MS = 5 * 60 * 1000
+const downloadTickets = new Map() // ticket -> { taskId, expiresAt }
+
+function issueDownloadTicket(taskId) {
+  const now = Date.now()
+  for (const [key, value] of downloadTickets) {
+    if (value.expiresAt <= now) downloadTickets.delete(key)
+  }
+  const ticket = randomBytes(32).toString('hex')
+  downloadTickets.set(ticket, { taskId, expiresAt: now + DOWNLOAD_TICKET_TTL_MS })
+  return ticket
+}
+
+function consumeDownloadTicket(ticket, taskId) {
+  if (!ticket) return false
+  const record = downloadTickets.get(ticket)
+  if (!record) return false
+  downloadTickets.delete(ticket) // 单次有效：取出即删，重放失败
+  return record.taskId === taskId && record.expiresAt > Date.now()
+}
+
+router.post('/download-file/:taskId/ticket', requireAuth, function (req, res) {
+  var taskId = req.params.taskId
+  var task = downloadTasks.get(taskId)
+  if (!task) return res.status(404).json({ error: '任务不存在' })
+  if (task.status !== 'completed') return res.status(400).json({ error: '任务尚未完成' })
+
+  res.json({ ticket: issueDownloadTicket(taskId), expiresInSeconds: DOWNLOAD_TICKET_TTL_MS / 1000 })
+})
+
 router.get('/download-file/:taskId', function (req, res, next) {
   var taskId = req.params.taskId
   var task = downloadTasks.get(taskId)
@@ -734,6 +769,10 @@ router.get('/download-file/:taskId', function (req, res, next) {
 
   if (task.status !== 'completed') {
     return res.status(400).json({ error: '任务尚未完成' })
+  }
+
+  if (!consumeDownloadTicket(String(req.query.ticket || ''), taskId)) {
+    return res.status(401).json({ error: '下载凭据无效或已过期，请重新发起下载' })
   }
 
   var fileSize = 0

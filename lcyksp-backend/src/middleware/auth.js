@@ -81,19 +81,20 @@ async function normalizeUserAccess(userId) {
 }
 
 export function signToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' })
+  // 2026-09-14 由 7d 缩到 3d：令牌泄露后的利用窗口缩短 57%，
+  // 代价是已登录用户最多 3 天要重新登录一次（站长 2026-09-14 拍板）
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '3d' })
 }
 
 export async function authMiddleware(req, res, next) {
+  // token 只走 Authorization 头。曾支持 ?token= query 通道，已收紧移除：
+  // URL 里的 token 会落进 Nginx 日志和浏览器历史（若某端点确需 URL 鉴权，
+  // 用一次性短期凭据，参照 tv.js 的下载票据，不要往这里加回 query 通道）。
   let token = null
   const authHeader = req.headers.authorization
   if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.slice(7)
-  } else if (req.query.token) {
-    token = req.query.token
   }
-
-  console.log('[Auth] token present:', !!token, 'path:', req.path)
 
   if (!token) {
     req.user = null
@@ -117,9 +118,9 @@ export async function authMiddleware(req, res, next) {
       isBanned: user.isBanned,
       bannedReason: user.bannedReason,
     }
-    console.log('[Auth] user:', user.username, 'role:', user.role)
-  } catch (err) {
-    console.log('[Auth] token verify failed:', err.message)
+  } catch {
+    // 校验失败静默置空：由各端点的 requireAuth/requireAdmin 决定 401/403，
+    // 不打日志（高频请求的噪音 + err.message 可能带 token 片段）
     req.user = null
   }
   next()
