@@ -100,7 +100,10 @@ function normalizeModelEntry(entry, index) {
 
 /**
  * Parse known model-list JSON shapes without recursively treating unrelated values as models.
- * Empty, malformed and unrecognized responses throw so callers cannot mistake them for removals.
+ * A missing array, an unparsable body or an all-invalid list throws — the API itself changed and a
+ * human should look. An explicitly empty list is different: the upstream is speaking correctly and
+ * reporting that no models are currently available (channels down, models pulled), so it returns []
+ * and the caller's removal machinery decides what it means (ISSUE-008).
  */
 export function parseJustWokerModels(input) {
   let payload = input
@@ -122,7 +125,7 @@ export function parseJustWokerModels(input) {
 
   const entries = findModelArray(payload)
   if (!entries) throw new TypeError('Model response has no recognized model array')
-  if (entries.length === 0) throw new TypeError('Model response contains an empty model array')
+  if (entries.length === 0) return []
   if (entries.length > MAX_MODEL_ENTRIES) throw new TypeError('Model response contains too many entries')
 
   const models = new Map()

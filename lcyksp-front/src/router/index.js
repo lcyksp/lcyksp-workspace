@@ -39,6 +39,7 @@ const routes = [
   { path: '/pdf-watermark', name: 'pdf-watermark', component: () => import('../views/PdfWatermarkView.vue') },
   { path: '/pdf-sign', name: 'pdf-sign', component: () => import('../views/PdfSignView.vue') },
   { path: '/pdf-to-word', name: 'pdf-to-word', component: () => import('../views/PdfToWordView.vue') },
+  { path: '/pdf-compress', name: 'pdf-compress', component: () => import('../views/PdfCompressView.vue') },
   { path: '/video-download', name: 'video-download', component: () => import('../views/VideoDownloadView.vue') },
   { path: '/tv-download', name: 'tv-download', component: () => import('../views/TvDownloadView.vue') },
   { path: '/screen-recording', name: 'screen-recording', component: () => import('../views/ScreenRecordingView.vue') },
@@ -61,7 +62,25 @@ const routes = [
     path: '/github-radar',
     name: 'GitHub日报',
     component: () => import('../views/GithubRadarView.vue'),
-    meta: { requiresPremium: true },
+    meta: { requiresPremium: true, featureName: 'GitHub日报' },
+  },
+  {
+    path: '/step-counter',
+    name: 'step-counter',
+    component: () => import('../views/StepView.vue'),
+    meta: { requiresPremium: true, featureName: '微信步数' },
+  },
+  {
+    path: '/wt-market',
+    name: 'wt-market',
+    component: () => import('../views/WtMarketView.vue'),
+    meta: { requiresPremium: true, featureName: '战争雷霆交易所' },
+  },
+  {
+    path: '/schedule',
+    name: 'schedule',
+    component: () => import('../views/ScheduleView.vue'),
+    meta: { requiresAdmin: true },
   },
   {
     path: '/admin',
@@ -106,7 +125,7 @@ router.beforeEach((to) => {
       return { name: 'home' }
     }
     if (!['admin', 'premium', 'pro'].includes(user.role)) {
-      ElMessage.warning('GitHub日报仅对高级用户开放')
+      ElMessage.warning(`${to.meta?.featureName || '该功能'}仅对高级用户开放`)
       return { name: 'membership' }
     }
   }

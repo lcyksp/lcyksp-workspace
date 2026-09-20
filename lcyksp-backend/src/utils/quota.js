@@ -80,7 +80,20 @@ export function getWindowStart(now = new Date(), window = 'hour') {
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:00:00`
 }
 
+// 额度扣减的进程内互斥链：并发请求（双击/多人同时解析）在「查计数→判断→写计数」的
+// await 间隙交错时，会同时查到空行并同时 INSERT，撞 usage_counters 唯一键
+// （压测实测 12 并发挂 11）。把整段「检查+扣减」挂到同一条 Promise 链上串行化即可消除。
+// 本站 PM2 为单 fork 实例，进程内互斥即全局互斥；若未来改 cluster 模式需升级为跨进程方案。
+let quotaMutex = Promise.resolve()
+
 export async function consumeQuota({ subjectType, subjectKey, action, amount = 1 }) {
+  const run = quotaMutex.then(() => doConsumeQuota({ subjectType, subjectKey, action, amount }))
+  // 链条吞掉单次失败（错误已随 run 抛给调用方），保证后续请求不被一次 DB 故障卡死
+  quotaMutex = run.then(() => undefined, () => undefined)
+  return run
+}
+
+async function doConsumeQuota({ subjectType, subjectKey, action, amount = 1 }) {
   const rules = QUOTA_RULES[subjectType] || QUOTA_RULES[PLAN_FREE]
   const rule = rules[action]
 

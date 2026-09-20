@@ -552,6 +552,98 @@ export async function initDb() {
   )`).catch(() => {})
   await run('CREATE INDEX IF NOT EXISTS idx_algs_snapshots_event ON algs_snapshots(season, league, region, id)').catch(() => {})
 
+  // 微信步数修改（Zepp Life）账号凭据。站长 2026-09-15 拍板：加密保存密码而非只存 token，
+  // 换取「绑定一次、长期可用」；密码用 utils/crypto.js 的 AES-256-CBC 加密后落库。
+  // account_hash 只作同用户去重键（sha256 前 32 位），避免拿脱敏串当唯一键带来的歧义。
+  await run(`CREATE TABLE IF NOT EXISTS step_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label TEXT NOT NULL DEFAULT '',
+    account_enc TEXT NOT NULL,
+    account_hash TEXT NOT NULL,
+    account_masked TEXT NOT NULL,
+    password_enc TEXT NOT NULL,
+    zepp_user_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'invalid')),
+    last_error TEXT NOT NULL DEFAULT '',
+    last_success_at TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, account_hash)
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_step_accounts_user ON step_accounts(user_id, created_at)').catch(() => {})
+
+  await run(`CREATE TABLE IF NOT EXISTS step_submissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES step_accounts(id) ON DELETE CASCADE,
+    steps INTEGER NOT NULL,
+    target_date TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('success', 'failed')),
+    exit_via TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_step_submissions_account ON step_submissions(account_id, created_at DESC)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_step_submissions_user ON step_submissions(user_id, created_at DESC)').catch(() => {})
+
+  // 战争雷霆（Gaijin 交易所）物品价格监控。物品主表 + 每日价格快照两张表。
+  // market_name 是 Gaijin 侧唯一标识（如 id50347_mig_25pd_ussr）；价格存原始整数（Gaijin 放大值），
+  // 展示层再换算成 GJN。cron 每天拉一次全目录，快照按北京自然日去重。
+  await run(`CREATE TABLE IF NOT EXISTS wt_market_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    appid INTEGER NOT NULL DEFAULT 1067,
+    market_name TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    icon_url TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
+    color TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(appid, market_name)
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_wt_items_name ON wt_market_items(display_name)').catch(() => {})
+
+  await run(`CREATE TABLE IF NOT EXISTS wt_price_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL REFERENCES wt_market_items(id) ON DELETE CASCADE,
+    snapshot_date TEXT NOT NULL,
+    buy_price INTEGER NOT NULL DEFAULT 0,
+    sell_price INTEGER NOT NULL DEFAULT 0,
+    buy_count INTEGER NOT NULL DEFAULT 0,
+    sell_count INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'gjn',
+    captured_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(item_id, snapshot_date)
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_wt_snapshots_item_date ON wt_price_snapshots(item_id, snapshot_date)').catch(() => {})
+
+  // 战争雷霆操作日志：记录每次登录/快照/搜索/刷新（自动或手动）及其结果，用于事后定位
+  // 是账号被风控、池子出问题、还是搜索/爬取本身出错。detail 已脱敏（绝不含密码/完整 JWT）。
+  await run(`CREATE TABLE IF NOT EXISTS wt_market_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    op TEXT NOT NULL,
+    trigger TEXT NOT NULL DEFAULT 'auto',
+    status TEXT NOT NULL DEFAULT 'ok',
+    code TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    exit_ip TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_wt_logs_created ON wt_market_logs(created_at DESC)').catch(() => {})
+
+  // 战争雷霆物品收藏（每用户维度）：用户点星标即入库，进页面拉自己的收藏 id 列表，
+  // 前端把收藏置顶 + 「我的收藏」筛选。物品被删则收藏级联清理。
+  await run(`CREATE TABLE IF NOT EXISTS wt_market_favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item_id INTEGER NOT NULL REFERENCES wt_market_items(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, item_id)
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_wt_fav_user ON wt_market_favorites(user_id)').catch(() => {})
+
   // Website monitor configuration and durable state. The scheduler interval is fixed per source;
   // credentials (when configured) are encrypted before they are written to auth_secret.
   await run(`CREATE TABLE IF NOT EXISTS site_monitors (

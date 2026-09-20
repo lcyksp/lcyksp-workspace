@@ -51,6 +51,43 @@ function publicError(error) {
   return message.slice(0, 1000)
 }
 
+function firstErrorCode(cause, depth = 0) {
+  if (!cause || depth > 2) return ''
+  if (cause.code) return String(cause.code)
+  if (Array.isArray(cause.errors)) {
+    for (const inner of cause.errors) {
+      const code = inner?.code ? String(inner.code) : firstErrorCode(inner, depth + 1)
+      if (code) return code
+    }
+  }
+  return firstErrorCode(cause.cause, depth + 1)
+}
+
+/**
+ * The run row and the alert email must say WHY a fetch failed, not just that it did. undici folds the
+ * real socket error (ECONNREFUSED, ECONNRESET, certificate failures, DNS faults) into `cause`, and
+ * that one field is what separates "the site is down" from "the path is filtered" — without it an
+ * outage can only be diagnosed by re-probing the target from outside. Codes are machine constants and
+ * safe to store; a cause message (when there is no code) is redacted with the same rule as the
+ * top-level message, and the whole string stays inside a bounded length.
+ */
+function describeMonitorError(error) {
+  const parts = [publicError(error)]
+  const code = String(error?.code || '').trim()
+  if (code && code !== 'FETCH_FAILED') parts.push(`code=${code}`)
+  const causeCode = firstErrorCode(error?.cause)
+  if (causeCode) {
+    parts.push(`cause=${causeCode}`)
+  } else if (error?.cause?.message) {
+    const causeMessage = String(error.cause.message)
+      .replace(/(authorization|cookie|bearer|token)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+      .replace(/[\r\n]+/g, ' ')
+      .trim()
+    if (causeMessage) parts.push(`cause=${causeMessage.slice(0, 300)}`)
+  }
+  return parts.join(' | ').slice(0, 1000)
+}
+
 function serializeItemPayload(item) {
   return JSON.stringify(item.metadata || {})
 }
@@ -71,11 +108,38 @@ function parseResponse(source, body) {
   throw new Error('Unsupported monitor source')
 }
 
-function scheduleExpression(intervalSeconds, failureCount = 0) {
-  const backoffSeconds = failureCount > 0
-    ? Math.min(intervalSeconds, 300 * (2 ** Math.min(failureCount - 1, 4)))
-    : intervalSeconds
-  return `+${backoffSeconds} seconds`
+function backoffSeconds(intervalSeconds, failureCount = 0) {
+  if (failureCount > 0) return Math.min(intervalSeconds, 300 * (2 ** Math.min(failureCount - 1, 4)))
+  return intervalSeconds
+}
+
+// Quiet hours for the whole site-monitor feature (ISSUE-007): hzu.edu.cn runs a scheduled shutdown
+// every day 01:00–06:00 Beijing time, and nobody reads alert mail overnight anyway. Between 00:00
+// and 06:30 Beijing no check is scheduled or picked up by the heartbeat; a due time landing inside
+// the window is pushed to that day's 06:30. The first run after the window does the normal diff —
+// one change email if anything changed, silence otherwise. All math is epoch-based with an explicit
+// +8h offset, so neither the server nor the test runner timezone can skew the window.
+const BEIJING_UTC_OFFSET_SECONDS = 8 * 3600
+const QUIET_WINDOW_END_OF_DAY_SECONDS = 6 * 3600 + 30 * 60
+
+export function beijingSecondsOfDay(epochSeconds) {
+  return (((epochSeconds + BEIJING_UTC_OFFSET_SECONDS) % 86400) + 86400) % 86400
+}
+
+export function isInQuietWindow(epochSeconds) {
+  return beijingSecondsOfDay(epochSeconds) < QUIET_WINDOW_END_OF_DAY_SECONDS
+}
+
+function formatUtcDateTime(epochSeconds) {
+  return new Date(epochSeconds * 1000).toISOString().slice(0, 19).replace('T', ' ')
+}
+
+/** Next run time as a UTC 'YYYY-MM-DD HH:MM:SS' string, pushed out of the quiet window. */
+export function nextRunAtUtc(baseEpochSeconds, delaySeconds) {
+  const next = Math.floor(baseEpochSeconds) + delaySeconds
+  if (!isInQuietWindow(next)) return formatUtcDateTime(next)
+  const dayStartBeijing = next + BEIJING_UTC_OFFSET_SECONDS - beijingSecondsOfDay(next)
+  return formatUtcDateTime(dayStartBeijing - BEIJING_UTC_OFFSET_SECONDS + QUIET_WINDOW_END_OF_DAY_SECONDS)
 }
 
 async function loadMonitor(source) {
@@ -224,7 +288,7 @@ async function recordFailureAlert(monitor, runId, error, failureCount) {
   return queueSiteMonitorAlertDelivery(monitor, {
     ...event,
     headline: credentialRejected ? '登录凭据已失效，请更新凭据' : `连续 ${failureCount} 次检查失败`,
-    detail: publicError(error),
+    detail: describeMonitorError(error),
     consecutiveFailures: failureCount,
     lastSuccessAt: monitor.last_success_at,
     targetUrl: monitor.target_url,
@@ -254,10 +318,10 @@ async function recordRecoveryAlert(monitor, runId) {
   })
 }
 
-async function markRunFailure(monitor, runId, startedAt, error) {
+async function markRunFailure(monitor, runId, startedAt, error, scheduleBaseSeconds) {
   const durationMs = Date.now() - startedAt
   const nextFailureCount = monitor.consecutive_failures + 1
-  const message = publicError(error)
+  const message = describeMonitorError(error)
   await transaction(async () => {
     await dbRun(
       `UPDATE site_monitor_runs SET status = 'failed', finished_at = datetime('now'),
@@ -266,9 +330,9 @@ async function markRunFailure(monitor, runId, startedAt, error) {
     )
     await dbRun(
       `UPDATE site_monitors SET last_status = 'failed', last_checked_at = datetime('now'),
-         consecutive_failures = ?, last_error = ?, next_run_at = datetime('now', ?),
+         consecutive_failures = ?, last_error = ?, next_run_at = datetime(?),
          updated_at = datetime('now') WHERE id = ?`,
-      [nextFailureCount, message, scheduleExpression(monitor.interval_seconds, nextFailureCount), monitor.id],
+      [nextFailureCount, message, nextRunAtUtc(scheduleBaseSeconds(), backoffSeconds(monitor.interval_seconds, nextFailureCount)), monitor.id],
     )
     // The alert shares this commit: a queued mail can never exist for a failure the database lost.
     if (isCredentialFailure(error) || nextFailureCount >= FAILURE_ALERT_THRESHOLD) {
@@ -313,12 +377,15 @@ async function collectAnnouncementBodies(monitor, items, { fetchImpl, hostnameVa
   return bodies
 }
 
-async function executeMonitor(source, { triggerType = 'manual', diagnose = false, rebuildBaseline = false, fetchImpl, hostnameValidator } = {}) {
+async function executeMonitor(source, { triggerType = 'manual', diagnose = false, rebuildBaseline = false, fetchImpl, hostnameValidator, nowMs } = {}) {
   if (!VALID_TRIGGERS.has(triggerType)) throw new Error('Invalid monitor trigger type')
   const monitor = await loadMonitor(source)
   if (!diagnose && triggerType === 'schedule' && !monitor.enabled) return { skipped: true, reason: 'disabled' }
 
   const startedAt = Date.now()
+  // Schedule arithmetic is anchored to an injectable clock so tests are deterministic around the
+  // quiet window; production callers never pass nowMs and anchor to the wall clock.
+  const scheduleBaseSeconds = () => (nowMs ?? Date.now()) / 1000
   const run = await dbRun(
     "INSERT INTO site_monitor_runs (monitor_id, trigger_type, status) VALUES (?, ?, 'running')",
     [monitor.id, diagnose ? 'diagnose' : triggerType],
@@ -343,13 +410,21 @@ async function executeMonitor(source, { triggerType = 'manual', diagnose = false
       if (!monitor.baseline_ready) throw new Error('Received 304 before a baseline was established')
       await transaction(async () => {
         await dbRun(`UPDATE site_monitor_runs SET status = 'not_modified', finished_at = datetime('now'), duration_ms = ? WHERE id = ?`, [Date.now() - startedAt, run.lastID])
-        await dbRun(`UPDATE site_monitors SET last_status = 'success', last_checked_at = datetime('now'), last_success_at = datetime('now'), consecutive_failures = 0, last_error = '', next_run_at = datetime('now', ?), updated_at = datetime('now') WHERE id = ?`, [scheduleExpression(monitor.interval_seconds), monitor.id])
+        await dbRun(`UPDATE site_monitors SET last_status = 'success', last_checked_at = datetime('now'), last_success_at = datetime('now'), consecutive_failures = 0, last_error = '', next_run_at = datetime(?), updated_at = datetime('now') WHERE id = ?`, [nextRunAtUtc(scheduleBaseSeconds(), monitor.interval_seconds), monitor.id])
         await recordRecoveryAlert(monitor, run.lastID)
       })
       return { status: 'not_modified', itemCount: null, added: [], removed: [] }
     }
 
     const items = parseResponse(source, response.body)
+    // An empty model list is a reportable observation in steady state: it flows into the removal
+    // machinery (gated by the usual two-missing-snapshots rule), so the admin learns "models are
+    // gone/back" instead of "check failed" (ISSUE-008). It is never usable as a baseline though —
+    // a first or rebuilt snapshot must observe actual models, or the run fails and any previous
+    // baseline is preserved.
+    if (source === 'justwoker_models' && items.length === 0 && (rebuildBaseline || !monitor.baseline_ready)) {
+      throw new Error('Model response contains an empty model array; refusing to build an empty baseline')
+    }
     if (diagnose) {
       await dbRun(`UPDATE site_monitor_runs SET status = 'success', finished_at = datetime('now'), http_status = ?, item_count = ?, duration_ms = ? WHERE id = ?`, [response.status, items.length, Date.now() - startedAt, run.lastID])
       return { status: 'diagnose', itemCount: items.length, sample: items.slice(0, 3) }
@@ -381,9 +456,9 @@ async function executeMonitor(source, { triggerType = 'manual', diagnose = false
       )
       await dbRun(
         `UPDATE site_monitors SET last_status = 'success', last_checked_at = datetime('now'), last_success_at = datetime('now'),
-           etag = ?, last_modified = ?, consecutive_failures = 0, last_error = '', next_run_at = datetime('now', ?),
+           etag = ?, last_modified = ?, consecutive_failures = 0, last_error = '', next_run_at = datetime(?),
            updated_at = datetime('now') WHERE id = ?`,
-        [response.etag, response.lastModified, scheduleExpression(monitor.interval_seconds), monitor.id],
+        [response.etag, response.lastModified, nextRunAtUtc(scheduleBaseSeconds(), monitor.interval_seconds), monitor.id],
       )
       const delivery = await queueSiteMonitorDelivery(monitor, detectedChanges.notifications)
       const alert = await recordRecoveryAlert(monitor, run.lastID)
@@ -395,10 +470,10 @@ async function executeMonitor(source, { triggerType = 'manual', diagnose = false
       await dbRun(
         `UPDATE site_monitor_runs SET status = 'failed', finished_at = datetime('now'),
            http_status = ?, duration_ms = ?, error_message = ? WHERE id = ?`,
-        [error?.status || null, Date.now() - startedAt, publicError(error), run.lastID],
+        [error?.status || null, Date.now() - startedAt, describeMonitorError(error), run.lastID],
       )
     } else {
-      await markRunFailure(monitor, run.lastID, startedAt, error)
+      await markRunFailure(monitor, run.lastID, startedAt, error, scheduleBaseSeconds)
     }
     throw error
   }
@@ -418,12 +493,18 @@ export async function runSiteMonitor(source, options = {}) {
   return promise
 }
 
-export async function runDueSiteMonitors({ fetchImpl, hostnameValidator } = {}) {
+export async function runDueSiteMonitors({ fetchImpl, hostnameValidator, nowMs } = {}) {
+  // Quiet hours (ISSUE-007): between 00:00 and 06:30 Beijing time the heartbeat wakes nothing and
+  // fetches nothing. The first tick past the window picks every overdue monitor up, and manual or
+  // diagnose runs stay available around the clock by design.
+  if (isInQuietWindow((nowMs ?? Date.now()) / 1000)) return []
+  const now = formatUtcDateTime((nowMs ?? Date.now()) / 1000)
   const due = await dbAll(
     `SELECT source FROM site_monitors
-     WHERE enabled = 1 AND (next_run_at IS NULL OR next_run_at <= datetime('now'))`,
+     WHERE enabled = 1 AND (next_run_at IS NULL OR next_run_at <= datetime(?))`,
+    [now],
   )
-  return Promise.allSettled(due.map(({ source }) => runSiteMonitor(source, { triggerType: 'schedule', fetchImpl, hostnameValidator })))
+  return Promise.allSettled(due.map(({ source }) => runSiteMonitor(source, { triggerType: 'schedule', fetchImpl, hostnameValidator, nowMs })))
 }
 
 export function isSiteMonitorRunning(source) {

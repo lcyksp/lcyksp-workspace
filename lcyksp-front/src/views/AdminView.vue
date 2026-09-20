@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { InfoFilled, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { formatSize } from '../utils/format.js'
 
@@ -50,11 +50,6 @@ const userForm = reactive({
   bannedReason: '',
 })
 
-const llmConfig = reactive({
-  apiUrl: 'https://api.deepseek.com/chat/completions',
-  apiKey: '',
-  model: 'deepseek-chat',
-})
 const membershipConfig = reactive({
   afdianUrl: '',
   notice: '登录本站账号后，前往爱发电下单，并在订单备注里填写本站用户名。支付成功后，系统会自动为对应账号开通高级用户。',
@@ -118,9 +113,6 @@ const membershipSimulateForm = reactive({
 })
 const membershipImporting = ref(false)
 const membershipImportSummary = ref(null)
-const llmLoading = ref(false)
-const llmSaving = ref(false)
-const llmTesting = ref(false)
 const githubRadarLoading = ref(false)
 const githubRadarSaving = ref(false)
 const githubCategoryLoading = ref(false)
@@ -140,6 +132,71 @@ const githubAdminSubscriptions = ref([])
 const githubAdminSubscriptionsLoading = ref(false)
 const githubAdminSubscriptionForm = reactive({ id: null, userId: '', email: '', categoryIds: [], keywords: '', frequencies: ['daily'], status: 'active' })
 const quickActionLoadingId = ref(null)
+
+// 战争雷霆交易所：凭据配置 + 状态 + 手动快照
+const wtStatus = reactive({ credentialsConfigured: false, loginMasked: '', lastSnapshotAt: '', lastError: '', itemCount: 0 })
+const wtCred = reactive({ login: '', password: '' })
+const wtLoading = ref(false)
+const wtSaving = ref(false)
+const wtRefreshing = ref(false)
+const wtLogs = ref([])
+const wtLogsLoading = ref(false)
+
+async function loadWtStatus() {
+  wtLoading.value = true
+  try {
+    const res = await axios.get('/api/wt-market/status')
+    Object.assign(wtStatus, res.data || {})
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载战争雷霆状态失败')
+  } finally { wtLoading.value = false }
+}
+
+// 操作日志（登录/快照/搜索的自动+手动记录，含出口 IP 与返回摘要，用于事后排障）
+async function loadWtLogs() {
+  wtLogsLoading.value = true
+  try {
+    const res = await axios.get('/api/wt-market/logs', { params: { limit: 50 } })
+    wtLogs.value = res.data?.logs || []
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载操作日志失败')
+  } finally { wtLogsLoading.value = false }
+}
+
+const WT_OP_LABEL = { login: '登录', snapshot: '快照', search: '搜索' }
+const WT_TRIGGER_LABEL = { auto: '自动', manual: '手动', 'manual-cred': '验证凭据', user: '用户' }
+function wtStatusTagType(status) {
+  if (status === 'ok') return 'success'
+  if (status === 'fail') return 'danger'
+  if (status === 'skip') return 'info'
+  return 'warning'
+}
+
+async function saveWtCredentials() {
+  if (!wtCred.login.trim() || !wtCred.password) { ElMessage.warning('请填写 Gaijin 邮箱和密码'); return }
+  wtSaving.value = true
+  try {
+    const res = await axios.post('/api/wt-market/credentials', { login: wtCred.login.trim(), password: wtCred.password })
+    if (res.data?.verified) ElMessage.success('凭据已保存并验证通过')
+    else ElMessage.warning(`凭据已保存，但登录验证未通过：${res.data?.error || '未知'}`)
+    wtCred.password = ''
+    await loadWtStatus()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存凭据失败')
+  } finally { wtSaving.value = false }
+}
+
+async function triggerWtSnapshot() {
+  wtRefreshing.value = true
+  try {
+    const res = await axios.post('/api/wt-market/refresh')
+    ElMessage.success(`快照完成：${res.data?.itemCount ?? 0} 个物品`)
+    await Promise.all([loadWtStatus(), loadWtLogs()])
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '快照失败')
+    void loadWtLogs()
+  } finally { wtRefreshing.value = false }
+}
 
 async function loadGithubAdminSubscriptions() {
   githubAdminSubscriptionsLoading.value = true
@@ -325,13 +382,6 @@ async function sendSiteMonitorTestEmail() {
   }
 }
 
-const MAX_HISTORY = 5
-const HISTORY_KEYS = {
-  url: 'llmUrlHistory',
-  key: 'llmKeyHistory',
-  model: 'llmModelHistory',
-}
-
 const premiumPresetOptions = [
   { label: '不开通', value: 'none' },
   { label: '7天', value: '7d' },
@@ -370,64 +420,6 @@ const pagedMembershipCards = computed(() => {
   const start = (membershipCardsPage.value - 1) * membershipCardsPageSize
   return filteredMembershipCards.value.slice(start, start + membershipCardsPageSize)
 })
-
-function loadHistory(storageKey) {
-  try {
-    const raw = localStorage.getItem(storageKey)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-
-function saveHistoryItem(storageKey, value) {
-  if (!value || typeof value !== 'string') return
-  const trimmed = value.trim()
-  if (!trimmed) return
-
-  let list = loadHistory(storageKey)
-  list = list.filter((item) => item !== trimmed)
-  list.unshift(trimmed)
-  if (list.length > MAX_HISTORY) list = list.slice(0, MAX_HISTORY)
-  localStorage.setItem(storageKey, JSON.stringify(list))
-}
-
-async function buildHistorySuggestions(type, storageKey, queryString, cb) {
-  const localList = loadHistory(storageKey)
-  let backendList = []
-
-  try {
-    const res = await axios.get('/api/admin/config/llm/history', { params: { type } })
-    backendList = Array.isArray(res.data?.history) ? res.data.history.map((item) => item.value) : []
-  } catch (error) {
-    console.error('加载 LLM 历史记录失败:', error)
-  }
-
-  const merged = []
-  const seen = new Set()
-  backendList.concat(localList).forEach((item) => {
-    if (item && !seen.has(item)) {
-      seen.add(item)
-      merged.push(item)
-    }
-  })
-
-  const keyword = String(queryString || '').toLowerCase()
-  const results = keyword ? merged.filter((item) => item.toLowerCase().includes(keyword)) : merged
-  cb(results.map((item) => ({ value: item })))
-}
-
-function queryUrlHistory(queryString, cb) {
-  buildHistorySuggestions('apiUrl', HISTORY_KEYS.url, queryString, cb)
-}
-
-function queryKeyHistory(queryString, cb) {
-  buildHistorySuggestions('apiKey', HISTORY_KEYS.key, queryString, cb)
-}
-
-function queryModelHistory(queryString, cb) {
-  buildHistorySuggestions('model', HISTORY_KEYS.model, queryString, cb)
-}
 
 async function loadFiles() {
   filesLoading.value = true
@@ -672,70 +664,206 @@ async function deleteUser(user) {
   }
 }
 
-async function loadLlmConfig() {
-  llmLoading.value = true
-  try {
-    const res = await axios.get('/api/admin/config/llm')
-    if (res.data?.configured) {
-      llmConfig.apiUrl = res.data.apiUrl || 'https://api.deepseek.com/chat/completions'
-      llmConfig.model = res.data.model || 'deepseek-chat'
-      llmConfig.apiKey = res.data.apiKey || ''
-    }
-  } catch (error) {
-    ElMessage.error(error.response?.data?.error || '加载大模型配置失败')
-  } finally {
-    llmLoading.value = false
+// ---------- 抖音解析出口（巨量动态住宅池 · 多池 + 直连额度） ----------
+const POOL_TTL_OPTIONS = [
+  { label: '1 分钟', value: 60000 },
+  { label: '3 分钟', value: 180000 },
+  { label: '5 分钟', value: 300000 },
+  { label: '10 分钟', value: 600000 },
+  { label: '30 分钟', value: 1800000 },
+]
+
+const poolLoading = ref(false)
+const poolRefreshing = ref(false)
+const poolTesting = ref(false)
+const poolProbing = ref(false)
+const poolSubmitting = ref(false)
+const thresholdSaving = ref(false)
+const budgetResetting = ref(false)
+
+const poolList = ref([])
+const activePoolId = ref('')
+const lowBalanceThreshold = ref(200)
+const probeIntervalHours = ref(4)
+const directBudget = reactive({ windowMs: 0, lastUsedAt: '', nextAvailableAt: '', available: true })
+const poolExtractStats = reactive({ day: '', today: 0, total: 0, estimatedDaysLeft: null })
+const gateState = reactive({ direct: 'unknown', lastProbeAt: '', lastChangeAt: '' })
+
+const poolDialog = reactive({ visible: false, mode: 'add', id: '', name: '', extractUrl: '', key: '', ttlMs: 60000 })
+
+const directGateMeta = computed(() => {
+  switch (gateState.direct) {
+    case 'ok': return { text: '已解封（受限使用：每 4 小时只允许一次直连，其余走池）', type: 'success' }
+    case 'blocked': return { text: '被风控标记（解析全部走动态池出口）', type: 'error' }
+    default: return { text: '尚未探测', type: 'info' }
   }
+})
+
+function formatBeijing(iso) {
+  if (iso === null || iso === undefined || iso === '') return '—'
+  const t = typeof iso === 'number' ? iso : Date.parse(iso)
+  if (!Number.isFinite(t)) return '—'
+  return new Date(t + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 16)
 }
 
-async function testLlmConfig() {
-  if (!llmConfig.apiKey.trim()) {
-    ElMessage.warning('请先输入 API Key 再测试')
-    return
-  }
+function poolBalanceText(pool) {
+  if (pool.balanceError) return pool.balanceError
+  if (pool.balance === null || pool.balance === undefined) return '—'
+  return `${pool.balance} 个 IP`
+}
 
-  llmTesting.value = true
+function poolBalanceMeta(pool) {
+  if (!pool.enabled) return { type: 'info', text: '已停用' }
+  if (pool.balanceError) return { type: 'warning', text: '查询失败' }
+  if (pool.balance === null || pool.balance === undefined) return { type: 'info', text: '未配置 key' }
+  if (pool.balance <= 0) return { type: 'danger', text: '已耗尽' }
+  if (pool.balance <= lowBalanceThreshold.value) return { type: 'warning', text: '余量不足' }
+  return { type: 'success', text: '正常' }
+}
+
+async function loadPoolConfig(refresh = false) {
+  if (refresh) poolRefreshing.value = true
+  else poolLoading.value = true
   try {
-    const res = await axios.post('/api/admin/config/llm/test', {
-      apiKey: llmConfig.apiKey.trim(),
-      apiUrl: llmConfig.apiUrl.trim() || 'https://api.deepseek.com/chat/completions',
-      model: llmConfig.model.trim() || 'deepseek-chat',
-    })
+    const res = await axios.get('/api/video/pool-config', { params: refresh ? { refresh: 1 } : {} })
     if (res.data?.success) {
-      ElMessage.success('连接测试成功')
-    } else {
-      ElMessage.error(res.data?.error || '连接测试失败')
+      poolList.value = res.data.pools || []
+      activePoolId.value = res.data.activePoolId || ''
+      lowBalanceThreshold.value = res.data.lowBalanceThreshold ?? 200
+      probeIntervalHours.value = Math.round((res.data.probeIntervalMs || 4 * 3600 * 1000) / 3600000)
+      Object.assign(directBudget, res.data.directBudget || {})
+      Object.assign(poolExtractStats, res.data.extractStats || {})
+      gateState.direct = res.data.gate?.direct || 'unknown'
+      gateState.lastProbeAt = res.data.gate?.lastProbeAt || ''
+      gateState.lastChangeAt = res.data.gate?.lastChangeAt || ''
     }
   } catch (error) {
-    ElMessage.error(error.response?.data?.error || '连接测试失败')
+    console.error('加载抖音解析出口配置失败', error)
   } finally {
-    llmTesting.value = false
+    poolLoading.value = false
+    poolRefreshing.value = false
   }
 }
 
-async function saveLlmConfig() {
-  if (!llmConfig.apiKey.trim()) {
-    ElMessage.warning('API Key 不能为空')
+function openAddPool() {
+  Object.assign(poolDialog, { visible: true, mode: 'add', id: '', name: '', extractUrl: '', key: '', ttlMs: 60000 })
+}
+
+function openEditPool(pool) {
+  Object.assign(poolDialog, { visible: true, mode: 'edit', id: pool.id, name: pool.name, extractUrl: '', key: '', ttlMs: pool.ttlMs || 60000 })
+}
+
+async function submitPoolForm() {
+  if (poolDialog.mode === 'add') {
+    if (!poolDialog.extractUrl.trim()) {
+      ElMessage.warning('提取链接不能为空')
+      return
+    }
+    if (!poolDialog.key.trim()) {
+      ElMessage.warning('业务 key 不能为空（没有它查不到剩余 IP 数量）')
+      return
+    }
+  }
+  poolSubmitting.value = true
+  try {
+    const payload = poolDialog.mode === 'add'
+      ? { action: 'add', name: poolDialog.name.trim(), extractUrl: poolDialog.extractUrl.trim(), key: poolDialog.key.trim(), ttlMs: Number(poolDialog.ttlMs) || 60000 }
+      : { action: 'update', id: poolDialog.id, name: poolDialog.name.trim(), ttlMs: Number(poolDialog.ttlMs) || 60000, ...(poolDialog.extractUrl.trim() ? { extractUrl: poolDialog.extractUrl.trim() } : {}), ...(poolDialog.key.trim() ? { key: poolDialog.key.trim() } : {}) }
+    const res = await axios.post('/api/video/pools', payload)
+    ElMessage.success(res.data?.message || '已保存')
+    poolDialog.visible = false
+    await loadPoolConfig(true)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存池配置失败')
+  } finally {
+    poolSubmitting.value = false
+  }
+}
+
+async function removePool(pool) {
+  try {
+    await ElMessageBox.confirm(`确定删除「${pool.name}」吗？删除后解析将不再使用这个订单。`, '删除池', { type: 'warning' })
+  } catch {
     return
   }
-
-  llmSaving.value = true
   try {
-    await axios.post('/api/admin/config/llm', {
-      apiKey: llmConfig.apiKey.trim(),
-      apiUrl: llmConfig.apiUrl.trim() || 'https://api.deepseek.com/chat/completions',
-      model: llmConfig.model.trim() || 'deepseek-chat',
-    })
-    saveHistoryItem(HISTORY_KEYS.url, llmConfig.apiUrl)
-    saveHistoryItem(HISTORY_KEYS.key, llmConfig.apiKey)
-    saveHistoryItem(HISTORY_KEYS.model, llmConfig.model)
-    ElMessage.success('大模型配置已加密保存')
-    llmConfig.apiKey = ''
-    loadLlmConfig()
+    const res = await axios.post('/api/video/pools', { action: 'delete', id: pool.id })
+    ElMessage.success(res.data?.message || '已删除')
+    await loadPoolConfig(true)
   } catch (error) {
-    ElMessage.error(error.response?.data?.error || '保存大模型配置失败')
+    ElMessage.error(error.response?.data?.error || '删除失败')
+  }
+}
+
+async function activatePool(pool) {
+  try {
+    const res = await axios.post('/api/video/pools', { action: 'activate', id: pool.id })
+    ElMessage.success(res.data?.message || '已切换')
+    await loadPoolConfig(true)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '切换失败')
+  }
+}
+
+async function testPoolExit(pool) {
+  poolTesting.value = true
+  try {
+    const res = await axios.post('/api/video/pool-test', pool ? { poolId: pool.id } : {})
+    if (res.data?.success) {
+      ElMessage.success(`池出口测试成功（${res.data.elapsedMs}ms）：${res.data.exit}`)
+    } else {
+      ElMessage.error(res.data?.error || '池出口测试失败')
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '池出口测试失败')
   } finally {
-    llmSaving.value = false
+    poolTesting.value = false
+  }
+}
+
+async function saveThreshold() {
+  thresholdSaving.value = true
+  try {
+    const res = await axios.post('/api/video/pools', { action: 'set-threshold', threshold: Number(lowBalanceThreshold.value) })
+    lowBalanceThreshold.value = res.data?.lowBalanceThreshold ?? lowBalanceThreshold.value
+    ElMessage.success(res.data?.message || '预警阈值已保存')
+    await loadPoolConfig(true)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存阈值失败')
+  } finally {
+    thresholdSaving.value = false
+  }
+}
+
+async function resetDirectBudget() {
+  budgetResetting.value = true
+  try {
+    const res = await axios.post('/api/video/pools', { action: 'reset-budget' })
+    Object.assign(directBudget, res.data?.directBudget || {})
+    ElMessage.success(res.data?.message || '直连额度已重置')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '重置失败')
+  } finally {
+    budgetResetting.value = false
+  }
+}
+
+async function probeGateNow() {
+  poolProbing.value = true
+  try {
+    const res = await axios.post('/api/video/gate-probe')
+    if (res.data?.success) {
+      gateState.direct = res.data.direct || 'unknown'
+      gateState.lastProbeAt = res.data.lastProbeAt || ''
+      gateState.lastChangeAt = res.data.lastChangeAt || ''
+      if (res.data.directBudget) Object.assign(directBudget, res.data.directBudget)
+      ElMessage.success(`探测完成：直连出口${directGateMeta.value.text.split('（')[0]}`)
+      await loadPoolConfig(true)
+    }
+  } catch (error) {
+    ElMessage.error('网关探测失败')
+  } finally {
+    poolProbing.value = false
   }
 }
 
@@ -1014,7 +1142,14 @@ async function deleteFeedback(id) {
 
 function formatTime(value) {
   if (!value) return '-'
-  const date = new Date(value)
+  // SQLite 的 datetime('now') 写入的是 UTC 且不带时区后缀（'2026-09-11 07:40:13'），
+  // new Date 会把它当成浏览器本地时间解析，导致显示早 8 小时。这里补上 Z 再解析；
+  // 已带 T/Z 的 ISO 字符串（JS toISOString 写入的）保持原样。
+  const raw = String(value)
+  const iso = /^\d{4}-\d{2}-\d{2}([ T])\d{2}:\d{2}/.test(raw) && !raw.includes('T') && !raw.includes('Z')
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw
+  const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '-'
   return date.toLocaleString('zh-CN', {
     year: 'numeric',
@@ -1023,6 +1158,40 @@ function formatTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+// SQLite 的 datetime('now') 存的是 UTC，且不带时区后缀。
+// new Date('2026-09-11 07:40:13') 会被当成浏览器本地时间解析，所以这里显式补上 Z。
+function formatUtcTime(value) {
+  if (!value) return '-'
+  const raw = String(value)
+  const iso = raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+// ---------- 用户来源 IP ----------
+
+function userIpValue(row) {
+  return row?.last_ip || row?.last_download_ip || ''
+}
+
+function userIpSourceLabel(row) {
+  if (row?.last_ip) return row.last_login_at ? '最近登录 / 注册来源' : '注册来源'
+  if (row?.last_download_ip) return '最近一次下载来源'
+  return '暂无记录'
+}
+
+function userIpHint(row) {
+  if (userIpValue(row)) return `记录时间：${row.last_ip ? formatUtcTime(row.last_login_at) : '—'}`
+  return '该账号在开始记录 IP 之后还没有登录过。'
 }
 
 function membershipSourceLabel(source) {
@@ -1219,13 +1388,15 @@ async function handleQuickActionChange(user, value) {
 onMounted(() => {
   loadFiles()
   loadUsers()
-  loadLlmConfig()
+  loadPoolConfig()
   loadGithubRadarConfig()
   loadGithubAdminSubscriptions()
   loadSiteMonitors()
   loadMembershipConfig()
   loadMembershipCards()
   loadFeedback()
+  loadWtStatus()
+  loadWtLogs()
 })
 </script>
 
@@ -1269,7 +1440,7 @@ onMounted(() => {
               <el-table-column label="创建时间" width="180">
                 <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="170" fixed="right">
+              <el-table-column label="操作" width="170">
                 <template #default="{ row }">
                   <div class="row-actions">
                     <el-button size="small" type="primary" @click="openEditFile(row)">编辑</el-button>
@@ -1341,7 +1512,23 @@ onMounted(() => {
           <div class="table-shell">
             <el-table v-loading="usersLoading" :data="users" stripe size="small" empty-text="暂无用户数据">
               <el-table-column prop="id" label="ID" width="70" />
-              <el-table-column prop="username" label="用户名" min-width="160" />
+              <el-table-column label="用户名" min-width="180">
+                <template #default="{ row }">
+                  <div class="user-name-cell">
+                    <span class="user-name-text">{{ row.username }}</span>
+                    <el-popover placement="right" trigger="click" :width="280" popper-class="user-ip-popover">
+                      <template #reference>
+                        <el-icon class="user-info-icon" title="查看来源 IP"><InfoFilled /></el-icon>
+                      </template>
+                      <div class="user-ip-panel">
+                        <div class="user-ip-source">{{ userIpSourceLabel(row) }}</div>
+                        <div class="user-ip-value" :class="{ 'is-empty': !userIpValue(row) }">{{ userIpValue(row) || '暂无记录' }}</div>
+                        <div class="user-ip-hint">{{ userIpHint(row) }}</div>
+                      </div>
+                    </el-popover>
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column label="角色" width="110">
                 <template #default="{ row }">
                   <el-tag :type="roleTagType(row.role)" :class="{ 'pro-tag': row.role === 'pro' }" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
@@ -1367,19 +1554,8 @@ onMounted(() => {
                   {{ row.is_banned ? (row.banned_reason || '-') : '-' }}
                 </template>
               </el-table-column>
-              <el-table-column prop="group_name" label="家庭组" width="130">
-                <template #default="{ row }">{{ row.group_name || '-' }}</template>
-              </el-table-column>
               <el-table-column label="注册时间" width="180">
                 <template #default="{ row }">{{ formatTime(row.created_at || row.createdAt) }}</template>
-              </el-table-column>
-              <el-table-column label="操作" width="170" fixed="right">
-                <template #default="{ row }">
-                  <div class="row-actions">
-                    <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
-                    <el-button size="small" type="danger" :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
-                  </div>
-                </template>
               </el-table-column>
               <el-table-column label="快捷操作" width="220">
                 <template #default="{ row }">
@@ -1406,6 +1582,15 @@ onMounted(() => {
                   </div>
                 </template>
               </el-table-column>
+              <!-- 站长要求：操作列不做固定，跟随表格横向滚动（固定列在小窗口下观感像「压住」其他列） -->
+              <el-table-column label="操作" width="170">
+                <template #default="{ row }">
+                  <div class="row-actions">
+                    <el-button size="small" type="primary" @click="openEditUser(row)">编辑</el-button>
+                    <el-button size="small" type="danger" :disabled="row.id === currentUser?.id" @click="deleteUser(row)">删除</el-button>
+                  </div>
+                </template>
+              </el-table-column>
             </el-table>
           </div>
         </div>
@@ -1414,7 +1599,19 @@ onMounted(() => {
           <article v-for="row in users" :key="row.id" class="mobile-admin-card">
             <div class="mobile-admin-head">
               <div class="mobile-admin-head-main">
-                <h4>{{ row.username }}</h4>
+                <h4>
+                  {{ row.username }}
+                  <el-popover placement="bottom" trigger="click" :width="280" popper-class="user-ip-popover">
+                    <template #reference>
+                      <el-icon class="user-info-icon" title="查看来源 IP"><InfoFilled /></el-icon>
+                    </template>
+                    <div class="user-ip-panel">
+                      <div class="user-ip-source">{{ userIpSourceLabel(row) }}</div>
+                      <div class="user-ip-value" :class="{ 'is-empty': !userIpValue(row) }">{{ userIpValue(row) || '暂无记录' }}</div>
+                      <div class="user-ip-hint">{{ userIpHint(row) }}</div>
+                    </div>
+                  </el-popover>
+                </h4>
                 <span class="mobile-admin-sub">ID {{ row.id }}</span>
               </div>
               <el-tag :type="roleTagType(row.role)" :class="{ 'pro-tag': row.role === 'pro' }" effect="dark" size="small">{{ roleLabel(row.role) }}</el-tag>
@@ -1429,10 +1626,6 @@ onMounted(() => {
                 <dd>
                   {{ row.role === 'premium' ? (!row.premium_expires_at || String(row.premium_expires_at).includes('2099') ? '永久' : formatTime(row.premium_expires_at)) : '-' }}
                 </dd>
-              </div>
-              <div>
-                <dt>家庭组</dt>
-                <dd>{{ row.group_name || '-' }}</dd>
               </div>
               <div>
                 <dt>注册时间</dt>
@@ -1472,58 +1665,150 @@ onMounted(() => {
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="大模型配置">
+      <el-tab-pane label="抖音解析出口">
         <div class="tab-header">
-          <span class="tab-count">配置会加密保存，仅在服务端运行时解密使用</span>
-          <el-button size="small" :loading="llmLoading" @click="loadLlmConfig">
-            <el-icon><Refresh /></el-icon>
-            刷新
-          </el-button>
+          <span class="tab-count">动态住宅出口（巨量HTTP）·每 {{ probeIntervalHours }} 小时探测一次直连出口，配置加密保存、保存后立即生效</span>
+          <div>
+            <el-button size="small" :loading="poolRefreshing" @click="loadPoolConfig(true)">
+              <el-icon><Refresh /></el-icon>
+              刷新余量
+            </el-button>
+            <el-button size="small" :loading="poolProbing" @click="probeGateNow">
+              <el-icon><Refresh /></el-icon>
+              立即探测网关
+            </el-button>
+          </div>
         </div>
 
-        <section class="single-panel">
-          <el-form label-position="top" size="large" @keyup.enter="saveLlmConfig">
-            <el-form-item label="API URL">
-              <el-autocomplete
-                v-model="llmConfig.apiUrl"
-                :fetch-suggestions="queryUrlHistory"
-                placeholder="https://api.deepseek.com/chat/completions"
-                clearable
-                :trigger-on-focus="true"
-                class="llm-autocomplete"
-              />
-            </el-form-item>
+        <section class="single-panel single-panel--wide">
+          <el-alert
+            :title="`直连出口：${directGateMeta.text}`"
+            :type="directGateMeta.type"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 16px"
+          >
+            <template #default>
+              <div style="font-size: 0.8rem; margin-top: 4px">最后探测：{{ formatBeijing(gateState.lastProbeAt) }}　最后变化：{{ formatBeijing(gateState.lastChangeAt) }}</div>
+              <div style="font-size: 0.8rem; margin-top: 4px">探测只打直连（裸请求，零池额度消耗）；出口状态翻转不再发邮件，系统直接自动切换。</div>
+            </template>
+          </el-alert>
 
-            <el-form-item label="API Key">
-              <el-autocomplete
-                v-model="llmConfig.apiKey"
-                :fetch-suggestions="queryKeyHistory"
-                placeholder="输入新的 API Key"
-                clearable
-                :trigger-on-focus="true"
-                class="llm-autocomplete"
-              />
-            </el-form-item>
+          <div class="budget-grid">
+            <div class="budget-item">
+              <span class="budget-label">直连额度</span>
+              <span class="budget-value" :class="directBudget.available ? 'is-ok' : 'is-warn'">
+                {{ directBudget.available ? '可用' : '已用（窗口内走池）' }}
+              </span>
+            </div>
+            <div class="budget-item">
+              <span class="budget-label">上次使用</span>
+              <span class="budget-value">{{ formatBeijing(directBudget.lastUsedAt) }}</span>
+            </div>
+            <div class="budget-item">
+              <span class="budget-label">下次可用</span>
+              <span class="budget-value">
+                {{ directBudget.available ? '现在即可用' : formatBeijing(directBudget.nextAvailableAt) }}
+                <el-button link type="primary" size="small" :loading="budgetResetting" @click="resetDirectBudget">重置</el-button>
+              </span>
+            </div>
+          </div>
 
-            <el-form-item label="模型名称">
-              <el-autocomplete
-                v-model="llmConfig.model"
-                :fetch-suggestions="queryModelHistory"
-                placeholder="deepseek-chat"
-                clearable
-                :trigger-on-focus="true"
-                class="llm-autocomplete"
-              />
-            </el-form-item>
+          <div class="pool-list-head">
+            <span class="tab-count">池订单（按顺序使用；当前池余量耗尽或报「已到账期」会自动切到下一个）</span>
+            <div class="pool-head-right">
+              <span class="pool-burn">
+                今日已提取 {{ poolExtractStats.today ?? 0 }} 个 IP
+                <template v-if="poolExtractStats.total">（累计 {{ poolExtractStats.total }}）</template>
+                <template v-if="poolExtractStats.estimatedDaysLeft">· 按此速度约可用 {{ poolExtractStats.estimatedDaysLeft }} 天</template>
+              </span>
+              <el-button type="primary" size="small" @click="openAddPool">
+                <el-icon><Plus /></el-icon>
+                添加池
+              </el-button>
+            </div>
+          </div>
 
-            <el-form-item class="llm-action-item">
-              <div class="llm-actions">
-                <el-button type="primary" :loading="llmSaving" @click="saveLlmConfig">{{ llmSaving ? '保存中...' : '保存配置' }}</el-button>
-                <el-button :loading="llmTesting" @click="testLlmConfig">{{ llmTesting ? '测试中...' : '测试连接' }}</el-button>
+          <div v-loading="poolLoading || poolRefreshing" class="pool-list">
+            <el-empty v-if="!poolList.length" description="还没有池订单，点上方「添加池」" :image-size="60" />
+            <div
+              v-for="pool in poolList"
+              :key="pool.id"
+              class="pool-card"
+              :class="{ 'is-active': pool.id === activePoolId }"
+            >
+              <div class="pool-card-head">
+                <div class="pool-card-title">
+                  <span class="pool-card-name">{{ pool.name }}</span>
+                  <el-tag v-if="pool.id === activePoolId" size="small" type="primary">当前</el-tag>
+                  <el-tag size="small" :type="poolBalanceMeta(pool).type">{{ poolBalanceMeta(pool).text }}</el-tag>
+                </div>
+                <div
+                  class="pool-card-balance"
+                  :class="{ 'is-low': pool.balance !== null && pool.balance !== undefined && pool.balance <= lowBalanceThreshold }"
+                >
+                  {{ poolBalanceText(pool) }}
+                </div>
               </div>
+              <div class="pool-card-meta">
+                <span>IP 时效 {{ Math.round((pool.ttlMs || 0) / 60000) }} 分钟</span>
+                <span>订单 {{ pool.tradeNoTail || '—' }}</span>
+                <span>{{ pool.hasKey ? '余量更新 ' + formatBeijing(pool.balanceAt) : '未配置 key（查不到余量）' }}</span>
+              </div>
+              <div class="pool-card-actions">
+                <el-button size="small" :disabled="pool.id === activePoolId" @click="activatePool(pool)">设为当前</el-button>
+                <el-button size="small" :loading="poolTesting" @click="testPoolExit(pool)">测试</el-button>
+                <el-button size="small" @click="openEditPool(pool)">编辑</el-button>
+                <el-button size="small" type="danger" plain @click="removePool(pool)">删除</el-button>
+              </div>
+            </div>
+          </div>
+
+          <el-form label-position="top" size="large">
+            <el-form-item label="余量预警阈值（剩余 IP 低于该值时发邮件提醒，12 小时内不重复发）">
+              <el-input-number v-model="lowBalanceThreshold" :min="0" :max="100000" :step="50" />
+              <el-button type="primary" style="margin-left: 12px" :loading="thresholdSaving" @click="saveThreshold">保存阈值</el-button>
             </el-form-item>
           </el-form>
+
+          <div class="pool-hint">
+            <p>· 提取链接来自巨量后台「生成API提取链接」：白名单填服务器 IP，提取数量选 1，格式 TEXT，IP 去重建议 24 小时。</p>
+            <p>· 业务 key 在巨量后台「业务管理 → 对应订单」里，用于查询剩余 IP 数量；不填也能解析，但看不到余量、也不会预警。</p>
+            <p>· 多池按顺序使用：当前池余量耗尽或提取报「已到账期」时自动换下一个；全部不可用时回落直连（可能被风控拒）。</p>
+            <p>· 直连额度：服务器 IP 每 4 小时只用一次，用掉后 4 小时内解析一律走池，避免频繁访问被重新标记；媒体下载不走代理。</p>
+          </div>
         </section>
+
+        <el-dialog
+          v-model="poolDialog.visible"
+          :title="poolDialog.mode === 'add' ? '添加池订单' : '编辑池'"
+          width="min(580px, 92vw)"
+        >
+          <el-form label-position="top">
+            <el-form-item label="名称">
+              <el-input v-model="poolDialog.name" placeholder="例如：深圳住宅·主池（留空自动编号）" clearable />
+            </el-form-item>
+            <el-form-item :label="poolDialog.mode === 'add' ? '提取链接' : '提取链接（留空表示不修改）'">
+              <el-input
+                v-model="poolDialog.extractUrl"
+                placeholder="http://v2.api.juliangip.com/dynamic/getips?num=1&trade_no=...&sign=..."
+                clearable
+              />
+            </el-form-item>
+            <el-form-item :label="poolDialog.mode === 'add' ? '业务 key' : '业务 key（留空表示不修改）'">
+              <el-input v-model="poolDialog.key" placeholder="32 位业务密钥，用于查询剩余 IP 数量" clearable />
+            </el-form-item>
+            <el-form-item label="IP 时效档位（与所购套餐一致）">
+              <el-select v-model="poolDialog.ttlMs" style="width: 240px">
+                <el-option v-for="opt in POOL_TTL_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="poolDialog.visible = false">取消</el-button>
+            <el-button type="primary" :loading="poolSubmitting" @click="submitPoolForm">保存</el-button>
+          </template>
+        </el-dialog>
       </el-tab-pane>
 
       <el-tab-pane label="GitHub日报">
@@ -1600,6 +1885,89 @@ onMounted(() => {
             </el-table>
           </section>
         </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="战争雷霆交易所">
+        <div class="tab-header">
+          <span class="tab-count">配置 Gaijin 账号凭据、查看采集状态、手动触发快照</span>
+          <el-button size="small" :loading="wtLoading" @click="loadWtStatus"><el-icon><Refresh /></el-icon>刷新</el-button>
+        </div>
+        <div class="membership-admin-grid">
+          <section class="single-panel">
+            <el-form label-position="top" size="large">
+              <el-form-item label="Gaijin 邮箱">
+                <el-input v-model="wtCred.login" placeholder="用于登录换取交易所令牌的账号邮箱" clearable />
+              </el-form-item>
+              <el-form-item label="Gaijin 密码">
+                <el-input v-model="wtCred.password" type="password" show-password placeholder="留空表示保持现有密码" clearable />
+                <div class="form-hint">
+                  状态：{{ wtStatus.credentialsConfigured ? `已配置 ${wtStatus.loginMasked}` : '未配置' }}。凭据经 AES 加密存于服务器，不入代码仓库。
+                </div>
+                <div class="form-hint">
+                  出口策略：登录经住宅代理池路由（机房 IP 会被 Gaijin 强制人机验证拦死）；池不可用时报错可在下方状态看到。
+                </div>
+              </el-form-item>
+              <el-button type="primary" :loading="wtSaving" @click="saveWtCredentials">保存并验证登录</el-button>
+              <el-button :loading="wtRefreshing" :disabled="!wtStatus.credentialsConfigured" @click="triggerWtSnapshot">立即快照</el-button>
+            </el-form>
+          </section>
+          <section class="single-panel">
+            <h3>采集状态</h3>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="凭据">
+                <el-tag size="small" :type="wtStatus.credentialsConfigured ? 'success' : 'info'">
+                  {{ wtStatus.credentialsConfigured ? '已配置' : '未配置' }}
+                </el-tag>
+                <span v-if="wtStatus.loginMasked" style="margin-left:8px">{{ wtStatus.loginMasked }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="收录物品">{{ wtStatus.itemCount || 0 }} 件</el-descriptions-item>
+              <el-descriptions-item label="最近快照">{{ formatTime(wtStatus.lastSnapshotAt) }}</el-descriptions-item>
+              <el-descriptions-item label="最近错误">
+                <span :class="wtStatus.lastError ? 'wt-admin-err' : ''">{{ wtStatus.lastError || '无' }}</span>
+              </el-descriptions-item>
+            </el-descriptions>
+            <div class="form-hint" style="margin-top:10px">
+              后台每天北京时间 07:20 自动快照一次；「立即快照」有 10 分钟冷却。用户在「战争雷霆交易所」页面查看价格与走势。
+            </div>
+          </section>
+        </div>
+
+        <section class="single-panel" style="margin-top:16px">
+          <div class="tab-header">
+            <h3 style="margin:0">操作日志</h3>
+            <el-button size="small" :loading="wtLogsLoading" @click="loadWtLogs"><el-icon><Refresh /></el-icon>刷新</el-button>
+          </div>
+          <div class="form-hint" style="margin-bottom:10px">
+            登录 / 快照 / 搜索的每次操作（自动或手动）及其返回摘要，保留 30 天。出了问题时可据此判断是账号被风控、IP 池、还是搜索/爬取环节。
+          </div>
+          <el-table v-loading="wtLogsLoading" :data="wtLogs" size="small" stripe empty-text="暂无日志">
+            <el-table-column label="时间" width="170">
+              <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="80">
+              <template #default="{ row }">{{ WT_OP_LABEL[row.op] || row.op }}</template>
+            </el-table-column>
+            <el-table-column label="触发" width="90">
+              <template #default="{ row }">{{ WT_TRIGGER_LABEL[row.trigger] || row.trigger || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="结果" width="80">
+              <template #default="{ row }">
+                <el-tag size="small" :type="wtStatusTagType(row.status)">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="出口 IP" width="120">
+              <template #default="{ row }">{{ row.exit_ip || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="耗时" width="80">
+              <template #default="{ row }">{{ row.duration_ms != null ? row.duration_ms + 'ms' : '-' }}</template>
+            </el-table-column>
+            <el-table-column label="详情" min-width="240">
+              <template #default="{ row }">
+                <span :class="row.status === 'fail' ? 'wt-admin-err' : ''">{{ row.code ? `[${row.code}] ` : '' }}{{ row.detail || '-' }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
       </el-tab-pane>
 
       <el-tab-pane label="网站监测">
@@ -2130,6 +2498,65 @@ onMounted(() => {
   width: 220px;
 }
 
+.user-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.user-info-icon {
+  font-size: 15px;
+  color: var(--el-color-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.user-info-icon:hover {
+  transform: scale(1.15);
+}
+
+.mobile-admin-head .user-info-icon {
+  font-size: 14px;
+  vertical-align: -2px;
+  margin-left: 4px;
+}
+
+.user-ip-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.user-ip-source {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.user-ip-value {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  word-break: break-all;
+  user-select: all;
+}
+
+.user-ip-value.is-empty {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+}
+
+.user-ip-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding-top: 6px;
+}
+
 .desktop-table-wrap {
   display: block;
 }
@@ -2249,6 +2676,160 @@ onMounted(() => {
   color: var(--text-muted);
   font-size: 0.82rem;
   line-height: 1.5;
+}
+
+.pool-hint {
+  margin-top: 14px;
+  color: var(--text-secondary, #909399);
+  font-size: 0.8rem;
+  line-height: 1.7;
+}
+
+.pool-hint p {
+  margin: 0 0 4px;
+}
+
+.pool-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.pool-head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pool-burn {
+  font-size: 0.78rem;
+  color: var(--text-secondary, #909399);
+}
+
+.budget-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.budget-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.budget-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #909399);
+}
+
+.budget-value {
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.budget-value.is-warn {
+  color: var(--el-color-warning);
+}
+
+.pool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+  min-height: 60px;
+}
+
+.pool-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+
+.pool-card.is-active {
+  border-color: var(--el-color-primary);
+}
+
+.pool-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pool-card-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pool-card-name {
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.pool-card-balance {
+  max-width: 55%;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: right;
+  word-break: break-word;
+}
+
+.pool-card-balance.is-low {
+  color: var(--el-color-warning);
+}
+
+.pool-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  font-size: 0.78rem;
+  color: var(--text-secondary, #909399);
+}
+
+.pool-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pool-card-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+@media (max-width: 640px) {
+  .budget-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pool-card-balance {
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .pool-list-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.single-panel--wide {
+  max-width: 1120px;
 }
 
 .single-panel {
@@ -2573,6 +3154,11 @@ onMounted(() => {
   font-size: 0.82rem;
 }
 
+.wt-admin-err {
+  color: var(--el-color-warning);
+  word-break: break-all;
+}
+
 .full-width,
 .llm-autocomplete {
   width: 100%;
@@ -2665,7 +3251,9 @@ onMounted(() => {
 
 :deep(.el-table) {
   --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
+  /* 行底色用不透明卡片色：既与卡片融为一体，又保证 fixed="right" 固定列有实体背景——
+     透明行底下横向滚动时，后面的单元格会从固定列里透出来（用户管理页曾出现文字重叠）。 */
+  --el-table-tr-bg-color: var(--bg-card);
   --el-table-header-bg-color: var(--bg-input);
   --el-table-row-hover-bg-color: var(--bg-hover);
   --el-table-border-color: var(--border-color);
@@ -2678,7 +3266,8 @@ onMounted(() => {
 }
 
 :deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
-  background: color-mix(in srgb, var(--bg-input) 72%, transparent);
+  /* 斑马纹同样混到卡片色上（不要混 transparent，否则固定列又会透出下层内容） */
+  background: color-mix(in srgb, var(--bg-input) 72%, var(--bg-card));
 }
 
 :deep(.el-dialog) {

@@ -1,8 +1,8 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download, Headset, Loading, Picture, VideoCamera, QuestionFilled } from '@element-plus/icons-vue'
+import { Download, Headset, Loading, Picture, VideoCamera } from '@element-plus/icons-vue'
 
 const uiText = {
   pageTitle: '\u97f3\u89c6\u9891\u4e0b\u8f7d',
@@ -17,7 +17,6 @@ const uiText = {
   videoLineTitle: '\u89c6\u9891\u4e0b\u8f7d\u7ebf\u8def',
   videoLineHint: '\u5982\u679c\u5f53\u524d\u89c6\u9891\u63d0\u4f9b\u591a\u6761\u76f4\u94fe\uff0c\u53ef\u5728\u8fd9\u91cc\u5207\u6362\u3002',
   currentImage: '\u4e0b\u8f7d\u5f53\u524d\u56fe\u7247',
-  allImages: '\u4e0b\u8f7d\u5168\u90e8\u56fe\u7247',
   previewLarge: '\u653e\u5927\u9884\u89c8',
   currentVideo: '\u4e0b\u8f7d\u89c6\u9891',
   currentAudio: '\u4e0b\u8f7d\u4ec5\u97f3\u9891',
@@ -35,6 +34,16 @@ const uiText = {
   withWatermark: '(\u6709\u6c34\u5370)',
   imageAlbum: '\u56fe\u96c6',
   supportAudioOnly: '\u652f\u6301\u4ec5\u97f3\u9891',
+  albumImages: '\u56fe\u7247',
+  selectAllImages: '\u5168\u9009',
+  clearImageSelection: '\u53d6\u6d88\u5168\u9009',
+  downloadSelectedImages: '\u4e0b\u8f7d\u9009\u4e2d\u56fe\u7247',
+  albumZipHint: '\u591a\u9009\u540e\u6253\u5305\u6210\u4e00\u4e2a ZIP\uff0c\u6574\u5305\u53ea\u8ba1 1 \u6b21\u4e0b\u8f7d\u989d\u5ea6',
+  albumDownloading: '\u6253\u5305\u4e2d...',
+  albumZipSuccess: '\u56fe\u96c6\u5df2\u6253\u5305\u4e0b\u8f7d',
+  albumNeedSelection: '\u8bf7\u5148\u52fe\u9009\u8981\u4e0b\u8f7d\u7684\u56fe\u7247',
+  albumPartialFailed: '\u6709\u56fe\u7247\u672a\u80fd\u6253\u5305\uff0c\u5df2\u4e0b\u8f7d\u5176\u4f59\u90e8\u5206',
+  albumZip: '\u56fe\u96c6',
 }
 
 const videoUrl = ref('')
@@ -48,83 +57,6 @@ const downloading = ref(false)
 const imageSourceSelections = ref({})
 const selectedImageRouteIndex = ref('0')
 const selectedVideoRouteUrl = ref('')
-
-const isLoggedIn = ref(false)
-const customCookie = ref('')
-const saveToCloud = ref(false)
-
-async function fetchCloudCookie() {
-  try {
-    const res = await axios.get('/api/video/cookie')
-    if (res.data?.success && res.data.cookieJson) {
-      customCookie.value = res.data.cookieJson
-      saveToCloud.value = true
-    }
-  } catch (err) {
-    console.error('获取云端Cookie失败', err)
-  }
-}
-
-async function handleSaveToCloudChange(val) {
-  if (!isLoggedIn.value) {
-    ElMessage.warning('请先登录后再保存 Cookie 到云端')
-    saveToCloud.value = false
-    return
-  }
-  if (val) {
-    if (!customCookie.value.trim()) {
-      ElMessage.warning('Cookie 内容为空，无法保存')
-      saveToCloud.value = false
-      return
-    }
-    try {
-      JSON.parse(customCookie.value.trim())
-    } catch (e) {
-      ElMessage.error('Cookie 格式错误，必须是有效的 JSON 数组')
-      saveToCloud.value = false
-      return
-    }
-    await saveCookieToCloud()
-  } else {
-    await deleteCookieFromCloud()
-  }
-}
-
-async function saveCookieToCloud() {
-  try {
-    const res = await axios.post('/api/video/cookie', {
-      cookieJson: customCookie.value.trim()
-    })
-    if (res.data?.success) {
-      ElMessage.success('Cookie 已保存至云端并与您的账号绑定')
-    } else {
-      ElMessage.error(res.data?.message || '保存失败')
-      saveToCloud.value = false
-    }
-  } catch (err) {
-    ElMessage.error(err.response?.data?.error || err.message || '保存失败')
-    saveToCloud.value = false
-  }
-}
-
-async function deleteCookieFromCloud() {
-  try {
-    const res = await axios.delete('/api/video/cookie')
-    if (res.data?.success) {
-      ElMessage.success('已清除云端绑定的 Cookie')
-    }
-  } catch (err) {
-    ElMessage.error(err.response?.data?.error || err.message || '清除失败')
-    saveToCloud.value = true
-  }
-}
-
-onMounted(async () => {
-  isLoggedIn.value = !!localStorage.getItem('lcyksp_token')
-  if (isLoggedIn.value) {
-    await fetchCloudCookie()
-  }
-})
 
 function isQuotaExceededMessage(message) {
   return /免费解析\/下载次数已用完|额度已用完/.test(String(message || ''))
@@ -193,6 +125,27 @@ const imageFormats = computed(() => videoInfo.value?.formats?.filter((item) => i
 const audioFormats = computed(() => videoInfo.value?.formats?.filter((item) => item.mediaType === 'audio') || [])
 const videoFormats = computed(() => videoInfo.value?.formats?.filter((item) => item.mediaType === 'video') || [])
 const isAlbum = computed(() => imageFormats.value.length > 1)
+
+// 图集多选：默认全选，避免用户为「整包下载」还逐张点一遍
+const selectedImageIds = ref([])
+const selectedImageCount = computed(() => selectedImageIds.value.length)
+const allImagesSelected = computed(
+  () => imageFormats.value.length > 0 && selectedImageIds.value.length === imageFormats.value.length,
+)
+
+function isImageSelected(formatId) {
+  return selectedImageIds.value.includes(formatId)
+}
+
+function toggleImageSelected(formatId) {
+  selectedImageIds.value = selectedImageIds.value.includes(formatId)
+    ? selectedImageIds.value.filter((item) => item !== formatId)
+    : [...selectedImageIds.value, formatId]
+}
+
+function toggleSelectAllImages() {
+  selectedImageIds.value = allImagesSelected.value ? [] : imageFormats.value.map((item) => item.formatId)
+}
 const unifiedImageSourceOptions = computed(() => {
   const format = imageFormats.value[0]
   const candidates = Array.isArray(format?.sourceCandidates) ? format.sourceCandidates.filter(Boolean) : []
@@ -257,6 +210,7 @@ function formatOptionLabel(fmt) {
 function resetRouteSelections(formats = []) {
   selectedImageRouteIndex.value = '0'
   imageSourceSelections.value = buildImageSelectionsByRoute(formats, 0)
+  selectedImageIds.value = formats.filter((item) => item.mediaType === 'image').map((item) => item.formatId)
   const firstVideo = formats.find((item) => item.mediaType === 'video')
   const videoCandidates = Array.isArray(firstVideo?.sourceCandidates) ? firstVideo.sourceCandidates.filter(Boolean) : []
   selectedVideoRouteUrl.value = videoCandidates[0] || firstVideo?.directUrl || ''
@@ -278,7 +232,6 @@ async function handleAnalyzeLink() {
   try {
     const res = await axios.post('/api/video/analyze', {
       url: videoUrl.value.trim(),
-      customCookie: customCookie.value.trim() || undefined,
     })
 
     if (!res.data?.success) {
@@ -331,6 +284,7 @@ function clearResult() {
   previewType.value = ''
   isPreviewActive.value = false
   imageSourceSelections.value = {}
+  selectedImageIds.value = []
   selectedImageRouteIndex.value = '0'
   selectedVideoRouteUrl.value = ''
 }
@@ -344,11 +298,11 @@ function closePreview() {
   isPreviewActive.value = false
 }
 
-async function downloadByPayload(payload, fallbackName) {
+async function postDownloadBlob(requestUrl, data, fallbackName) {
   const response = await axios({
     method: 'post',
-    url: '/api/video/download',
-    data: payload,
+    url: requestUrl,
+    data,
     responseType: 'blob',
     validateStatus: () => true,
   })
@@ -375,6 +329,13 @@ async function downloadByPayload(payload, fallbackName) {
   link.click()
   link.remove()
   setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+
+  const failedCount = Number(response.headers['x-lcyksp-failed-images'] || 0)
+  return { failedCount }
+}
+
+async function downloadByPayload(payload, fallbackName) {
+  return postDownloadBlob('/api/video/download', payload, fallbackName)
 }
 
 async function handleDownloadSelected() {
@@ -406,7 +367,6 @@ async function handleDownloadSelected() {
           : (meta.directUrl || videoInfo.value.directPreviewUrl || ''),
       browserAudioUrl: meta.audioUrl || '',
       source: videoInfo.value.source || 'yt-dlp',
-      customCookie: customCookie.value.trim() || undefined,
     }
     await downloadByPayload(payload, fallbackName)
 
@@ -428,35 +388,40 @@ async function handleDownloadSelected() {
   }
 }
 
-async function handleDownloadAllImages() {
-  if (!imageFormats.value.length || !videoInfo.value) {
-    ElMessage.warning('当前没有可批量下载的图片')
+async function handleDownloadSelectedImages() {
+  const picked = imageFormats.value.filter((item) => isImageSelected(item.formatId))
+  if (!picked.length) {
+    ElMessage.warning(uiText.albumNeedSelection)
     return
   }
 
   downloading.value = true
   try {
-    for (const item of imageFormats.value) {
-      await downloadByPayload(
-        {
-          url: videoUrl.value.trim(),
+    // 一次请求打包成一个 ZIP：整包只计 1 次下载额度（旧版逐张循环会烧掉 N 次）
+    const { failedCount } = await postDownloadBlob(
+      '/api/video/download-album',
+      {
+        url: videoUrl.value.trim(),
+        title: videoInfo.value?.title || 'download',
+        source: videoInfo.value?.source || 'yt-dlp',
+        items: picked.map((item) => ({
           formatId: item.formatId,
-          title: `${videoInfo.value.title || 'download'}_${item.quality}`,
-          browserDirectUrl: imageSourceSelections.value[item.formatId] || item.directUrl || '',
-          source: videoInfo.value.source || 'yt-dlp',
-          customCookie: customCookie.value.trim() || undefined,
-        },
-        `${videoInfo.value.title || 'download'}_${item.quality}.jpg`,
-      )
-      await new Promise((resolve) => setTimeout(resolve, 180))
+          directUrl: imageSourceSelections.value[item.formatId] || item.directUrl || '',
+        })),
+      },
+      `${videoInfo.value?.title || 'download'}_${uiText.albumZip}${picked.length}张.zip`,
+    )
+    if (failedCount > 0) {
+      ElMessage.warning(`${uiText.albumPartialFailed}（${failedCount} 张）`)
+    } else {
+      ElMessage.success(uiText.albumZipSuccess)
     }
-    ElMessage.success('图集下载任务已开始')
   } catch (error) {
     if (isQuotaExceededMessage(error.message)) {
       await showQuotaUpgradeDialog(error.message || '当前时段额度已用完')
       return
     }
-    ElMessage.error(error.message || '批量下载失败')
+    ElMessage.error(error.message || '图集打包下载失败')
   } finally {
     downloading.value = false
   }
@@ -499,50 +464,6 @@ onUnmounted(() => {
             >
               {{ loading ? uiText.analyzing : uiText.startAnalyze }}
             </el-button>
-          </div>
-
-          <!-- 自定义 Cookie 配置 -->
-          <div class="cookie-config-section">
-            <el-collapse>
-              <el-collapse-item name="cookie">
-                <template #title>
-                  <span class="cookie-collapse-title">
-                    自定义 Cookie (免额度解析/下载)
-                    <el-tooltip placement="top" raw-content>
-                      <template #content>
-                        <div style="line-height: 1.6; max-width: 320px;">
-                          <strong>使用说明：</strong><br/>
-                          1. 浏览器安装 <strong>Cookie-Editor</strong> 插件。<br/>
-                          2. 登录 B站 (bilibili.com) 或 抖音 (douyin.com)。<br/>
-                          3. 点击插件，点击右下角 <strong>Export -> JSON</strong> 导出为 JSON 格式。<br/>
-                          4. 粘贴到下方文本框内。<br/>
-                          5. <strong>额度说明：</strong>使用您自己的 Cookie 解析/下载<strong>不计入免费额度</strong>，使用本站 Cookie 将扣除解析额度。
-                        </div>
-                      </template>
-                      <el-icon class="help-icon" style="margin-left: 4px; vertical-align: middle;"><QuestionFilled /></el-icon>
-                    </el-tooltip>
-                  </span>
-                </template>
-                <div class="cookie-panel-content">
-                  <el-input
-                    v-model="customCookie"
-                    type="textarea"
-                    :rows="4"
-                    placeholder='粘贴 Cookie-Editor 导出的 JSON 格式 Cookie，形如：[{"domain": ".bilibili.com", "name": "SESSDATA", ...}]'
-                    class="cookie-textarea"
-                  />
-                  <div class="cookie-actions">
-                    <el-switch
-                      v-model="saveToCloud"
-                      active-text="储存 Cookie 到云端"
-                      :disabled="!isLoggedIn"
-                      @change="handleSaveToCloudChange"
-                    />
-                    <span v-if="!isLoggedIn" class="login-tip">请先登录以保存到云端</span>
-                  </div>
-                </div>
-              </el-collapse-item>
-            </el-collapse>
           </div>
         </div>
 
@@ -643,18 +564,6 @@ onUnmounted(() => {
               </el-button>
 
               <el-button
-                v-if="isAlbum"
-                size="large"
-                plain
-                class="secondary-action"
-                :loading="downloading"
-                @click="handleDownloadAllImages"
-              >
-                <el-icon><Picture /></el-icon>
-                <span>{{ uiText.allImages }}</span>
-              </el-button>
-
-              <el-button
                 v-if="hasPreview"
                 size="large"
                 plain
@@ -672,18 +581,53 @@ onUnmounted(() => {
             <span>{{ uiText.audioHint }}</span>
           </div>
 
-          <div v-if="imageFormats.length" class="album-grid">
-            <button
-              v-for="fmt in imageFormats"
-              :key="fmt.formatId"
-              type="button"
-              class="album-thumb"
-              :class="{ active: selectedFormat === fmt.formatId }"
-              @click="selectedFormat = fmt.formatId; handleFormatChange(fmt.formatId)"
-            >
-              <img :src="getFormatPreviewSrc(fmt)" :alt="fmt.quality" />
-              <span>{{ fmt.quality }}</span>
-            </button>
+          <div v-if="imageFormats.length" class="album-block">
+            <div class="album-head">
+              <div class="album-head-copy">
+                <span class="album-head-title">{{ uiText.albumImages }}（{{ imageFormats.length }} 张）</span>
+                <span class="album-head-hint">{{ uiText.albumZipHint }}</span>
+              </div>
+              <div class="album-head-actions">
+                <el-button size="small" text @click="toggleSelectAllImages">
+                  {{ allImagesSelected ? uiText.clearImageSelection : uiText.selectAllImages }}
+                </el-button>
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="downloading"
+                  :disabled="!selectedImageCount"
+                  @click="handleDownloadSelectedImages"
+                >
+                  <el-icon><Picture /></el-icon>
+                  <span>{{ uiText.downloadSelectedImages }}（{{ selectedImageCount }}）</span>
+                </el-button>
+              </div>
+            </div>
+
+            <div class="album-grid">
+              <div
+                v-for="fmt in imageFormats"
+                :key="fmt.formatId"
+                class="album-thumb"
+                :class="{ active: selectedFormat === fmt.formatId, picked: isImageSelected(fmt.formatId) }"
+              >
+                <label class="album-thumb-check" :title="uiText.downloadSelectedImages" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="isImageSelected(fmt.formatId)"
+                    @change="toggleImageSelected(fmt.formatId)"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="album-thumb-body"
+                  @click="selectedFormat = fmt.formatId; handleFormatChange(fmt.formatId)"
+                >
+                  <img :src="getFormatPreviewSrc(fmt)" :alt="fmt.quality" />
+                  <span>{{ fmt.quality }}</span>
+                </button>
+              </div>
+            </div>
           </div>
 
           <div class="footer-tools">
@@ -942,23 +886,62 @@ onUnmounted(() => {
   line-height: 1.55;
 }
 
+.album-block {
+  margin-top: 18px;
+  border-top: 1px dashed var(--border-color);
+  padding-top: 14px;
+}
+
+.album-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.album-head-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.album-head-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-heading);
+}
+
+.album-head-hint {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.album-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .album-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   gap: 10px;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
 .album-thumb {
+  position: relative;
   border: 1px solid var(--border-color);
   border-radius: 12px;
   background: var(--bg-input);
   padding: 8px;
-  cursor: pointer;
   color: var(--text-primary);
   display: flex;
   flex-direction: column;
   gap: 7px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .album-thumb.active {
@@ -966,7 +949,48 @@ onUnmounted(() => {
   box-shadow: 0 0 0 1px var(--accent-blue) inset;
 }
 
-.album-thumb img {
+.album-thumb.picked {
+  background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-input));
+}
+
+.album-thumb-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+
+.album-thumb-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+  margin: 0;
+}
+
+.album-thumb-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.album-thumb-body img {
   width: 100%;
   aspect-ratio: 1 / 1;
   border-radius: 10px;
@@ -974,7 +998,7 @@ onUnmounted(() => {
   background: var(--bg-canvas);
 }
 
-.album-thumb span {
+.album-thumb-body span {
   font-size: 0.78rem;
   text-align: center;
   line-height: 1.3;
@@ -1242,87 +1266,5 @@ onUnmounted(() => {
   }
 }
 
-.cookie-config-section {
-  margin-top: 18px;
-  border-top: 1px dashed var(--border-color);
-  padding-top: 14px;
-}
-
-.cookie-config-section :deep(.el-collapse) {
-  border: none;
-}
-
-.cookie-config-section :deep(.el-collapse-item__header) {
-  background: transparent;
-  color: var(--text-heading);
-  border: none;
-  font-size: 0.88rem;
-  height: 36px;
-}
-
-.cookie-config-section :deep(.el-collapse-item__wrap) {
-  background: transparent;
-  border: none;
-}
-
-.cookie-config-section :deep(.el-collapse-item__content) {
-  padding: 8px 0 0;
-  color: var(--text-secondary);
-}
-
-.cookie-collapse-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 600;
-  color: var(--accent-blue);
-  cursor: pointer;
-}
-
-.cookie-collapse-title:hover {
-  opacity: 0.85;
-}
-
-.help-icon {
-  color: var(--text-secondary);
-  font-size: 0.95rem;
-}
-
-.cookie-panel-content {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.cookie-textarea :deep(.el-textarea__inner) {
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  color: var(--text-primary);
-  border-radius: 8px;
-  font-family: monospace;
-  font-size: 0.82rem;
-}
-
-.cookie-textarea :deep(.el-textarea__inner:focus) {
-  border-color: var(--accent-blue);
-}
-
-.cookie-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.cookie-actions :deep(.el-switch__label) {
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-}
-
-.login-tip {
-  font-size: 0.78rem;
-  color: var(--accent-gold);
-}
 </style>
 

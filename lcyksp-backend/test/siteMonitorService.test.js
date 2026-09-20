@@ -52,6 +52,55 @@ test('model additions notify once and removals require two successful missing sn
   assert.deepEqual(events, [{ event_type: 'model_added', title: 'C' }, { event_type: 'model_removed', title: 'B' }])
 })
 
+test('an empty model list is an observation, not a failure', async () => {
+  const monitorId = await resetMonitor('justwoker_models')
+  await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => jsonResponse(['A', 'B']) })
+  await dbRun('DELETE FROM site_monitor_deliveries')
+
+  const emptyList = async () => jsonResponse([])
+  // First empty observation: nothing is deactivated yet, nothing is mailed (two-missing-snapshots rule).
+  await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: emptyList })
+  assert.equal((await dbGet("SELECT is_active FROM site_monitor_items WHERE item_key = 'a'")).is_active, 1)
+  assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_deliveries WHERE monitor_id = ?', [monitorId])).count, 0)
+
+  // Second consecutive empty observation: every model is removed and reported in one change email.
+  await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: emptyList })
+  assert.equal((await dbGet("SELECT is_active FROM site_monitor_items WHERE item_key = 'a'")).is_active, 0)
+  const removals = await dbAll("SELECT event_type, title FROM site_monitor_events WHERE monitor_id = ? ORDER BY id", [monitorId])
+  assert.deepEqual(removals, [
+    { event_type: 'model_removed', title: 'A' },
+    { event_type: 'model_removed', title: 'B' },
+  ])
+  const delivery = await dbGet('SELECT body_html FROM site_monitor_deliveries WHERE monitor_id = ?', [monitorId])
+  assert.equal(delivery.body_html.includes('下架模型'), true)
+
+  // Recovery: the models come back and are reported as additions.
+  await dbRun('DELETE FROM site_monitor_deliveries')
+  await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => jsonResponse(['A', 'B']) })
+  const events = await dbAll("SELECT event_type, title FROM site_monitor_events WHERE monitor_id = ? ORDER BY id", [monitorId])
+  assert.deepEqual(events, [
+    { event_type: 'model_removed', title: 'A' },
+    { event_type: 'model_removed', title: 'B' },
+    { event_type: 'model_added', title: 'A' },
+    { event_type: 'model_added', title: 'B' },
+  ])
+  assert.equal((await dbGet("SELECT is_active FROM site_monitor_items WHERE item_key = 'a'")).is_active, 1)
+})
+
+test('an empty model list never becomes a baseline', async () => {
+  const monitorId = await resetMonitor('justwoker_models')
+  const emptyList = async () => jsonResponse([])
+  await assert.rejects(runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: emptyList }))
+  const monitor = await dbGet('SELECT baseline_ready, last_status FROM site_monitors WHERE id = ?', [monitorId])
+  assert.deepEqual(monitor, { baseline_ready: 0, last_status: 'failed' })
+  assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_items WHERE monitor_id = ?', [monitorId])).count, 0)
+
+  // A rebuild against an empty list is rejected too, preserving the previous baseline.
+  await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => jsonResponse(['A']) })
+  await assert.rejects(rebuildSiteMonitorBaseline('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: emptyList }))
+  assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_items WHERE monitor_id = ?', [monitorId])).count, 1)
+})
+
 test('failure never overwrites baseline and records a redacted failed run', async () => {
   const monitorId = await resetMonitor('justwoker_models')
   await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => jsonResponse(['A', 'B']) })
@@ -61,6 +110,23 @@ test('failure never overwrites baseline and records a redacted failed run', asyn
   assert.equal(monitor.last_status, 'failed')
   assert.equal(monitor.consecutive_failures, 1)
   assert.equal(monitor.last_error.includes('<html>'), false)
+})
+
+test('a network failure stores the machine code and the underlying socket errno', async () => {
+  const monitorId = await resetMonitor('hzu_postgraduate')
+  const socketError = new Error('connect ECONNRESET 202.192.230.232:443')
+  socketError.code = 'ECONNRESET'
+  const fetchFailure = new TypeError('fetch failed')
+  fetchFailure.cause = socketError
+  await assert.rejects(runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async () => { throw fetchFailure },
+  }))
+  const run = await dbGet('SELECT error_message FROM site_monitor_runs WHERE monitor_id = ? ORDER BY id DESC LIMIT 1', [monitorId])
+  assert.equal(run.error_message.includes('code=NETWORK_ERROR'), true)
+  assert.equal(run.error_message.includes('cause=ECONNRESET'), true)
+  const monitor = await dbGet('SELECT last_error FROM site_monitors WHERE id = ?', [monitorId])
+  assert.equal(monitor.last_error.includes('cause=ECONNRESET'), true)
 })
 
 
@@ -166,7 +232,7 @@ test('unsolicited 304 during diagnose fails without changing monitor state', asy
 test('concurrent due sources are serialized without nested sqlite transactions', async () => {
   await resetMonitor('justwoker_models')
   await resetMonitor('hzu_postgraduate')
-  await dbRun("UPDATE site_monitors SET enabled = 1, next_run_at = datetime('now', '-1 second')")
+  await dbRun("UPDATE site_monitors SET enabled = 1, next_run_at = '2026-09-13 04:59:59'")
   let activeFetches = 0
   let maximumActiveFetches = 0
   const fetchImpl = async (url) => {
@@ -178,7 +244,7 @@ test('concurrent due sources are serialized without nested sqlite transactions',
       ? jsonResponse(['A'])
       : htmlResponse('<a href="/2026/0901/c11241a101/page.htm">公告一</a>')
   }
-  const results = await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock })
+  const results = await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock, nowMs: Date.UTC(2026, 8, 13, 5, 0, 0) })
   assert.equal(results.length, 2)
   assert.equal(results.every((result) => result.status === 'fulfilled'), true)
   assert.equal(maximumActiveFetches, 1)

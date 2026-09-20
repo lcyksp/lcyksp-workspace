@@ -255,7 +255,10 @@ router.get('/users', async function (req, res, next) {
   try {
     var db = getDb();
     var keyword = typeof req.query.keyword === 'string' ? req.query.keyword.trim() : '';
-    var sql = "SELECT u.id, u.username, u.role, u.quota_plan, u.premium_expires_at, u.is_banned, u.banned_reason, u.group_id, u.created_at, COALESCE(fg.group_name, '') AS group_name FROM users u LEFT JOIN family_groups fg ON u.group_id = fg.id";
+    // 家庭组已下线，不再返回 group 相关字段；补充 IP 信息供后台查看：
+    //   last_ip / last_login_at —— 注册或最近一次登录的来源 IP（auth.js 写入）
+    //   last_download_ip —— 兜底：该用户最近一次下载记录的 IP
+    var sql = "SELECT u.id, u.username, u.role, u.quota_plan, u.premium_expires_at, u.is_banned, u.banned_reason, u.created_at, u.last_ip, u.last_login_at, (SELECT dl.ip_address FROM download_logs dl WHERE dl.user_id = u.id ORDER BY dl.created_at DESC, dl.id DESC LIMIT 1) AS last_download_ip FROM users u";
     var params = [];
 
     if (keyword) {

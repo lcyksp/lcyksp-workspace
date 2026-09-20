@@ -140,25 +140,21 @@ router.get('/me', requireAuth, async (req, res, next) => {
 
 router.post('/login', async (req, res, next) => {
   try {
-    const { username, password, turnstileToken } = req.body
+    const { username, password } = req.body
 
     if (!username || !password) {
       return res.status(400).json({ error: '用户名和密码不能为空' })
     }
 
     // 账号维度锁定（SQLite 持久化，重启不清零）：达到阈值直接拒绝，不再执行 bcrypt。
-    // 放在 Turnstile 之前：已锁定的账号不值得再花一次 Cloudflare 校验往返
+    // 登录不做 Turnstile（移动端交互式挑战体验差）：暴力破解由此处「单账号 10 次/15 分钟」锁定拦；
+    // Turnstile 只保留在注册（防批量注册机器人）。
     const failureCount = await getLoginFailureCount(username)
     if (isLoginLocked(failureCount)) {
       return res.status(429).json({ error: '尝试次数过多，请 15 分钟后再试' })
     }
 
-    // 与注册同强度：secret 未配置时跳过（本地开发行为不变）
     const clientIp = getClientIp(req)
-    const turnstileResult = await verifyTurnstileToken(turnstileToken, clientIp)
-    if (!turnstileResult.success) {
-      return res.status(400).json({ error: turnstileResult.message || '人机验证未通过' })
-    }
 
     const user = await dbGet(
       'SELECT id, username, password, role, quota_plan, group_id, premium_expires_at, is_banned, banned_reason FROM users WHERE username = ?',

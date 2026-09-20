@@ -8,12 +8,17 @@ const tempDir = await mkdtemp(path.join(tmpdir(), 'lcyksp-site-schedule-'))
 process.env.LCYKSP_DB_DIR = tempDir
 const { closeDb, getDb, initDb } = await import('../src/config/db.js')
 const {
+  isInQuietWindow,
+  nextRunAtUtc,
   recoverInterruptedSiteMonitorRuns,
   rebuildSiteMonitorBaseline,
   runDueSiteMonitors,
   runSiteMonitor,
 } = await import('../src/utils/siteMonitorService.js')
 await initDb()
+
+// 测试用的注入时钟：UTC 2026-09-13 05:00 = 北京时间 13:00，处于静默窗口之外。
+const NOON_BEIJING_MS = Date.UTC(2026, 8, 13, 5, 0, 0)
 
 function dbGet(sql, params = []) { return new Promise((resolve, reject) => getDb().get(sql, params, (e, row) => e ? reject(e) : resolve(row))) }
 function dbAll(sql, params = []) { return new Promise((resolve, reject) => getDb().all(sql, params, (e, rows) => e ? reject(e) : resolve(rows || []))) }
@@ -42,34 +47,29 @@ async function resetMonitor(source) {
   return monitor.id
 }
 
-/** Seconds between now and the stored next_run_at, read from sqlite so no wall clock math is involved. */
-async function secondsUntilNextRun(source) {
-  const row = await dbGet(
-    "SELECT CAST(strftime('%s', next_run_at) - strftime('%s', 'now') AS INTEGER) delta FROM site_monitors WHERE source = ?",
-    [source],
-  )
-  return row.delta
+async function nextRunAt(source) {
+  const row = await dbGet('SELECT next_run_at FROM site_monitors WHERE source = ?', [source])
+  return row.next_run_at
 }
 
 test('a successful run schedules the next check one fixed period later', async () => {
   await resetMonitor('justwoker_models')
   await resetMonitor('hzu_postgraduate')
-  await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => jsonResponse(['A']) })
-  await runSiteMonitor('hzu_postgraduate', { hostnameValidator: noDnsBlock, fetchImpl: async () => htmlResponse(ANNOUNCEMENT) })
+  const options = { hostnameValidator: noDnsBlock, nowMs: NOON_BEIJING_MS }
+  await runSiteMonitor('justwoker_models', { ...options, fetchImpl: async () => jsonResponse(['A']) })
+  await runSiteMonitor('hzu_postgraduate', { ...options, fetchImpl: async () => htmlResponse(ANNOUNCEMENT) })
 
-  const justwoker = await secondsUntilNextRun('justwoker_models')
-  const hzu = await secondsUntilNextRun('hzu_postgraduate')
-  assert.equal(justwoker > 1790 && justwoker <= 1800, true, `justwoker delta=${justwoker}`)
-  assert.equal(hzu > 3590 && hzu <= 3600, true, `hzu delta=${hzu}`)
+  assert.equal(await nextRunAt('justwoker_models'), '2026-09-13 05:30:00')
+  assert.equal(await nextRunAt('hzu_postgraduate'), '2026-09-13 06:00:00')
 })
 
 test('a monitor that is not due yet is swept without issuing any request', async () => {
   await resetMonitor('justwoker_models')
   await resetMonitor('hzu_postgraduate')
-  await dbRun("UPDATE site_monitors SET enabled = 1, next_run_at = datetime('now', '+10 minutes')")
+  await dbRun("UPDATE site_monitors SET enabled = 1, next_run_at = '2026-09-13 05:10:00'")
   const fetchImpl = countingFetch(() => { throw new Error('a monitor that is not due must never be fetched') })
 
-  const results = await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock })
+  const results = await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock, nowMs: NOON_BEIJING_MS })
   assert.equal(results.length, 0)
   assert.equal(fetchImpl.calls, 0)
   assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_runs')).count, 0)
@@ -80,50 +80,50 @@ test('advancing time past next_run_at runs the source exactly once per period', 
   await resetMonitor('hzu_postgraduate')
   await dbRun("UPDATE site_monitors SET enabled = 1 WHERE source = 'justwoker_models'")
   const fetchImpl = countingFetch(async () => jsonResponse(['A']))
+  const options = { fetchImpl, hostnameValidator: noDnsBlock, nowMs: NOON_BEIJING_MS }
 
   // A null next_run_at counts as due, so the first heartbeat picks the monitor up immediately.
-  await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock })
+  await runDueSiteMonitors(options)
   assert.equal(fetchImpl.calls, 1)
+  assert.equal(await nextRunAt('justwoker_models'), '2026-09-13 05:30:00')
 
   // Within the same period nothing happens, however often the heartbeat fires.
-  await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock })
-  await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock })
+  await runDueSiteMonitors(options)
+  await runDueSiteMonitors(options)
   assert.equal(fetchImpl.calls, 1)
 
-  // Simulate the 30 minutes elapsing instead of waiting for them.
-  await dbRun("UPDATE site_monitors SET next_run_at = datetime('now', '-1 second') WHERE source = 'justwoker_models'")
-  await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock })
+  // Simulate the period elapsing instead of waiting for it.
+  await dbRun("UPDATE site_monitors SET next_run_at = '2026-09-13 04:59:59' WHERE source = 'justwoker_models'")
+  await runDueSiteMonitors(options)
   assert.equal(fetchImpl.calls, 2)
-  const delta = await secondsUntilNextRun('justwoker_models')
-  assert.equal(delta > 1790 && delta <= 1800, true, `delta=${delta}`)
+  assert.equal(await nextRunAt('justwoker_models'), '2026-09-13 05:30:00')
 })
 
 test('a disabled monitor is never swept even when it is overdue', async () => {
   await resetMonitor('justwoker_models')
   await resetMonitor('hzu_postgraduate')
-  await dbRun("UPDATE site_monitors SET enabled = 0, next_run_at = datetime('now', '-2 hours')")
+  await dbRun("UPDATE site_monitors SET enabled = 0, next_run_at = '2026-09-13 03:00:00'")
   const fetchImpl = countingFetch(() => { throw new Error('a disabled monitor must never be fetched') })
 
-  const results = await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock })
+  const results = await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock, nowMs: NOON_BEIJING_MS })
   assert.equal(results.length, 0)
   assert.equal(fetchImpl.calls, 0)
 })
 
 test('failure backoff starts at five minutes and never exceeds the fixed period', async () => {
   const monitorId = await resetMonitor('justwoker_models')
-  await assert.rejects(runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => loginPageResponse() }))
-  let delta = await secondsUntilNextRun('justwoker_models')
-  assert.equal(delta > 290 && delta <= 300, true, `first backoff delta=${delta}`)
+  const options = { hostnameValidator: noDnsBlock, nowMs: NOON_BEIJING_MS }
+  await assert.rejects(runSiteMonitor('justwoker_models', { ...options, fetchImpl: async () => loginPageResponse() }))
+  assert.equal(await nextRunAt('justwoker_models'), '2026-09-13 05:05:00')
   assert.equal((await dbGet('SELECT consecutive_failures FROM site_monitors WHERE id = ?', [monitorId])).consecutive_failures, 1)
 
   await dbRun('UPDATE site_monitors SET consecutive_failures = 4 WHERE id = ?', [monitorId])
-  await assert.rejects(runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => loginPageResponse() }))
-  delta = await secondsUntilNextRun('justwoker_models')
+  await assert.rejects(runSiteMonitor('justwoker_models', { ...options, fetchImpl: async () => loginPageResponse() }))
   assert.equal((await dbGet('SELECT consecutive_failures FROM site_monitors WHERE id = ?', [monitorId])).consecutive_failures, 5)
-  assert.equal(delta > 1790 && delta <= 1800, true, `capped backoff delta=${delta}`)
+  assert.equal(await nextRunAt('justwoker_models'), '2026-09-13 05:30:00')
 
   // A later success clears the failure counter and returns to the plain period.
-  await runSiteMonitor('justwoker_models', { hostnameValidator: noDnsBlock, fetchImpl: async () => jsonResponse(['A']) })
+  await runSiteMonitor('justwoker_models', { ...options, fetchImpl: async () => jsonResponse(['A']) })
   assert.equal((await dbGet('SELECT consecutive_failures FROM site_monitors WHERE id = ?', [monitorId])).consecutive_failures, 0)
 })
 
@@ -159,6 +159,52 @@ test('rebuilding the baseline clears the snapshot and validators without emittin
   assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_items WHERE monitor_id = ? AND is_active = 1', [monitorId])).count, 2)
   assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_events WHERE monitor_id = ?', [monitorId])).count, eventsBefore)
   assert.equal((await dbGet("SELECT status FROM site_monitor_runs WHERE monitor_id = ? ORDER BY id DESC LIMIT 1", [monitorId])).status, 'success')
+})
+
+test('quiet window boundaries follow Beijing time regardless of the machine timezone', () => {
+  // 北京时间 2026-09-14 00:00 与 05:50 都在静默窗口内
+  assert.equal(isInQuietWindow(Date.UTC(2026, 8, 13, 16, 0, 0) / 1000), true)
+  assert.equal(isInQuietWindow(Date.UTC(2026, 8, 13, 21, 50, 0) / 1000), true)
+  // 北京时间 06:29:59 仍在窗口内，06:30:00 起不再静默
+  assert.equal(isInQuietWindow(Date.UTC(2026, 8, 13, 22, 29, 59) / 1000), true)
+  assert.equal(isInQuietWindow(Date.UTC(2026, 8, 13, 22, 30, 0) / 1000), false)
+  // 北京时间 23:59 在窗口外
+  assert.equal(isInQuietWindow(Date.UTC(2026, 8, 13, 15, 59, 0) / 1000), false)
+})
+
+test('next run times landing inside the quiet window are pushed to that day 06:30 Beijing', () => {
+  // 北京 23:50 + 60min = 北京 00:50，落入窗口 → 顺延到当天 06:30（UTC 22:30）
+  assert.equal(nextRunAtUtc(Date.UTC(2026, 8, 13, 15, 50, 0) / 1000, 3600), '2026-09-13 22:30:00')
+  // 北京 06:28 + 60s = 北京 06:29，仍在窗口 → 当天 06:30
+  assert.equal(nextRunAtUtc(Date.UTC(2026, 8, 13, 22, 28, 0) / 1000, 60), '2026-09-13 22:30:00')
+  // 北京 06:30:30 已出窗 → 原样保留
+  assert.equal(nextRunAtUtc(Date.UTC(2026, 8, 13, 22, 29, 30) / 1000, 60), '2026-09-13 22:30:30')
+  // 白天照常按间隔推进，不受影响
+  assert.equal(nextRunAtUtc(Date.UTC(2026, 8, 13, 5, 50, 0) / 1000, 3600), '2026-09-13 06:50:00')
+})
+
+test('the heartbeat stays silent during the quiet window and fetches nothing', async () => {
+  await resetMonitor('justwoker_models')
+  await resetMonitor('hzu_postgraduate')
+  await dbRun('UPDATE site_monitors SET enabled = 1, next_run_at = NULL')
+  const fetchImpl = countingFetch(() => { throw new Error('quiet hours must never fetch') })
+
+  // 北京时间 2026-09-14 03:00 = UTC 前一天 19:00
+  const results = await runDueSiteMonitors({ fetchImpl, hostnameValidator: noDnsBlock, nowMs: Date.UTC(2026, 8, 13, 19, 0, 0) })
+  assert.equal(results.length, 0)
+  assert.equal(fetchImpl.calls, 0)
+  assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_runs')).count, 0)
+})
+
+test('a run finishing inside the quiet window schedules its next check at 06:30 Beijing', async () => {
+  await resetMonitor('hzu_postgraduate')
+  await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async () => htmlResponse(ANNOUNCEMENT),
+    // 北京时间 2026-09-14 00:10 = UTC 前一天 16:10
+    nowMs: Date.UTC(2026, 8, 13, 16, 10, 0),
+  })
+  assert.equal(await nextRunAt('hzu_postgraduate'), '2026-09-13 22:30:00')
 })
 
 test.after(async () => {

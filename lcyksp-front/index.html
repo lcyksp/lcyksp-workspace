@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 预热 Cloudflare Turnstile 域名的 DNS+TLS，登录弹窗现拉人机验证脚本时握手已完成（手机高 RTT 提速明显，零服务器开销） -->
+    <link rel="preconnect" href="https://challenges.cloudflare.com" crossorigin />
+    <link rel="dns-prefetch" href="https://challenges.cloudflare.com" />
     <title>lcyksp.xyz — 数字化大本营</title>
   </head>
   <body>

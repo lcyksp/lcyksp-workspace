@@ -114,6 +114,11 @@ export default defineConfig({
       output: { manualChunks },
     },
   },
+  // PDF 压缩的 worker 会把 pdfjs-dist 也打进去，产物需要 code-split，
+  // 所以 worker 必须用 ESM 而不是默认的 iife（iife 不支持 code-splitting）。
+  worker: {
+    format: 'es',
+  },
   server: {
     port: 5173,
     proxy: {
