@@ -6,12 +6,14 @@ import { discoverActiveGithubSubscriptions } from './githubJobs.js';
 import { runGithubDigests, runPendingGithubSimulations } from './githubDigest.js';
 import { processSiteMonitorDeliveries } from './siteMonitorMailer.js';
 import { recoverInterruptedSiteMonitorRuns, runDueSiteMonitors } from './siteMonitorService.js';
+import { runDailySnapshot as runWtMarketSnapshot } from './wtMarket.js';
 
 const INTERVAL_MS = 5 * 60 * 1000;
 let timer = null;
 let digestTimer = null;
 let lastGithubRadarRun = 0;
 let lastDailyGithubPrepKey = '';
+let lastWtMarketSnapshotKey = '';
 
 async function cleanExpiredRecords() {
   let db;
@@ -30,6 +32,11 @@ async function cleanExpiredRecords() {
 
   db.run("DELETE FROM trend_snapshots WHERE created_at < datetime('now', '-30 days')", (err) => {
     if (err) console.error('[清道夫] 清理 30 天前趋势数据失败:', err.message);
+  });
+
+  // 战争雷霆操作日志保留 30 天（诊断用，够回溯一个月的登录/快照/搜索历史）
+  db.run("DELETE FROM wt_market_logs WHERE created_at < datetime('now', '-30 days')", (err) => {
+    if (err) console.error('[清道夫] 清理 30 天前战争雷霆日志失败:', err.message);
   });
 
   db.all('SELECT id, file_path FROM transfers WHERE expire_time < ?', [now], (err, rows) => {
@@ -114,6 +121,12 @@ export function startCron() {
     if (beijing.hour === '06' && Number(beijing.minute) >= 45 && lastDailyGithubPrepKey !== dailyKey) {
       lastDailyGithubPrepKey = dailyKey
       discoverActiveGithubSubscriptions().catch((error) => console.error('[GitHub Radar] daily preparation run failed:', error.message))
+    }
+    // 战争雷霆交易所：每天北京时间 07:20 后拉一次全目录快照（错开 GitHub 06:45）。
+    // 未配置凭据时 runDailySnapshot 自己静默跳过，不抛错。
+    if (beijing.hour === '07' && Number(beijing.minute) >= 20 && lastWtMarketSnapshotKey !== dailyKey) {
+      lastWtMarketSnapshotKey = dailyKey
+      runWtMarketSnapshot('auto').catch((error) => console.error('[WT Market] 每日快照失败:', error.message))
     }
     if (Date.now() - lastGithubRadarRun >= 4 * 60 * 60 * 1000) {
       lastGithubRadarRun = Date.now();

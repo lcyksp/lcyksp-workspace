@@ -80,8 +80,9 @@ function resetTurnstileWidget() {
 }
 
 async function renderTurnstile() {
-  // 登录与注册同强度：两种模式都渲染 widget
-  if (!turnstileEnabled.value || !dialogVisible.value) return
+  // 只在「注册」渲染 widget：登录已由后端「单账号 10 次/15 分钟」锁定防暴破，
+  // 不再让登录用户忍受移动端交互式挑战（转圈+点选）。注册保留，防批量注册机器人。
+  if (!turnstileEnabled.value || !dialogVisible.value || mode.value !== 'register') return
   await ensureTurnstileScript()
   await nextTick()
   if (!turnstileContainer.value || !window.turnstile) return
@@ -99,6 +100,8 @@ async function renderTurnstile() {
   turnstileWidgetId.value = window.turnstile.render(turnstileContainer.value, {
     sitekey: import.meta.env.VITE_TURNSTILE_SITE_KEY,
     theme: document.documentElement.hasAttribute('data-theme') ? 'light' : 'dark',
+    // 隐身：平时不打扰，仅 Cloudflare 判定可疑时才冒出挑战让用户点
+    appearance: 'interaction-only',
     callback: (token) => {
       turnstileToken.value = token
     },
@@ -129,7 +132,9 @@ async function handleSubmit() {
     ElMessage.warning('两次输入的密码不一致')
     return
   }
-  if (turnstileEnabled.value && !turnstileToken.value) {
+  // 仅注册要求人机验证 token；登录不再校验（后端也不校验登录 Turnstile）
+  // interaction-only 下无挑战时 token 为空属正常，Cloudflare 静默放行同样返回 token；此处只兜「该挑战却没过」
+  if (mode.value === 'register' && turnstileEnabled.value && !turnstileToken.value) {
     ElMessage.warning('请先完成人机验证')
     return
   }
@@ -142,7 +147,7 @@ async function handleSubmit() {
       password: form.password,
     }
 
-    if (turnstileEnabled.value) {
+    if (mode.value === 'register' && turnstileEnabled.value) {
       payload.turnstileToken = turnstileToken.value
     }
 
@@ -198,9 +203,9 @@ onBeforeUnmount(() => {
         暂不支持找回密码，请务必记住你的密码。
       </div>
 
-      <el-form-item v-if="turnstileEnabled" label="人机验证">
+      <el-form-item v-if="turnstileEnabled && mode === 'register'" label="人机验证">
         <div ref="turnstileContainer" class="turnstile-box" />
-        <div class="turnstile-hint">请完成人机验证后再{{ mode === 'login' ? '登录' : '提交注册' }}。</div>
+        <div class="turnstile-hint">系统会自动校验；若弹出验证请点击完成后再提交注册。</div>
       </el-form-item>
     </el-form>
 
@@ -243,7 +248,8 @@ onBeforeUnmount(() => {
 }
 
 .turnstile-box {
-  min-height: 66px;
+  /* interaction-only：无挑战时 widget 隐身、不占位；仅弹出挑战时才撑开，故不预留固定高度 */
+  min-height: 0;
 }
 
 .register-notice {

@@ -5,19 +5,43 @@ import os from 'os'
 import path from 'path'
 import { Readable } from 'stream'
 import { fileURLToPath } from 'url'
+import { fetch as undiciFetch, ProxyAgent } from 'undici'
 import sharp, { MAX_REMOTE_IMAGE_BYTES } from '../utils/imageGuard.js'
 import { generateABogus } from '../utils/douyin-a-bogus.js'
-import { authMiddleware, requireAuth } from '../middleware/auth.js'
+import { authMiddleware } from '../middleware/auth.js'
+import { requireAdmin } from '../middleware/requireAdmin.js'
 import { heavyLimiter, previewLimiter } from '../middleware/rateLimit.js'
 import { ACTION_ANALYZE, ACTION_DOWNLOAD, PLAN_FREE, buildQuotaExceededMessage, consumeQuota } from '../utils/quota.js'
 import { getClientIp } from '../utils/turnstile.js'
 import { logDownload } from '../utils/logger.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { recordGateProbe, getDouyinGateState, markDirectSuspect } from '../utils/douyinGateProbe.js'
+import {
+  poolEnabled,
+  getPoolProxy,
+  invalidatePoolProxy,
+  getPoolSnapshot,
+  addPool,
+  updatePool,
+  deletePool,
+  setActivePool,
+  upsertPrimaryPool,
+  writeLowBalanceThreshold,
+  checkPoolBalanceAndWarn,
+} from '../utils/douyinPool.js'
+import { claimDirectBudget, decideTaskExit, directBudgetState, resetDirectBudget, DIRECT_WINDOW_MS } from '../utils/douyinDirectBudget.js'
+import { buildZipStore } from '../utils/zipStore.js'
 import { getDb } from '../config/db.js'
 import { assertPublicUrl } from '../utils/ssrf.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = express.Router()
 router.use(authMiddleware)
+
+// 单次解析任务内的「出口粘性」：一个任务的多个上游请求必须走同一个出口
+// （ttwid 与出口 IP 是配对身份，混用容易被判异常），所以出口在每个请求上下文里只决定一次。
+const douyinTaskCtx = new AsyncLocalStorage()
+router.use((req, res, next) => { douyinTaskCtx.run({ exit: null }, next) })
 
 const DATA_DIR = path.resolve(__dirname, '../../data')
 const DEFAULT_COOKIES_PATH = path.join(DATA_DIR, 'cookies.txt')
@@ -53,7 +77,15 @@ const DOUYIN_DEBUG_DIR = path.join(DATA_DIR, 'debug')
 const DOUYIN_ANALYZE_CACHE_TTL_MS = 10 * 60 * 1000
 // 容量上限：防止只增不减的缓存导致内存缓慢增长
 const DOUYIN_ANALYZE_CACHE_MAX_SIZE = 300
-const DOUYIN_SIGNED_API_RETRY_DELAYS = [700, 1600, 3200]
+// 同 IP 退避重试的等待已内联在 fetchDouyinSignedDetailBody 的默认参数里（首轮 600/1500ms）：
+// 旧版固定 [700,1600,3200]，每轮都要白睡 5.5 秒，而真正的解法是换出口 IP（见外层重试循环）。
+// 图集打包下载的上限：抖音单篇图文最多约 35 张，60 张留足余量；总量上限防内存被打穿
+const MAX_ALBUM_IMAGES = 60
+const MAX_ALBUM_TOTAL_BYTES = 160 * 1024 * 1024
+// detail 请求超时：正常约 1s，12s 足够；超时是为了不把时间浪费在黑洞池 IP 上
+const DOUYIN_DETAIL_TIMEOUT_MS = 12000
+// 图片请求超时：单张几百 KB，30s 足够；同样是防黑洞出口把整包拖死
+const IMAGE_FETCH_TIMEOUT_MS = 30000
 const DOUYIN_IMAGE_HOST_ALLOWLIST = ['byteimg.com', 'douyinpic.com', 'tos-cn', 'p3-pc-sign', 'p6-sign', 'p9-pc-sign']
 const DOUYIN_IMAGE_URL_BLOCKLIST = [
   'douyinstatic.com',
@@ -243,17 +275,54 @@ function getCookiesMeta(platform) {
   return { platform, active, candidates }
 }
 
+// 直链（URL 路径里已含作品 ID）不做网络解析：机房出口访问 douyin.com 页面会被弹回首页，
+// 跟随重定向会把 /note/<id> 路径弄丢（实测 finalUrl 退化为裸域名，作品 ID 丢失）。
+// 只有 v.douyin.com 等短链才需要跟随重定向解析出真实地址。
+const DIRECT_AWEME_URL_RE = /^https?:\/\/(www\.)?douyin\.com\/(video|note|slideshow)\/\d+/i
+
+// 短链（v.douyin.com / b23.tv）解析出的作品页地址缓存：同一个分享链接短期重复解析直接复用，
+// 既省一次网络往返，也避免「第一次解析成功、重试时解析失败」这种自相矛盾的结果。
+const SHORT_URL_CACHE_TTL_MS = 30 * 60 * 1000
+const shortUrlCache = new Map()
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function resolveShareUrl(url) {
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: { 'User-Agent': DESKTOP_UA },
-    })
-    return response.url || url
-  } catch {
-    return url
+  if (DIRECT_AWEME_URL_RE.test(String(url || ''))) return url
+
+  const cachedEntry = shortUrlCache.get(url)
+  if (cachedEntry && Date.now() - cachedEntry.at < SHORT_URL_CACHE_TTL_MS) return cachedEntry.finalUrl
+
+  // 短链跳转本身不是风控面（只是一个 302），走直连比走池快得多、也不吃池额度；
+  // 2026-09-15 教训：曾经改走池，脏 IP 下重定向失败→返回原始短链→拿不到作品 ID→整单解析失败。
+  let lastErr = null
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: { 'User-Agent': DESKTOP_UA },
+        signal: AbortSignal.timeout(8000),
+      })
+      const finalUrl = response.url || url
+      if (finalUrl && finalUrl !== url) {
+        shortUrlCache.set(url, { finalUrl, at: Date.now() })
+        if (shortUrlCache.size > 200) {
+          const oldest = shortUrlCache.keys().next().value
+          shortUrlCache.delete(oldest)
+        }
+        return finalUrl
+      }
+      lastErr = new Error(`redirect did not resolve (HTTP ${response.status})`)
+    } catch (err) {
+      lastErr = err
+    }
+    if (attempt < 3) await sleep(250 * attempt)
   }
+  console.error('[Video] 短链解析失败，返回原始链接:', url, lastErr?.message || '')
+  return url
 }
 
 function buildCookieHeader(cookieMeta) {
@@ -310,39 +379,240 @@ let cachedTtwidCookie = ''
 let ttwidFetchTime = 0
 const TTWID_CACHE_TTL_MS = 60 * 60 * 1000
 
+// 抖音出站代理（可选）：DOUYIN_PROXY_URL 指向 HTTP(S) 代理网关（隧道代理/住宅出口/自建隧道）。
+// 只影响抖音上游请求；代理网关连不上时自动回落直连（连接级错误才回落，HTTP 4xx/5xx 原样抛出）。
+const DOUYIN_PROXY_URL = process.env.DOUYIN_PROXY_URL || ''
+let douyinProxyAgent = null
+const poolAgents = new Map() // 动态池短效 IP：一号一代理（容量上限防泄漏）
+
+function poolAgent(proxyUrl) {
+  let agent = poolAgents.get(proxyUrl)
+  if (!agent) {
+    agent = new ProxyAgent(proxyUrl)
+    poolAgents.set(proxyUrl, agent)
+    if (poolAgents.size > 12) {
+      poolAgents.delete(poolAgents.keys().next().value)
+    }
+  }
+  return agent
+}
+
+function isConnectionError(err) {
+  const code = err?.cause?.code || err?.code || ''
+  return ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET', 'EHOSTUNREACH'].includes(code)
+}
+
+// 抖音上游请求的出口选择器（按优先级，成本最优）：
+// ① 直连出口可用且「直连额度」没被用掉 → 直连（免费；额度见 douyinDirectBudget：每 4 小时一次）
+// ② 否则走动态池（按量付费，多个池自动轮换，某池耗尽自动切下一个）
+// ③ DOUYIN_PROXY_URL 静态代理（显式配置时兜底）
+// 一次解析任务内出口只决定一次（AsyncLocalStorage），连接级错误逐级回落；
+// 直连请求被抖音 403/超时拒绝时由上层自愈逻辑标记嫌疑并触发探测。
+async function resolveTaskExit() {
+  const store = douyinTaskCtx.getStore()
+  if (store?.exit) return store.exit
+
+  const hasPool = await poolEnabled()
+  const gate = getDouyinGateState().direct
+  // 只有探测确认 ok 才去争额度：unknown（刚重启还没探测）和 blocked 一律先走池，
+  // 否则重启后的第一笔解析会白白烧掉 4 小时额度、还要挨一次风控拒绝。
+  const budgetOk = hasPool && gate === 'ok' ? await claimDirectBudget() : false
+  const exit = decideTaskExit({ gate, hasPool, budgetOk })
+  if (store) store.exit = exit
+  return exit
+}
+
+/** 本轮任务实际上走的是不是直连出口（用于把 403 正确归因给服务器 IP，而不是池 IP）。 */
+function lastExitWasDirect() {
+  return douyinTaskCtx.getStore()?.lastExit === 'direct'
+}
+
+function markTaskExit(used) {
+  const store = douyinTaskCtx.getStore()
+  if (store) store.lastExit = used
+}
+
+async function douyinFetch(url, options = {}, exitOpt = {}) {
+  const mode = exitOpt.forcePool ? 'pool' : await resolveTaskExit()
+
+  if (mode === 'pool') {
+    let proxyUrl = null
+    try {
+      proxyUrl = await getPoolProxy(exitOpt.poolId ? { poolId: exitOpt.poolId } : {})
+    } catch (err) {
+      // 所有池都不可用/指定池不存在：回落直连，至少让用户这次解析有机会成功
+      if (!err.poolExhausted && !err.poolMissing) throw err
+      console.error(`[Douyin] ${err.message}，本次回落直连`)
+    }
+    if (proxyUrl) {
+      try {
+        const response = await undiciFetch(url, { ...options, dispatcher: poolAgent(proxyUrl) })
+        markTaskExit('pool')
+        return response
+      } catch (err) {
+        if (!isConnectionError(err)) throw err
+        console.error('[Douyin] pool proxy unreachable, falling back to direct')
+      }
+    }
+  }
+
+  if (DOUYIN_PROXY_URL) {
+    try {
+      if (!douyinProxyAgent) douyinProxyAgent = new ProxyAgent(DOUYIN_PROXY_URL)
+    } catch (err) {
+      console.error('[Douyin] invalid DOUYIN_PROXY_URL, falling back to direct:', err.message)
+      markTaskExit('direct')
+      return fetch(url, options)
+    }
+    try {
+      const response = await undiciFetch(url, { ...options, dispatcher: douyinProxyAgent })
+      markTaskExit('static-proxy')
+      return response
+    } catch (err) {
+      if (!isConnectionError(err)) throw err
+      console.error('[Douyin] proxy unreachable, falling back to direct')
+    }
+  }
+  markTaskExit('direct')
+  return fetch(url, options)
+}
+
+const TTWID_REGISTER_URL = 'https://ttwid.bytedance.com/ttwid/union/register/'
+const TTWID_REGISTER_BODY = JSON.stringify({
+  region: 'cn',
+  aid: 1768,
+  needFp: 'true',
+  fp: 'verify_l0123456_1234_1234_1234_123456789012',
+  service: 'www.douyin.com',
+  migrate_info: { ticket: '', source: 'node' },
+  cb: 'user_unique_id',
+})
+
+async function registerTtwid(viaPool) {
+  const init = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': DESKTOP_UA,
+    },
+    body: TTWID_REGISTER_BODY,
+    signal: AbortSignal.timeout(8000),
+  }
+  const res = viaPool ? await douyinFetch(TTWID_REGISTER_URL, init) : await fetch(TTWID_REGISTER_URL, init)
+  const getSetCookie = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [res.headers.get('set-cookie') || '']
+  for (const c of getSetCookie) {
+    if (c && c.includes('ttwid=')) return c.split(';')[0].trim()
+  }
+  return ''
+}
+
 async function getOrFetchTtwidCookie() {
   if (cachedTtwidCookie && Date.now() - ttwidFetchTime < TTWID_CACHE_TTL_MS) {
     return cachedTtwidCookie
   }
-  try {
-    const res = await fetch('https://ttwid.bytedance.com/ttwid/union/register/', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': DESKTOP_UA,
-      },
-      body: JSON.stringify({
-        region: 'cn',
-        aid: 1768,
-        needFp: 'true',
-        fp: 'verify_l0123456_1234_1234_1234_123456789012',
-        service: 'www.douyin.com',
-        migrate_info: { ticket: '', source: 'node' },
-        cb: 'user_unique_id',
-      }),
-    })
-    const getSetCookie = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [res.headers.get('set-cookie') || '']
-    for (const c of getSetCookie) {
-      if (c && c.includes('ttwid=')) {
-        cachedTtwidCookie = c.split(';')[0].trim()
+  // ttwid 是浏览器指纹 cookie、不绑定出口 IP，而 ttwid.bytedance.com 也不是抖音风控接口：
+  // 直连注册最快最稳（少一次池往返），失败再退回池出口。历史教训：注册也走池时，
+  // 一个脏 IP 会让「换新 IP 重试」的 ttwid 注册失败，整单解析被判死。
+  const plan = [false, false, true]
+  for (let i = 0; i < plan.length; i += 1) {
+    try {
+      const ttwid = await registerTtwid(plan[i])
+      if (ttwid) {
+        cachedTtwidCookie = ttwid
         ttwidFetchTime = Date.now()
         return cachedTtwidCookie
       }
+    } catch (err) {
+      console.error(`[Douyin] ttwid 注册失败(${plan[i] ? '池' : '直连'}):`, err.message)
     }
-  } catch (err) {
-    console.error('[Douyin] Failed to register ttwid cookie:', err.message)
+    if (i < plan.length - 1) await sleep(300 * (i + 1))
   }
   return cachedTtwidCookie || ''
+}
+
+/** 403/429 自愈用：丢弃缓存的 ttwid，重新注册一个全新的。 */
+async function forceRefreshTtwidCookie() {
+  cachedTtwidCookie = null
+  ttwidFetchTime = 0
+  return getOrFetchTtwidCookie()
+}
+
+/** 保留 cookie 串里其它字段（如登录态），仅把 ttwid 换成新注册的。 */
+function rebuildCookieHeaderWithFreshTtwid(header, freshTtwid) {
+  const parts = String(header || '')
+    .split(';')
+    .map((item) => item.trim())
+    .filter((item) => item && !/^ttwid=/i.test(item))
+  parts.push(freshTtwid)
+  return parts.join('; ')
+}
+
+// —— 出口网关探测：跟踪机房 IP 的解封状态，状态翻转时由 douyinGateProbe 发邮件 ——
+// 探测依据是 HTTP 状态码而非作品内容（作品被删时 API 仍返回 200 + filter JSON，网关状态照常可判）。
+// 若探测目标将来失效，可用 DOUYIN_GATE_PROBE_ID 换成任意公开作品 ID，无需改代码。
+const DOUYIN_GATE_PROBE_AWEME_ID = process.env.DOUYIN_GATE_PROBE_ID || '7684182405306355818'
+async function probeDouyinGateState() {
+  const cookiesMeta = getCookiesMeta('douyin')
+  let cookieHeader = buildCookieHeader(cookiesMeta)
+  if (!cookieHeader || !cookieHeader.includes('ttwid=')) {
+    const ttwid = await getOrFetchTtwidCookie()
+    if (ttwid) cookieHeader = cookieHeader ? `${cookieHeader}; ${ttwid}` : ttwid
+  }
+  const query = buildDouyinDetailParams(DOUYIN_GATE_PROBE_AWEME_ID).toString()
+  const aBogus = generateABogus(query, DESKTOP_UA)
+  const detailUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?${query}&a_bogus=${encodeURIComponent(aBogus)}`
+  const probeHeaders = {
+    'User-Agent': DESKTOP_UA,
+    Referer: 'https://www.douyin.com/',
+    Accept: 'application/json, text/plain, */*',
+    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+  }
+
+  // 只探测直连出口（本机公网 IP 是否被抖音解封）——裸 fetch，不消耗任何池额度。
+  // 池出口的健康度不需要专门探测：真实解析失败时的自动换 IP 重试就是现场检验，
+  // 池子整体死亡会以解析失败的形式暴露给站长（错误文案已如实化）。
+  let directOk = false
+  try {
+    const r = await fetch(detailUrl, { headers: probeHeaders, signal: AbortSignal.timeout(10000) })
+    directOk = r.ok
+    try { await r.body?.cancel?.() } catch { /* noop */ }
+  } catch (err) {
+    console.error('[DouyinGate] 直连探测请求失败:', err.message)
+  }
+
+  recordGateProbe(directOk)
+}
+
+// 探测周期（2026-09-13 站长拍板：每 4 小时一次；状态翻转不再发邮件）。
+// 一轮 = 探测直连出口 + 顺带查一次各池余量（低于阈值发预警邮件）。
+const DOUYIN_GATE_PROBE_INTERVAL_MS = 4 * 60 * 60 * 1000
+async function runDouyinGateCycle() {
+  try {
+    await probeDouyinGateState()
+  } catch (err) {
+    console.error('[DouyinGate] 探测失败:', err.message)
+  }
+  try {
+    await checkPoolBalanceAndWarn()
+  } catch (err) {
+    console.error('[DouyinPool] 余量检查失败:', err.message)
+  }
+}
+
+if (process.env.NODE_ENV === 'production') {
+  const gateFirstProbe = setTimeout(() => { runDouyinGateCycle().catch(() => {}) }, 30 * 1000)
+  gateFirstProbe.unref?.()
+  const gateProbeTimer = setInterval(() => { runDouyinGateCycle().catch(() => {}) }, DOUYIN_GATE_PROBE_INTERVAL_MS)
+  gateProbeTimer.unref?.()
+}
+
+// 请求级 403/超时后的去抖探测：让出口状态尽快翻转（限 10 分钟一次，防风暴）
+let lastAutoProbe = 0
+function triggerAutoProbe() {
+  const now = Date.now()
+  if (now - lastAutoProbe < 10 * 60 * 1000) return
+  lastAutoProbe = now
+  probeDouyinGateState().catch(() => {})
 }
 
 async function fetchDouyinPageHtml(url, options = {}) {
@@ -354,7 +624,7 @@ async function fetchDouyinPageHtml(url, options = {}) {
       cookieHeader = cookieHeader ? `${cookieHeader}; ${ttwid}` : ttwid
     }
   }
-  const response = await fetch(url, {
+  const response = await douyinFetch(url, {
     method: 'GET',
     redirect: 'follow',
     headers: {
@@ -590,8 +860,13 @@ function pickBestDouyinVideoUrl(candidates) {
     .sort((a, b) => scoreDouyinVideoUrl(b) - scoreDouyinVideoUrl(a))[0] || ''
 }
 
-function buildDouyinAnalyzeResult({ title, url, video = null, audio = null, images = [], source }) {
+function buildDouyinAnalyzeResult({ title, url, video = null, audio = null, images = [], source, imagePost = false }) {
   const formats = []
+
+  // 图文/图集（images 非空）：detail.video.play_addr 实测返回的是 BGM 文件
+  // （content-type: audio/mp4，magic ftypM4A），并不是可下载的视频，
+  // 所以只暴露「背景音乐 + 图片」两类格式，不再给出视频选项（2026-09-16 站长反馈）。
+  const isImagePost = imagePost || images.length > 0
 
   if (video?.url) {
     formats.push({
@@ -608,18 +883,21 @@ function buildDouyinAnalyzeResult({ title, url, video = null, audio = null, imag
     })
   }
 
-   if (video?.url) {
+  // 视频作品的「仅音频」与图文的「背景音乐」共用同一条音频下载链路（服务端统一转 MP3），
+  // 扩展名因此固定为 mp3，避免前端把 MP3 字节存成 .m4a。
+  const audioUrl = audio?.url || video?.url || ''
+  if (audioUrl) {
     formats.push({
       formatId: source === 'browser-automation' ? 'browser-audio' : 'direct-audio',
-      quality: '仅音频',
-      ext: audio?.url ? inferExtensionFromUrl(audio.url, 'm4a') : 'mp3',
+      quality: isImagePost ? '背景音乐' : '仅音频',
+      ext: 'mp3',
       filesize: '大小未知',
       hasAudio: true,
       mediaType: 'audio',
-      directUrl: audio?.url || video.url,
-      audioUrl: audio?.url || video.url,
+      directUrl: audioUrl,
+      audioUrl,
       contentType: audio?.contentType || 'audio/mpeg',
-      sourceCandidates: audio?.sourceCandidates || video.sourceCandidates || [],
+      sourceCandidates: audio?.sourceCandidates || video?.sourceCandidates || [],
     })
   }
 
@@ -728,6 +1006,24 @@ function extractDouyinTitleFromDetail(detail) {
   return detail?.desc || detail?.preview_title || detail?.share_info?.share_title || detail?.mix_info?.mix_name || ''
 }
 
+/**
+ * 图文的 BGM 来源：detail.music.play_url 是真正的原声；
+ * 实测图文里 video.play_addr 也指向同一个 BGM 文件（content-type: audio/mp4），作为回退。
+ */
+function normalizeDouyinBgmAudio(detail) {
+  const candidates = dedupeStrings([
+    pickFirstUrl(detail?.music?.play_url?.url_list),
+    pickFirstUrl(detail?.music?.play_url),
+    pickFirstUrl(detail?.video?.play_addr?.url_list),
+    pickFirstUrl(detail?.video?.play_addr_h264?.url_list),
+  ])
+    .map((item) => normalizeDouyinVideoUrl(item))
+    .filter(Boolean)
+
+  if (!candidates.length) return null
+  return { url: candidates[0], contentType: 'audio/mp4', sourceCandidates: candidates }
+}
+
 function getDouyinAnalyzeCache(url) {
   const cached = douyinAnalyzeCache.get(url)
   if (!cached) return null
@@ -747,17 +1043,19 @@ function setDouyinAnalyzeCache(url, data) {
   douyinAnalyzeCache.set(url, { createdAt: Date.now(), data })
 }
 
-// 抖音对同 IP 短时间内的 detail 请求会随机下发 403（实测约 1/3 概率），退避重试即可恢复
-async function fetchDouyinSignedDetailBody(awemeId, cookieHeader) {
+// 抖音对同 IP 短时间内的 detail 请求会随机下发 403（实测约 1/3 概率），退避重试即可恢复。
+// 首轮（当前 IP）给 3 次尝试，但退避砍短（旧版 700+1600+3200 最坏白睡 5.5 秒，是「解析很久」的主因）；
+// 后续轮次已经换了新 IP，只留 1 次快速重试——换 IP 才是真正解法，同 IP 反复睡没意义。
+async function fetchDouyinSignedDetailBody(awemeId, cookieHeader, { maxAttempts = 3, delays = [600, 1500] } = {}) {
   let lastStatus = 0
-  for (let attempt = 0; attempt <= DOUYIN_SIGNED_API_RETRY_DELAYS.length; attempt += 1) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (attempt > 0) {
-      await new Promise((resolve) => setTimeout(resolve, DOUYIN_SIGNED_API_RETRY_DELAYS[attempt - 1]))
+      await sleep(delays[attempt - 1] ?? delays[delays.length - 1] ?? 500)
     }
 
     const query = buildDouyinDetailParams(awemeId).toString()
     const aBogus = generateABogus(query, DESKTOP_UA)
-    const response = await fetch(
+    const response = await douyinFetch(
       `https://www.douyin.com/aweme/v1/web/aweme/detail/?${query}&a_bogus=${encodeURIComponent(aBogus)}`,
       {
         method: 'GET',
@@ -770,11 +1068,20 @@ async function fetchDouyinSignedDetailBody(awemeId, cookieHeader) {
           Cookie: cookieHeader,
           'x-requested-with': 'XMLHttpRequest',
         },
+        // 池里难免抽到「TCP 通、永不回包」的黑洞 IP。不给超时就会一直挂着——
+        // 2026-09-16 实测一次解析因此在单个死 IP 上白等 120 秒才失败换 IP。
+        // 正常请求实测约 1 秒，给 12 秒足够；超时即抛错，外层立刻换新 IP 重试。
+        signal: AbortSignal.timeout(DOUYIN_DETAIL_TIMEOUT_MS),
       },
     )
 
     const text = await response.text()
     if (response.ok && text) return text
+    // 200 但响应体为空 = 风控静默拒绝（过期 ttwid 的典型表现），重试同一个 ttwid
+    // 没有意义，直接抛出可识别错误，交给上层做「换新 ttwid」的自愈重试。
+    if (response.ok && !text) {
+      throw new Error('douyin signed api returned empty body (silent risk-control rejection)')
+    }
 
     lastStatus = response.status
     if (response.status !== 403 && response.status !== 429 && response.status < 500) break
@@ -783,24 +1090,121 @@ async function fetchDouyinSignedDetailBody(awemeId, cookieHeader) {
   throw new Error(`douyin signed api failed: HTTP ${lastStatus}`)
 }
 
+/**
+ * 出口预热（fire-and-forget）：短链解析走直连，于是「提取池 IP」和「注册 ttwid」这两件
+ * 串行在关键路径上的事可以并行做掉，解析能省 0.5~2 秒。失败无所谓，正式请求会自己兜。
+ *
+ * 省额度两条闸门：① 出口决策不是 pool 就不提取（直连模式零消耗）；
+ * ② 该作品已有新鲜解析缓存时不提取——重复点击「解析」会命中缓存直接返回，预热等于白烧一个 IP。
+ */
+function hasFreshAnalyzeCacheFor(url) {
+  const id = extractDouyinAwemeId(url)
+  if (!id) return false
+  for (const [key, entry] of douyinAnalyzeCache) {
+    if (Date.now() - entry.createdAt > DOUYIN_ANALYZE_CACHE_TTL_MS) continue
+    if (String(key).includes(id)) return true
+  }
+  return false
+}
+
+async function warmDouyinExit(inputUrl) {
+  try {
+    const exit = await resolveTaskExit()
+    const skipPool = exit !== 'pool' || hasFreshAnalyzeCacheFor(inputUrl)
+    await Promise.allSettled([
+      skipPool ? Promise.resolve(null) : getPoolProxy(),
+      getOrFetchTtwidCookie(),
+    ])
+  } catch { /* 预热失败不影响正式流程 */ }
+}
+
 async function analyzeDouyinViaSignedApi(url, options = {}) {
   const finalUrl = await resolveShareUrl(url)
   const cached = getDouyinAnalyzeCache(finalUrl)
   if (cached) return cached
 
   const awemeId = extractDouyinAwemeId(finalUrl)
-  if (!awemeId) throw new Error('unable to extract douyin aweme id')
+  if (!awemeId) {
+    // 多数情况是短链没跳成作品页（网络抖动/被弹回），不是作品不存在；如实报出去让人重试
+    throw new Error(`unable to extract douyin aweme id (resolved: ${String(finalUrl).slice(0, 90)})`)
+  }
 
   const cookiesMeta = getCookiesMeta('douyin')
   let cookieHeader = options.customCookieHeader || buildCookieHeader(cookiesMeta)
+  let usedFreshTtwid = false
   if (!cookieHeader || !cookieHeader.includes('ttwid=')) {
     const ttwid = await getOrFetchTtwidCookie()
     if (ttwid) {
       cookieHeader = cookieHeader ? `${cookieHeader}; ${ttwid}` : ttwid
+      usedFreshTtwid = true
     }
   }
 
-  const text = await fetchDouyinSignedDetailBody(awemeId, cookieHeader)
+  // 出口被拒（403/429/空响应）时的恢复序列：
+  //  池模式：最多 3 次，每次 = 作废当前池 IP + 重新提取 + 新注册 ttwid（全新 IP+身份组合）
+  //  直连模式：最多 2 次，第 2 次仅换 ttwid（出口不变）；首次已用刚注册的 ttwid 时不重复换
+  // 带 sessionid 的登录 cookie 不参与任何轮换（避免破坏会话、避免登录态跳 IP）。
+  let text = null
+  let lastError = null
+  const poolReady = await poolEnabled()
+  // 池模式下每次重试只花 1~4 秒（换 IP + 直连注册 ttwid），所以给到 4 次换取成功率；
+  // 直连模式没得换，2 次足够（第 2 次仅换 ttwid）。
+  // 省额度：路由层的第二轮回退只在首轮全败后触发，那时只给 2 次机会（options.signedApiMaxAttempts），
+  // 避免一次失败最多烧掉 8 个 IP。
+  const maxAttempts = options.signedApiMaxAttempts || (poolReady ? 4 : 2)
+  // 下一轮是否换出口 IP（由上一轮失败原因决定；静默拒绝 = ttwid 过期，复用同一 IP 省额度）
+  let rotateIpNext = true
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let header = cookieHeader
+    try {
+      if (attempt > 1) {
+        // 省 IP 的关键：按失败原因决定要不要换出口。
+        //  - 「200 空响应」是过期 ttwid 的典型表现 → 同一个 IP 换个 ttwid 就够了，不烧新 IP；
+        //  - 403/429/超时 才是 IP 被判可疑 → 必须换 IP。
+        // 换 IP 与重新注册 ttwid 互不依赖，并行做以省一次串行等待。
+        const wantPool = poolReady && douyinTaskCtx.getStore()?.exit === 'pool'
+        const rotateIp = wantPool && rotateIpNext
+        if (rotateIp) invalidatePoolProxy()
+        const [freshTtwid] = await Promise.all([
+          forceRefreshTtwidCookie(),
+          rotateIp ? getPoolProxy().catch(() => null) : Promise.resolve(null),
+        ])
+        if (freshTtwid) {
+          header = rebuildCookieHeaderWithFreshTtwid(cookieHeader, freshTtwid)
+          console.error(`[Video] signed-api rejected, retrying (${attempt}/${maxAttempts}) with fresh ttwid${rotateIp ? ' + fresh pool ip' : '（复用同一出口 IP，省额度）'}`)
+        } else {
+          // ttwid 注册失败也要继续：换新出口 IP 本身就是主要解法，不能因此放弃重试
+          console.error(`[Video] ttwid 注册失败，仍换新出口 IP 重试 (${attempt}/${maxAttempts})`)
+        }
+      }
+      text = await fetchDouyinSignedDetailBody(
+        awemeId,
+        header,
+        attempt === 1 ? undefined : { maxAttempts: 2, delays: [400] },
+      )
+      break
+    } catch (error) {
+      lastError = error
+      const reason = String(error?.message || '')
+      const silentRejection = /empty body/i.test(reason)
+      const status = /HTTP (\d{3})/.exec(reason)?.[1]
+      const stale = ['403', '429'].includes(status) || silentRejection || /timeout|abort/i.test(reason)
+      // 静默拒绝更像 ttwid 过期而非 IP 脏：下一轮先不换 IP，只换 ttwid（零 IP 消耗）
+      rotateIpNext = !silentRejection
+      // 只有「这一轮真的走了直连」才把嫌疑记到直连出口头上——池 IP 被拒跟服务器 IP 无关
+      if (stale && lastExitWasDirect()) {
+        // 请求级实时信号：直连嫌疑标记（出口选择器立即切换池）+ 去抖探测（权威判定走定时探测）
+        markDirectSuspect()
+        triggerAutoProbe()
+      }
+      const rotationBlocked = /sessionid=/i.test(cookieHeader) || (usedFreshTtwid && !poolReady && attempt === 1)
+      if (stale && rotationBlocked) {
+        console.error('[Video] 携带登录 cookie（sessionid），按既定策略不做出口/ttwid 轮换，直接上抛由兜底路径处理')
+      }
+      if (!stale || rotationBlocked || attempt === maxAttempts) throw error
+    }
+  }
+  if (!text) throw (lastError || new Error('douyin signed api attempts exhausted'))
 
   writeDouyinDebugFile('douyin-signed-api-response.json', text)
 
@@ -813,21 +1217,49 @@ async function analyzeDouyinViaSignedApi(url, options = {}) {
 
   const detail = payload?.aweme_detail
   if (!detail || typeof detail !== 'object') {
+    // 抖音对「已删除/设为私密/权限受限」的作品返回 200 + aweme_detail:null + filter_detail（见 F12），
+    // 这是接口的权威判定——作为终态错误向上抛，跳过其余解析路径与兜底。
+    const fd = payload?.filter_detail
+    if (fd && (fd.filter_reason || fd.detail_msg)) {
+      const err = new Error(`DOUYIN_WORK_UNAVAILABLE: ${fd.detail_msg || fd.filter_reason}`)
+      err.workUnavailable = true
+      err.filterReason = fd.filter_reason || ''
+      throw err
+    }
     throw new Error(`douyin signed api missing aweme_detail: ${payload?.status_msg || payload?.message || 'unknown error'}`)
   }
 
+  const images = normalizeDouyinSignedApiImages(detail)
+  const isImagePost = images.length > 0
   const result = buildDouyinAnalyzeResult({
     title: extractDouyinTitleFromDetail(detail),
     url: finalUrl,
-    video: normalizeDouyinSignedApiVideo(detail),
-    audio: null,
-    images: normalizeDouyinSignedApiImages(detail),
+    // 图文/图集里 video.play_addr 是 BGM，不当作视频下载项；改由 normalizeDouyinBgmAudio 提供音频
+    video: isImagePost ? null : normalizeDouyinSignedApiVideo(detail),
+    audio: isImagePost ? normalizeDouyinBgmAudio(detail) : null,
+    images,
     source: 'signed-api',
+    imagePost: isImagePost,
   })
 
   if (!result.formats.length) throw new Error('douyin signed api did not return usable media')
   setDouyinAnalyzeCache(finalUrl, result)
   return result
+}
+
+/**
+ * 图集打包时图片直链失效（CDN 签名过期 / 403）的兜底：重新走一次解析拿新直链。
+ * 走的是解析缓存优先的链路——缓存命中时零池 IP 消耗，只有真的过期了才会重新解析。
+ */
+async function refreshDouyinAlbumImageUrls(finalUrl) {
+  try {
+    const data = await analyzeDouyinViaSignedApi(finalUrl)
+    const urls = (data?.formats || []).filter((item) => item.mediaType === 'image').map((item) => item.directUrl).filter(Boolean)
+    return urls.length ? urls : null
+  } catch (error) {
+    console.error('[Video] 图集直链刷新失败:', error?.message || String(error))
+    return null
+  }
 }
 
 // 下载时按 formatId 的语义（图/音/视频）回到签名链路取直链，不依赖前端回传，也兼容 yt-dlp 兜底出的格式 id
@@ -915,8 +1347,22 @@ function collectNestedMediaUrls(value, acc = { images: [], videos: [] }) {
   return acc
 }
 
+/** 抖音作品页判定：短链解析必须落在 /video/<id> 或 /note/<id>（或 iesdouyin 分享页），
+ * 否则说明被风控弹到了首页/聚合页——那种页面上的图片全是杂图，绝不能当图集结果返回。 */
+function isAwemePageUrl(url) {
+  return /douyin\.com\/(video|note)\/\d+/i.test(String(url || '')) || /iesdouyin\.com\/share/i.test(String(url || ''))
+}
+
+// 抖音图集单作品上限约 35 张：抓回来超过这个数的基本都是把整个页面当图集刮了，宁可报错也不给垃圾结果。
+const DOUYIN_GALLERY_MAX_IMAGES = 40
+
 async function analyzeDouyinViaRequest(url, options = {}) {
   const finalUrl = await resolveShareUrl(url)
+  if (!isAwemePageUrl(finalUrl)) {
+    console.error('[Video] request-extract abort: 分享链接没有落在作品页:', finalUrl.slice(0, 120))
+    // 复用既有文案通道（normalizeVideoError 会把它归因为风控拦截）
+    throw new Error(`douyin page request failed: share url did not land on an aweme page (${finalUrl.slice(0, 100)})`)
+  }
   const cached = getDouyinAnalyzeCache(finalUrl)
   if (cached) return cached
 
@@ -974,6 +1420,11 @@ async function analyzeDouyinViaRequest(url, options = {}) {
     if (videoUrl) {
       video = { url: videoUrl, contentType: 'video/mp4' }
     }
+  }
+
+  if (images.length > DOUYIN_GALLERY_MAX_IMAGES) {
+    console.error(`[Video] request-extract abort: 刮到 ${images.length} 张图，远超图集上限，判定为垃圾结果`)
+    throw new Error('douyin page request failed: extracted media looks like a feed page, not an aweme')
   }
 
   if (!images.length && !video) {
@@ -1094,12 +1545,32 @@ function normalizeVideoError(errorMessage, url, cookiesMeta) {
     return `B站拒绝了当前抓取请求（HTTP 412）。通常需要新的 B站 cookies。${cookieHint}`
   }
 
+  if (platform === 'douyin' && /unable to extract douyin aweme id/i.test(message)) {
+    return '这条分享链接没能定位到具体作品（短链跳转失败或链接里不含作品 ID）。请重试一次；若仍失败，请在抖音里打开作品后复制「分享 → 复制链接」再试。'
+  }
+
+  if (platform === 'douyin' && /short link resolve failed|did not land on an aweme page/i.test(message)) {
+    return '抖音这次没能返回作品数据（多半是这次抽到的出口 IP 被限流，不是作品下架）。请隔几秒重试；连续多次失败就等几分钟再试。'
+  }
+
   if (platform === 'douyin' && /403|forbidden|fresh cookies/i.test(message)) {
-    return '抖音接口临时限流，请隔几秒再试一次。若反复失败，说明该作品在抖音已不可见。'
+    return '抖音拒绝了这次请求（出口 IP 被判可疑，不是作品下架）。请隔几秒重试一次，通常第二次就会成功。'
   }
 
   if (platform === 'douyin' && /cookies/i.test(message)) {
     return `抖音解析被拒绝。${cookieHint}`
+  }
+
+  if (platform === 'douyin' && /did not find usable douyin media|douyin page request failed/i.test(message)) {
+    return '抖音这次没能返回作品数据（出口 IP 被限流或页面被弹回，不是作品下架）。请隔几秒重试；连续多次失败就等几分钟再试。'
+  }
+
+  if (message.startsWith('DOUYIN_WORK_UNAVAILABLE:')) {
+    const reason = message.slice('DOUYIN_WORK_UNAVAILABLE:'.length).trim()
+    if (/status_self_see/i.test(reason) || /删除/.test(reason)) {
+      return '该作品已被作者删除或设为私密，无法解析。'
+    }
+    return `该作品当前不可见（${reason}），无法解析。`
   }
 
   if (
@@ -1271,65 +1742,6 @@ async function streamDirectMediaDownload({ mediaUrl, title, res, contentType, cu
   })
 }
 
-// Helper to parse JSON cookies (from Cookie-Editor) and convert to Netscape format
-function convertJsonToNetscape(jsonStr) {
-  let cookies = []
-  try {
-    cookies = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr
-  } catch (e) {
-    throw new Error('Cookie JSON 格式不正确')
-  }
-  if (!Array.isArray(cookies)) {
-    throw new Error('Cookie JSON 应为数组格式')
-  }
-
-  let lines = [
-    '# Netscape HTTP Cookie File',
-    '# This file is generated by lcyksp. Do not edit.',
-    ''
-  ]
-
-  for (const c of cookies) {
-    if (!c.domain || !c.name) continue
-    const domain = c.domain
-    const flag = domain.startsWith('.') ? 'TRUE' : 'FALSE'
-    const path = c.path || '/'
-    const secure = c.secure ? 'TRUE' : 'FALSE'
-    const expiration = c.expirationDate ? Math.round(c.expirationDate) : 0
-    const name = c.name
-    const value = c.value || ''
-    const prefix = c.httpOnly ? '#HttpOnly_' : ''
-    lines.push(`${prefix}${domain}\t${flag}\t${path}\t${secure}\t${expiration}\t${name}\t${value}`)
-  }
-
-  return lines.join('\n') + '\n'
-}
-
-// Helper to build header Cookie string from JSON cookies
-function buildCookieHeaderFromJson(jsonStr) {
-  let cookies = []
-  try {
-    cookies = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr
-  } catch (e) {
-    return ''
-  }
-  if (!Array.isArray(cookies)) return ''
-  return cookies
-    .map((c) => (c.name && c.value ? `${c.name}=${c.value}` : ''))
-    .filter(Boolean)
-    .join('; ')
-}
-
-function getStoredCookie(userId) {
-  const db = getDb()
-  return new Promise((resolve, reject) => {
-    db.get('SELECT cookie_json FROM user_cookies WHERE user_id = ?', [userId], (err, row) => {
-      if (err) return reject(err)
-      resolve(row ? row.cookie_json : null)
-    })
-  })
-}
-
 /**
  * 把远端响应体读进内存，但带硬上限。
  * 原来直接 response.arrayBuffer()，对方给多大就吃多大——一个链接就能把 2G 机器打穿。
@@ -1354,9 +1766,10 @@ async function readBodyWithLimit(response, limit = MAX_REMOTE_IMAGE_BYTES) {
   return Buffer.concat(chunks)
 }
 
-async function streamDirectImageAsJpeg({ mediaUrl, title, res, customCookieHeader }) {
+/** 取一张抖音图片并统一转成 JPEG（图集打包与单张下载共用）。注意：媒体链路不走代理，零池 IP 消耗。 */
+async function fetchDouyinImageAsJpeg(mediaUrl) {
   const cookiesMeta = getCookiesMeta('douyin')
-  const cookieHeader = customCookieHeader || buildCookieHeader(cookiesMeta)
+  const cookieHeader = buildCookieHeader(cookiesMeta)
   const response = await fetch(mediaUrl, {
     headers: {
       'User-Agent': DESKTOP_UA,
@@ -1369,13 +1782,18 @@ async function streamDirectImageAsJpeg({ mediaUrl, title, res, customCookieHeade
       ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     },
     redirect: 'follow',
+    signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS),
   })
 
   if (!response.ok || !response.body) {
     throw new Error(`图片下载失败: HTTP ${response.status}`)
   }
 
-  const jpegBuffer = await sharp(await readBodyWithLimit(response)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
+  return sharp(await readBodyWithLimit(response)).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
+}
+
+async function streamDirectImageAsJpeg({ mediaUrl, title, res }) {
+  const jpegBuffer = await fetchDouyinImageAsJpeg(mediaUrl)
 
   res.setHeader('Content-Type', 'image/jpeg')
   res.setHeader('Content-Disposition', buildDownloadDisposition(title || 'download', '.jpg'))
@@ -1411,6 +1829,18 @@ async function proxyImagePreview({ mediaUrl, res, customCookieHeader }) {
   res.end(jpegBuffer)
 }
 
+/** ffmpeg 失败时 stderr 开头是十几行版本/编译横幅，真正的报错在结尾——只把有意义的尾部当错误抛出去。 */
+function ffmpegErrorText(stderr, fallback = '') {
+  const banner = /^(ffmpeg version|built with|configuration|libav\S*|libsw\S*|compiler|gcc|clang)/i
+  const lines = String(stderr || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !banner.test(line))
+  const meaningful = lines.slice(-3).join(' | ')
+  return (meaningful || String(stderr || '').trim()).slice(0, 300) || fallback
+}
+
 async function extractDirectAudioToResponse({ mediaUrl, title, tempDir, res, customCookieHeader }) {
   const inputPath = path.join(tempDir, 'input-video.mp4')
   const outputPath = path.join(tempDir, 'output-audio.mp3')
@@ -1435,7 +1865,7 @@ async function extractDirectAudioToResponse({ mediaUrl, title, tempDir, res, cus
 
     proc.on('close', (code) => {
       if (code === 0) resolve()
-      else reject(new Error(stderr.trim().slice(0, 1200) || `ffmpeg 退出码 ${code}`))
+      else reject(new Error(ffmpegErrorText(stderr, `ffmpeg 退出码 ${code}`)))
     })
   })
 
@@ -1512,7 +1942,7 @@ async function mergeBrowserVideoAudioToResponse({ videoUrl, audioUrl, title, tem
 
     proc.on('close', (code) => {
       if (code === 0) resolve()
-      else reject(new Error(stderr.trim().slice(0, 1200) || `ffmpeg 退出码 ${code}`))
+      else reject(new Error(ffmpegErrorText(stderr, `ffmpeg 退出码 ${code}`)))
     })
   })
 
@@ -1558,67 +1988,150 @@ router.get('/status', (_req, res) => {
   })
 })
 
-// 获取用户自定义的 Cookie
-router.get('/cookie', requireAuth, async (req, res, next) => {
+// 管理员查看抖音出口网关探测状态
+router.get('/gate-state', requireAdmin, (req, res) => {
+  res.json({ success: true, ...getDouyinGateState() })
+})
+
+// 管理员读取抖音解析出口配置（池列表 + 余量 + 直连额度；提取链接一律脱敏返回）
+router.get('/pool-config', requireAdmin, async (req, res, next) => {
   try {
-    const db = getDb()
-    db.get('SELECT cookie_json FROM user_cookies WHERE user_id = ?', [req.user.userId], (err, row) => {
-      if (err) return next(err)
-      res.json({
-        success: true,
-        hasCookie: !!row,
-        cookieJson: row ? row.cookie_json : '',
-      })
+    const snapshot = await getPoolSnapshot({ force: req.query.refresh === '1', forceConfig: req.query.refresh === '1' })
+    const budget = await directBudgetState()
+    const first = snapshot.pools[0]
+    res.json({
+      success: true,
+      configured: snapshot.pools.length > 0,
+      source: snapshot.source,
+      extractUrlMasked: first ? first.urlMasked : '',
+      ttlMs: first ? first.ttlMs : 0,
+      pools: snapshot.pools,
+      activePoolId: snapshot.activePoolId,
+      lowBalanceThreshold: snapshot.lowBalanceThreshold,
+      probeIntervalMs: DOUYIN_GATE_PROBE_INTERVAL_MS,
+      directBudgetWindowMs: DIRECT_WINDOW_MS,
+      directBudget: budget,
+      gate: getDouyinGateState(),
     })
   } catch (err) {
     next(err)
   }
 })
 
-// 保存或更新用户自定义的 Cookie
-router.post('/cookie', requireAuth, async (req, res, next) => {
+// 管理员保存抖音解析出口配置（旧单链接表单：更新第一个池；没有任何池时写旧配置键）
+router.post('/pool-config', requireAdmin, async (req, res, next) => {
   try {
-    const { cookieJson } = req.body
-    if (!cookieJson) {
-      return res.status(400).json({ error: 'Cookie内容不能为空' })
+    const { extractUrl, ttlMs } = req.body || {}
+    const url = String(extractUrl || '').trim()
+    if (!/^https?:\/\/.+/i.test(url) || url.length > 2000) {
+      return res.status(400).json({ error: '提取链接必须是合法的 http(s) 地址（长度 ≤ 2000）' })
     }
+    const ttl = Number(ttlMs) || 60000
+    if (ttl < 30 * 1000 || ttl > 3600 * 1000) {
+      return res.status(400).json({ error: 'IP 时效超出允许范围（30 秒 - 60 分钟）' })
+    }
+    await upsertPrimaryPool({ extractUrl: url, ttlMs: ttl })
+    res.json({ success: true, message: '已保存，新提取链接立即生效' })
+  } catch (err) {
+    if (err?.message && /不存在|必须|超出允许范围|trade_no/.test(err.message)) {
+      return res.status(400).json({ error: err.message })
+    }
+    next(err)
+  }
+})
 
+// 多池管理：add / update / delete / activate / refresh / reset-budget / set-threshold
+router.post('/pools', requireAdmin, async (req, res, next) => {
+  const action = String(req.body?.action || '')
+  try {
+    switch (action) {
+      case 'add': {
+        const id = await addPool(req.body || {})
+        return res.json({ success: true, id, message: '池已添加，提取链接与业务 key 已加密保存' })
+      }
+      case 'update': {
+        await updatePool(req.body || {})
+        return res.json({ success: true, message: '池已更新' })
+      }
+      case 'delete': {
+        await deletePool(String(req.body?.id || ''))
+        return res.json({ success: true, message: '池已删除' })
+      }
+      case 'activate': {
+        const pool = await setActivePool(String(req.body?.id || ''))
+        return res.json({ success: true, message: `已把「${pool.name}」设为当前池` })
+      }
+      case 'refresh': {
+        const snapshot = await getPoolSnapshot({ force: true, forceConfig: true })
+        return res.json({ success: true, ...snapshot })
+      }
+      case 'reset-budget': {
+        await resetDirectBudget()
+        return res.json({ success: true, directBudget: await directBudgetState(), message: '直连额度已重置，下一次解析会重新使用服务器 IP' })
+      }
+      case 'set-threshold': {
+        const value = await writeLowBalanceThreshold(req.body?.threshold)
+        return res.json({ success: true, lowBalanceThreshold: value, message: '余量预警阈值已保存' })
+      }
+      default:
+        return res.status(400).json({ error: '未知操作' })
+    }
+  } catch (err) {
+    if (err?.message && /不存在|必须|超出允许范围|trade_no/.test(err.message)) {
+      return res.status(400).json({ error: err.message })
+    }
+    next(err)
+  }
+})
+
+// 管理员手动测试池出口：强制走池（不占用直连额度），可指定某个池
+router.post('/pool-test', requireAdmin, async (req, res) => {
+  try {
+    const t0 = Date.now()
+    const poolId = String(req.body?.poolId || '')
+    if (!(await poolEnabled())) {
+      return res.status(400).json({ success: false, error: '动态池未配置提取链接，无法测试' })
+    }
+    let proxyUrl = ''
     try {
-      const parsed = JSON.parse(cookieJson)
-      if (!Array.isArray(parsed)) {
-        return res.status(400).json({ error: 'Cookie格式不正确，必须是包含Cookie对象的数组' })
-      }
-    } catch (e) {
-      return res.status(400).json({ error: 'JSON解析失败，请检查输入格式' })
+      proxyUrl = await getPoolProxy(poolId ? { poolId } : {})
+    } catch (err) {
+      return res.status(502).json({ success: false, error: `池提取失败：${String(err?.message || err).slice(0, 120)}` })
     }
-
-    const db = getDb()
-    db.run(
-      'INSERT INTO user_cookies (user_id, cookie_json, updated_at) VALUES (?, ?, datetime(\'now\')) ' +
-      'ON CONFLICT(user_id) DO UPDATE SET cookie_json = excluded.cookie_json, updated_at = datetime(\'now\')',
-      [req.user.userId, cookieJson],
-      (err) => {
-        if (err) return next(err)
-        res.json({ success: true, message: 'Cookie保存成功' })
-      }
+    const response = await douyinFetch(
+      'https://myip.ipip.net',
+      { headers: { 'User-Agent': DESKTOP_UA }, signal: AbortSignal.timeout(20000) },
+      { forcePool: true, poolId }
     )
-  } catch (err) {
-    next(err)
-  }
-})
-
-// 清除用户自定义的 Cookie
-router.delete('/cookie', requireAuth, async (req, res, next) => {
-  try {
-    const db = getDb()
-    db.run('DELETE FROM user_cookies WHERE user_id = ?', [req.user.userId], (err) => {
-      if (err) return next(err)
-      res.json({ success: true, message: 'Cookie已清除' })
+    const text = (await response.text()).replace(/\s+/g, ' ').trim()
+    res.json({
+      success: response.ok,
+      exit: text.slice(0, 140),
+      elapsedMs: Date.now() - t0,
+      proxyUrl: String(proxyUrl || '').replace(/\//g, ''),
+      poolId,
     })
   } catch (err) {
-    next(err)
+    res.status(502).json({ success: false, error: `池出口测试失败：${String(err?.message || err).slice(0, 120)}` })
   }
 })
+
+// 管理员立即触发一轮出口探测（顺带查池余量，低于阈值会发预警邮件）
+router.post('/gate-probe', requireAdmin, async (req, res) => {
+  try {
+    await runDouyinGateCycle()
+  } catch { /* 内部已记录 */ }
+  let balanceCheck = null
+  try {
+    balanceCheck = await getPoolSnapshot()
+  } catch { /* 忽略 */ }
+  res.json({ success: true, ...getDouyinGateState(), pools: balanceCheck?.pools || [], directBudget: await directBudgetState() })
+})
+
+// 说明：用户自定义 Cookie 功能已于 2026-09-15 整体下线（抖音解析靠自算签名 + 自动 ttwid + 住宅池，
+// 不再需要用户自带 cookie；同时那是一个「填了 cookie 就不吃配额」的旁路）。
+// 媒体/图片处理函数里仍保留可选的 customCookieHeader 形参（现在恒为未传），一律回退到服务器侧
+// 平台 cookies（data/cookies.<platform>.txt）；user_cookies 表与历史数据未动、不写不读。
 
 router.post('/analyze', heavyLimiter, async (req, res) => {
   const startedAt = Date.now()
@@ -1644,52 +2157,27 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
     return res.json({ success: false, message: err.message || '链接不合法' })
   }
 
-  let tempCookiePath = ''
   try {
-    let customCookie = req.body.customCookie
-    if (!customCookie && req.user?.userId) {
-      try {
-        customCookie = await getStoredCookie(req.user.userId)
-      } catch (dbErr) {
-        console.error('[Video] Failed to load stored cookie:', dbErr)
-      }
+    // 平台 cookie（服务器侧 data/cookies.*.txt）由各取数函数自己按平台读取，这里不再有用户自定义 cookie
+    const options = {}
+
+    // 抖音：先并行把出口 IP / ttwid 预热起来，与后面的短链解析重叠，缩短整体耗时
+    const quotaCheck = await enforceVideoQuota(req, ACTION_ANALYZE)
+    if (!quotaCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: quotaCheck.message,
+        quota: quotaCheck.quota,
+      })
     }
 
-    let customCookieHeader = null
-    if (customCookie) {
-      try {
-        const netscapeContent = convertJsonToNetscape(customCookie)
-        tempCookiePath = path.join(os.tmpdir(), `lcyksp-user-cookie-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
-        fs.writeFileSync(tempCookiePath, netscapeContent, 'utf-8')
-        customCookieHeader = buildCookieHeaderFromJson(customCookie)
-      } catch (err) {
-        console.error('[Video] Failed to generate custom Netscape cookie file:', err)
-        customCookie = null
-        tempCookiePath = ''
-        customCookieHeader = null
-      }
-    }
-
-    const options = {
-      customCookiePath: tempCookiePath,
-      customCookieHeader
-    }
-
-    let hasCustomCookie = !!customCookie
-    if (!hasCustomCookie) {
-      const quotaCheck = await enforceVideoQuota(req, ACTION_ANALYZE)
-      if (!quotaCheck.allowed) {
-        return res.status(429).json({
-          success: false,
-          message: quotaCheck.message,
-          quota: quotaCheck.quota,
-        })
-      }
-    }
+    // 抖音：配额通过后再预热出口 IP / ttwid——放在配额检查之前会在「配额不足直接返回」时白烧一个池 IP。
+    // 预热与后面的短链解析重叠，缩短整体耗时。
+    if (requestedPlatform === 'douyin') warmDouyinExit(url)
 
     console.error('[Video] analyze start:', { url, requestedPlatform })
 
-    async function runDouyinPrimaryFlow(finalUrl) {
+    async function runDouyinPrimaryFlow(finalUrl, flowOptions = {}) {
       if (douyinAnalyzeInFlight && douyinAnalyzeInFlight.url === finalUrl) {
         const sharedResult = await douyinAnalyzeInFlight.promise
         return sharedResult
@@ -1698,7 +2186,7 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
       const promise = (async () => {
         try {
           console.error('[Video] trying douyin signed-api primary:', { finalUrl, elapsedMs: Date.now() - startedAt })
-          const signedApiData = await analyzeDouyinViaSignedApi(finalUrl, options)
+          const signedApiData = await analyzeDouyinViaSignedApi(finalUrl, { ...options, ...flowOptions })
           console.error('[Video] douyin signed-api primary ok:', {
             finalUrl,
             source: signedApiData?.source,
@@ -1708,6 +2196,8 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
           return { data: signedApiData, message: '已通过抖音站内接口完成解析。' }
         } catch (signedApiError) {
           console.error('[Video] douyin signed-api primary failed:', signedApiError?.stack || signedApiError?.message || String(signedApiError))
+          // 接口已权威判定作品不可用（被删/设私/权限受限）——无需再走页面提取与 yt-dlp，直接以准确文案终态返回
+          if (signedApiError?.workUnavailable) throw signedApiError
         }
 
         try {
@@ -1828,7 +2318,8 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
 
       if (detectPlatform(finalUrl) === 'douyin') {
         try {
-          const douyinResult = await runDouyinPrimaryFlow(finalUrl)
+          // 第二轮回退：首轮已经拼过 4 个 IP 了，这里只再给 2 次，控制失败场景的 IP 消耗
+          const douyinResult = await runDouyinPrimaryFlow(finalUrl, { signedApiMaxAttempts: 2 })
           return res.json({ success: true, data: douyinResult.data, message: douyinResult.message })
         } catch (douyinError) {
           const finalMessage = normalizeVideoError(douyinError?.message, finalUrl, cookiesMeta)
@@ -1858,14 +2349,114 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
   } catch (err) {
     console.error('[Video] analyze outer error:', err)
     return res.json({ success: false, message: `解析异常：${err.message}` })
-  } finally {
-    if (tempCookiePath && fs.existsSync(tempCookiePath)) {
-      try {
-        fs.unlinkSync(tempCookiePath)
-      } catch (e) {
-        console.error('[Video] temp cookie cleanup failed:', e)
-      }
+  }
+})
+
+/**
+ * 图集多选打包下载：勾中的图片合成一个 ZIP，**整个压缩包只计 1 次下载额度**。
+ * 旧的逐张循环实现会让 15 张图吃掉 15 次额度（免费用户 5 次/小时直接卡死），
+ * 而且每次都要重走一遍请求。这里改成一次请求、一次计费，顺带更快。
+ */
+router.post('/download-album', heavyLimiter, async (req, res) => {
+  let { url, title, items, source } = req.body || {}
+  url = pickUrlFromText(url || '')
+
+  if (!url || !Array.isArray(items) || !items.length) {
+    return res.status(400).json({ error: '参数不完整' })
+  }
+
+  const requestedPlatform = detectPlatform(url)
+  if (requestedPlatform === 'youtube') {
+    return res.status(400).json({ error: '当前暂仅支持抖音和 B站，YouTube 下载入口已暂时关闭。' })
+  }
+
+  try {
+    await assertPublicUrl(url)
+  } catch (err) {
+    return res.status(400).json({ error: err.message || '链接不合法' })
+  }
+
+  const picked = items
+    .map((item) => ({ formatId: String(item?.formatId || ''), mediaUrl: String(item?.directUrl || '').trim() }))
+    .filter((item) => item.mediaUrl)
+
+  if (!picked.length) return res.status(400).json({ error: '没有可下载的图片' })
+  if (picked.length > MAX_ALBUM_IMAGES) {
+    return res.status(400).json({ error: `一次最多打包 ${MAX_ALBUM_IMAGES} 张图片，请分批下载` })
+  }
+  // 防 SSRF：直链由前端回传，必须是抖音图片 CDN 白名单内的地址
+  if (!picked.every((item) => isAllowedDouyinImageUrl(item.mediaUrl))) {
+    return res.status(400).json({ error: '图片地址不合法' })
+  }
+
+  try {
+    const quotaCheck = await enforceVideoQuota(req, ACTION_DOWNLOAD)
+    if (!quotaCheck.allowed) {
+      return res.status(429).json({ error: quotaCheck.message, quota: quotaCheck.quota })
     }
+
+    const failedUrls = []
+    const jpegBuffers = []
+    let totalBytes = 0
+    let refreshedUrls = null
+    let refreshTried = false
+
+    for (let index = 0; index < picked.length; index += 1) {
+      const item = picked[index]
+      let buffer = null
+      try {
+        buffer = await fetchDouyinImageAsJpeg(item.mediaUrl)
+      } catch (error) {
+        // 直链过期/被拒时只重解析一次（解析缓存命中＝零池 IP 消耗），之后仍失败就如实计入失败清单
+        if (!refreshTried) {
+          refreshTried = true
+          refreshedUrls = await refreshDouyinAlbumImageUrls(url)
+          console.error('[Video] 图集首张直链失败，尝试刷新直链后重试:', error?.message || String(error))
+        }
+        const fallbackUrl = refreshedUrls?.[index]
+        if (!fallbackUrl) {
+          failedUrls.push(item.formatId || String(index + 1))
+          continue
+        }
+        try {
+          buffer = await fetchDouyinImageAsJpeg(fallbackUrl)
+        } catch (retryError) {
+          console.error('[Video] 图集图片刷新后仍失败:', retryError?.message || String(retryError))
+          failedUrls.push(item.formatId || String(index + 1))
+          continue
+        }
+      }
+      totalBytes += buffer.length
+      if (totalBytes > MAX_ALBUM_TOTAL_BYTES) {
+        return res.status(400).json({ error: '图集体积过大，请分批下载' })
+      }
+      jpegBuffers.push(buffer)
+    }
+
+    if (!jpegBuffers.length) {
+      return res.status(502).json({ error: '图片全部下载失败，请稍后重试' })
+    }
+
+    const zipBuffer = buildZipStore(
+      jpegBuffers.map((data, index) => ({ name: `第${String(index + 1).padStart(2, '0')}张.jpg`, data })),
+    )
+
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', buildDownloadDisposition(`${title || 'douyin-album'}_图集${jpegBuffers.length}张`, '.zip'))
+    res.setHeader('Content-Length', zipBuffer.length)
+    if (failedUrls.length) {
+      // 前端读得到（同源），用于提示「有几张没打包进去」
+      res.setHeader('X-Lcyksp-Failed-Images', String(failedUrls.length))
+      res.setHeader('Access-Control-Expose-Headers', 'X-Lcyksp-Failed-Images')
+    }
+    console.log(`[Video] 图集打包完成: ${jpegBuffers.length}/${picked.length} 张, ${(zipBuffer.length / 1024 / 1024).toFixed(2)}MB`)
+    res.end(zipBuffer)
+  } catch (err) {
+    console.error('[Video] download-album error:', err)
+    if (!res.headersSent) {
+      return res.status(500).json({ error: `图集下载失败：${err.message}` })
+    }
+    res.end()
   }
 })
 
@@ -1889,42 +2480,14 @@ router.post('/download', heavyLimiter, async (req, res) => {
     return res.status(400).json({ error: err.message || '链接不合法' })
   }
 
-  let tempCookiePath = ''
   let tempDir = ''
   try {
-    let customCookie = req.body.customCookie
-    if (!customCookie && req.user?.userId) {
-      try {
-        customCookie = await getStoredCookie(req.user.userId)
-      } catch (dbErr) {
-        console.error('[Video] Failed to load stored cookie:', dbErr)
-      }
-    }
-
-    let customCookieHeader = null
-    if (customCookie) {
-      try {
-        const netscapeContent = convertJsonToNetscape(customCookie)
-        tempCookiePath = path.join(os.tmpdir(), `lcyksp-user-cookie-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
-        fs.writeFileSync(tempCookiePath, netscapeContent, 'utf-8')
-        customCookieHeader = buildCookieHeaderFromJson(customCookie)
-      } catch (err) {
-        console.error('[Video] Failed to generate custom Netscape cookie file:', err)
-        customCookie = null
-        tempCookiePath = ''
-        customCookieHeader = null
-      }
-    }
-
-    let hasCustomCookie = !!customCookie
-    if (!hasCustomCookie) {
-      const quotaCheck = await enforceVideoQuota(req, ACTION_DOWNLOAD)
-      if (!quotaCheck.allowed) {
-        return res.status(429).json({
-          error: quotaCheck.message,
-          quota: quotaCheck.quota,
-        })
-      }
+    const quotaCheck = await enforceVideoQuota(req, ACTION_DOWNLOAD)
+    if (!quotaCheck.allowed) {
+      return res.status(429).json({
+        error: quotaCheck.message,
+        quota: quotaCheck.quota,
+      })
     }
 
     const finalUrl = await resolveShareUrl(url)
@@ -1941,7 +2504,7 @@ router.post('/download', heavyLimiter, async (req, res) => {
 
     // 抖音走不通 yt-dlp，前端没回传直链、或直链来自 yt-dlp 兜底时，由服务端自己签名解析
     if (detectPlatform(finalUrl) === 'douyin' && (!browserDirectUrl || !source || source === 'yt-dlp')) {
-      const resolved = await resolveDouyinDownloadTarget(finalUrl, formatId, { customCookieHeader })
+      const resolved = await resolveDouyinDownloadTarget(finalUrl, formatId)
       if (resolved) {
         formatId = resolved.formatId
         browserDirectUrl = resolved.directUrl
@@ -1959,7 +2522,6 @@ router.post('/download', heavyLimiter, async (req, res) => {
           title: title || 'douyin-download',
           tempDir,
           res,
-          customCookieHeader
         })
       } else if (formatId === 'browser-audio' || formatId === 'direct-audio') {
         await extractDirectAudioToResponse({
@@ -1967,14 +2529,12 @@ router.post('/download', heavyLimiter, async (req, res) => {
           title: title || 'douyin-audio',
           tempDir,
           res,
-          customCookieHeader
         })
       } else if (formatId.startsWith('image-')) {
         await streamDirectImageAsJpeg({
           mediaUrl: browserDirectUrl,
           title: title || 'douyin-image',
           res,
-          customCookieHeader
         })
       } else {
         const contentType = formatId.startsWith('image-')
@@ -1987,7 +2547,6 @@ router.post('/download', heavyLimiter, async (req, res) => {
           title: title || 'douyin-download',
           res,
           contentType,
-          customCookieHeader
         })
       }
       return
@@ -1997,7 +2556,6 @@ router.post('/download', heavyLimiter, async (req, res) => {
     const { args: commonArgs } = buildCommonArgs(finalUrl, {
       socketTimeout: platform === 'bilibili' ? 45 : 30,
       concurrentFragments: platform === 'bilibili' ? 2 : 1,
-      customCookiePath: tempCookiePath
     })
     tempDir = createTempDownloadDir()
     const isAudioOnly = String(formatId).startsWith('audio-')
@@ -2094,19 +2652,7 @@ router.get('/preview-image', previewLimiter, async (req, res) => {
       return res.status(400).json({ error: err.message || '无效的图片地址' })
     }
 
-    let customCookieHeader = null
-    if (req.user?.userId) {
-      try {
-        const customCookie = await getStoredCookie(req.user.userId)
-        if (customCookie) {
-          customCookieHeader = buildCookieHeaderFromJson(customCookie)
-        }
-      } catch (dbErr) {
-        console.error('[Video] preview-image getStoredCookie error:', dbErr)
-      }
-    }
-
-    await proxyImagePreview({ mediaUrl, res, customCookieHeader })
+    await proxyImagePreview({ mediaUrl, res })
   } catch (error) {
     console.error('[Video] preview-image failed:', error?.stack || error?.message || String(error))
     if (!res.headersSent) {

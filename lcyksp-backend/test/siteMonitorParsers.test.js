@@ -50,8 +50,11 @@ test('model parser supports the OpenAI-compatible /v1/models shape used by an AP
   })
   assert.deepEqual(models.map(({ itemKey }) => itemKey), ['gpt-5.6-luna', 'gpt-5.6-sol'])
   assert.equal(models[0].title, 'gpt-5.6-luna')
-  // An empty list must fail loudly rather than look like "every model was removed".
-  assert.throws(() => parseJustWokerModels({ object: 'list', data: [] }))
+  // An explicitly empty list is the upstream speaking correctly ("no models available right now"):
+  // it parses to [] and the service's removal machinery decides what it means (ISSUE-008). A missing
+  // array still fails loudly.
+  assert.deepEqual(parseJustWokerModels({ object: 'list', data: [] }), [])
+  assert.throws(() => parseJustWokerModels({ object: 'list' }))
 })
 
 test('article body extraction takes the CMS container and degrades to nothing otherwise', () => {
@@ -110,9 +113,9 @@ test('model parser normalizes cosmetic case and whitespace for stable keys', () 
   assert.equal(models[0].itemKey, 'gpt-4.1 mini')
 })
 
-test('model parser rejects HTML, invalid JSON, unknown shapes, empty arrays, and invalid entries', () => {
+test('model parser rejects HTML, invalid JSON, unknown shapes, and invalid entries', () => {
   for (const payload of [
-    '<html>login</html>', '{bad json', { message: 'unauthorized' }, { success: false, models: ['fake'] }, { models: [] },
+    '<html>login</html>', '{bad json', { message: 'unauthorized' }, { success: false, models: ['fake'] },
     { models: [{ price: 1 }] }, { models: ['valid', null] },
   ]) {
     assert.throws(() => parseJustWokerModels(payload), TypeError)

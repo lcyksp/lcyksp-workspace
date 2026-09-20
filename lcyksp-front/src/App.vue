@@ -22,6 +22,7 @@ import {
   RefreshRight,
   ChatDotRound,
   Trophy,
+  Calendar,
 } from '@element-plus/icons-vue'
 import AuthDialog from './components/AuthDialog.vue'
 import VideoBackground from './components/VideoBackground.vue'
@@ -171,6 +172,7 @@ const menuItems = reactive([
           { name: 'PDF水印', path: '/pdf-watermark' },
           { name: 'PDF签名', path: '/pdf-sign' },
           { name: 'PDF转Word', path: '/pdf-to-word' },
+          { name: 'PDF压缩', path: '/pdf-compress' },
         ],
       },
       { name: '在线压缩解压', path: '/zip-tool' },
@@ -201,6 +203,7 @@ const menuItems = reactive([
           { name: '气象数据查询', path: '/weather' },
           { name: 'IP归属地查询', path: '/ip-lookup' },
           { name: '随机小助手', path: '/roll-call' },
+          { name: '微信步数修改', path: '/step-counter' },
           { name: '系统更新模拟', path: '/win-update' },
         ],
       },
@@ -213,6 +216,7 @@ const menuItems = reactive([
     children: [
       { name: 'Apex 战绩查询', path: '/apex' },
       { name: 'ALGS 赛事数据', path: '/algs' },
+      { name: '战争雷霆交易所', path: '/wt-market' },
     ],
     isOpen: false,
   },
@@ -329,15 +333,18 @@ function canAccessPremiumFeature(path) {
     }
   }
 
-  if (path === '/recipe' || path === '/github-radar') {
+  if (path === '/recipe' || path === '/github-radar' || path === '/step-counter') {
     if (['admin', 'premium', 'pro'].includes(currentUser.value.role)) {
       return { allowed: true, message: '' }
     }
+    const featureNames = {
+      '/github-radar': 'GitHub 技术趋势雷达',
+      '/step-counter': '微信步数修改',
+      '/recipe': '赛博菜谱',
+    }
     return {
       allowed: false,
-      message: path === '/github-radar'
-        ? 'GitHub 技术趋势雷达仅对高级用户开放。'
-        : '当前用户仅对高级用户开放。捐赠成为高级用户后即可使用赛博菜谱。',
+      message: `${featureNames[path] || '该功能'}仅对高级用户开放。捐赠成为高级用户后即可使用。`,
     }
   }
 
@@ -399,7 +406,7 @@ function handleMenuNavigate(path) {
     return
   }
 
-  if (path === '/recipe' || path === '/gallery' || path === '/github-radar') {
+  if (path === '/recipe' || path === '/gallery' || path === '/github-radar' || path === '/step-counter') {
     const access = canAccessPremiumFeature(path)
     if (!access.allowed) {
       ElMessage.warning(access.message)
@@ -671,6 +678,15 @@ onUnmounted(() => {
               </template>
             </div>
           </transition>
+        </div>
+
+        <div v-if="isAdmin" class="menu-group">
+          <div class="menu-item group-header" :class="{ active: activePath === '/schedule' }" @click="navigateTo('/schedule')">
+            <span class="menu-icon">
+              <el-icon :size="18"><Calendar /></el-icon>
+            </span>
+            <span class="menu-label">课程表</span>
+          </div>
         </div>
 
         <div v-if="isAdmin" class="menu-group">

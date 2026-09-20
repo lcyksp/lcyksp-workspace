@@ -9,6 +9,15 @@ const recordedChunks = ref([])
 const videoUrl = ref('')
 const isSupported = ref(true)
 
+// 捕获丢帧监控：窗口被完全遮挡时 Chromium 会把捕获钳到 ~1fps 且不做任何提示，
+// 用户只会看到录出来的视频"卡在一帧"。这里实时监测交付帧率，低于阈值就明确警告。
+const captureStalled = ref(false)
+let frameProbeVideo = null // 隐身 <video>，消费捕获流以测量真实交付帧率
+let frameTimestamps = []   // 最近交付帧的时间戳（performance.now）
+let stallTimer = null
+let rvfcId = null          // requestVideoFrameCallback 句柄
+let stallAlerted = false   // 每次丢帧事件只弹一次 ElMessage，横幅持续显示直到恢复
+
 // Stats & Timer
 const timer = ref(0)
 const timerInterval = ref(null)
@@ -40,6 +49,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopTimer()
+  stopFrameWatch()
   if (recordStatus.value === 2) {
     stopRecord()
   }
@@ -57,6 +67,67 @@ function stopTimer() {
     clearInterval(timerInterval.value)
     timerInterval.value = null
   }
+}
+
+// —— 丢帧监控 ——
+// 只能用 requestVideoFrameCallback 数"真实交付帧"：Chrome 里 MediaStream 的
+// currentTime 按墙钟推进（不出帧也走），getSettings().frameRate 又只回显请求值，
+// 都测不出丢帧。rVFC 在页面隐藏时不触发，所以 document.hidden 期间跳过判定。
+function startFrameWatch(stream) {
+  if (!document.createElement('video').requestVideoFrameCallback) return // 老浏览器放弃监测
+
+  frameProbeVideo = document.createElement('video')
+  frameProbeVideo.muted = true
+  frameProbeVideo.playsInline = true
+  frameProbeVideo.setAttribute('style', 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none')
+  frameProbeVideo.srcObject = stream
+  document.body.appendChild(frameProbeVideo) // 不进 DOM 就没有 compositor 呈现，rVFC 不会触发
+  frameProbeVideo.play().catch(() => {})
+
+  frameTimestamps = []
+  const startAt = performance.now()
+  const countFrame = () => {
+    frameTimestamps.push(performance.now())
+    if (frameTimestamps.length > 200) frameTimestamps.splice(0, frameTimestamps.length - 200)
+    rvfcId = frameProbeVideo.requestVideoFrameCallback(countFrame)
+  }
+  rvfcId = frameProbeVideo.requestVideoFrameCallback(countFrame)
+
+  stallTimer = setInterval(() => {
+    if (document.hidden) return
+    const now = performance.now()
+    frameTimestamps = frameTimestamps.filter(t => now - t < 4000)
+    // 头 5 秒是热身期（4 秒滑动窗口还没满），不判丢帧
+    const stalled = recordStatus.value === 2 && now - startAt > 5000 && frameTimestamps.length < 10 // ≈ <2.5fps
+    if (stalled && !captureStalled.value) {
+      captureStalled.value = true
+      if (!stallAlerted) {
+        stallAlerted = true
+        ElMessage.warning('捕获帧率极低：被分享的窗口可能被完全遮挡，画面将被录成幻灯片', { duration: 6000 })
+      }
+    } else if (!stalled && captureStalled.value) {
+      captureStalled.value = false
+      stallAlerted = false
+    }
+  }, 1000)
+}
+
+function stopFrameWatch() {
+  if (stallTimer) {
+    clearInterval(stallTimer)
+    stallTimer = null
+  }
+  if (frameProbeVideo) {
+    if (rvfcId !== null && frameProbeVideo.cancelVideoFrameCallback) {
+      try { frameProbeVideo.cancelVideoFrameCallback(rvfcId) } catch (_) { /* noop */ }
+    }
+    try { frameProbeVideo.srcObject = null; frameProbeVideo.remove() } catch (_) { /* noop */ }
+    frameProbeVideo = null
+  }
+  rvfcId = null
+  frameTimestamps = []
+  captureStalled.value = false
+  stallAlerted = false
 }
 
 async function startRecord() {
@@ -100,6 +171,7 @@ async function startRecord() {
 
     recorder.onstop = () => {
       stopTimer()
+      stopFrameWatch()
       // Generate WebM blob
       const blob = new Blob(recordedChunks.value, { type: recorder.mimeType || 'video/webm' })
       if (videoUrl.value) {
@@ -122,6 +194,7 @@ async function startRecord() {
     recorder.start()
     recordStatus.value = 2
     startTimer()
+    startFrameWatch(stream)
     ElMessage.success('屏幕录制已开始')
   } catch (err) {
     console.error('Failed to start recording:', err)
@@ -204,6 +277,14 @@ function resetRecord() {
                 <span class="status-badge" :class="'badge-' + recordStatus">{{ statusText }}</span>
               </div>
               <div class="timer-display">{{ formattedTime }}</div>
+            </div>
+
+            <div class="stall-warning" v-if="captureStalled && recordStatus === 2">
+              <div class="stall-title">⚠️ 捕获帧率极低（约 1 帧/秒）</div>
+              <div class="stall-text">
+                被分享的窗口<strong>被完全遮挡</strong>（或画面长时间静止）时，浏览器只按约 1 帧/秒采样。
+                若要录的是动态画面，请把该窗口露出来（摆到本页面旁边，别被盖住、别最小化），或改录<strong>整个屏幕</strong>。
+              </div>
             </div>
 
             <div class="action-buttons">
@@ -325,6 +406,7 @@ function resetRecord() {
           <li><strong>安全性：</strong>本工具为纯前端应用，所有屏幕画面的采集、录制和编码均在您的<strong>本地浏览器</strong>内完成，没有任何视频数据会被上传到服务器，您可以完全放心录制隐私内容。</li>
           <li><strong>格式转换：</strong>录制默认生成为 WebM 容器格式。该格式在 Chrome、Edge 和现代播放器（如 VLC、PotPlayer 等）上拥有极佳的兼容性。若有转换为 MP4 格式的需求，可使用音视频工具一键转换。</li>
           <li><strong>声音录制：</strong>若要录制电脑播放的声音，请在选择屏幕分享时，勾选弹出框底部的 <strong>“共享系统音频”</strong> 选项。</li>
+          <li><strong>录制应用窗口的重要提示：</strong>被分享的窗口若被浏览器（或其它窗口）<strong>完全遮挡</strong>，Chrome/Edge 会把捕获帧率限制到约 1 帧/秒，录出来像幻灯片或"卡住不动"。请把被录窗口摆在本页面旁边保持可见，或直接录制整个屏幕；窗口最小化也会导致无法捕获。</li>
         </ul>
       </div>
     </el-card>
@@ -456,6 +538,33 @@ function resetRecord() {
 .status-3 {
   background: color-mix(in srgb, var(--accent-green) 6%, var(--bg-ctrl));
   border-color: color-mix(in srgb, var(--accent-green) 25%, var(--border-subtle));
+}
+
+/* 丢帧警告横幅 */
+.stall-warning {
+  border: 1px solid color-mix(in srgb, var(--accent-red) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-red) 10%, var(--bg-ctrl));
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  animation: pulse-border 1.5s infinite;
+}
+
+.stall-title {
+  color: var(--accent-red);
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.stall-text {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.stall-text strong {
+  color: var(--accent-red);
 }
 
 /* 按钮操作 */

@@ -4,7 +4,9 @@ dist/
 *.tar.gz
 lcyksp-backend/data/db/
 lcyksp-backend/data/uploads/
+lcyksp-backend/data/debug/
 lcyksp-backend/data/cookies*.txt
+test_stress.cjs
 **/dist-codex/
 *.log
 .DS_Store
@@ -18,6 +20,8 @@ AGENTS.md
 # 本地 AI 会话与内部记录
 .claude/
 .mimocode/
+.workbuddy/
+.tmp-deploy/
 CLAUDE.md
 HOMEPAGE-COSMOS.md
 

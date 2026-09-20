@@ -22,6 +22,8 @@ import apexRouter from './routes/apex.js';
 import githubSubscriptionsRouter from './routes/githubSubscriptions.js';
 import algsRouter from './routes/algs.js';
 import scheduleRouter from './routes/schedule.js';
+import stepsRouter from './routes/steps.js';
+import wtMarketRouter from './routes/wtMarket.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
@@ -88,6 +90,10 @@ app.use('/api/apex', apexRouter);
 app.use('/api/github-subscriptions', githubSubscriptionsRouter);
 app.use('/api/algs', algsRouter);
 app.use('/api/schedule', scheduleRouter);
+// 微信步数修改：绑定/提交都要打上游 Zepp，按重接口限流（20 次/分钟）
+app.use('/api/steps', heavyLimiter, stepsRouter);
+// 战争雷霆交易所价格监控：查询走本地库；配置/刷新打上游 Gaijin，按重接口限流
+app.use('/api/wt-market', heavyLimiter, wtMarketRouter);
 
 // IP归属地查询接口
 app.get('/api/ip-lookup', async (req, res) => {
