@@ -1,24 +1,18 @@
 # lcyksp.xyz
 
-> 个人在线工具站 —— 中文界面，前端 Vue 3 SPA + 后端 Express 单体，前后端同进程托管。
+个人在线工具站，中文界面。前端 Vue 3 SPA，后端 Express 单体，两端同进程跑。
 
-一个把日常零碎需求收在一处的工具箱：处理图片和 PDF、解析下载视频、看赛事数据、记课程表、查天气和 IP 归属地。首页是一块 three.js 实时 3D 星象。
+站点：https://lcyksp.xyz
 
-站点：`https://lcyksp.xyz`
+把平时零散的需求收在一处：处理图片和 PDF、解析下载视频、看看赛事数据、记课程表、查天气和 IP 归属地。首页放了一块 three.js 的实时 3D 星象。
 
----
+## 关于这个项目
 
-## 项目定位
+整站跑在一台 2 核 2G 的轻量云服务器上，所以做取舍时有个一以贯之的偏好：能省服务器资源、能提速的方案优先，能纯前端做的就不占后端。
 
-全站跑在一台 **2 核 2 G** 的轻量云服务器上，所以有一条贯穿始终的设计原则：
+这么一来，AI 图片放大（浏览器里跑 ESRGAN）、天气、ZIP 压缩解压、整套 PDF 工具、像素画、证件照、图片混淆还原这些，全都不吃后端算力。后端只留绕不开的活——要密钥的、要调外部二进制的、要落库的。
 
-> **能省服务器资源、能提高加载速度的方案一律优先；能纯前端做的，绝不占后端。**
-
-这条原则的直接产物是：AI 图片放大（浏览器里跑 ESRGAN）、天气、ZIP 压缩解压、PDF 全套工具、像素画、证件照、图片混淆还原，全部零后端算力。后端只留绕不开的活——需要密钥的、需要外部二进制的、需要落库的。
-
----
-
-## 功能一览
+## 功能
 
 | 分类 | 功能 |
 | --- | --- |
@@ -28,46 +22,18 @@
 | 音视频 | 抖音/B站解析下载 · 剧集下载 · 在线屏幕录制 · 横屏歌词 |
 | 数据资讯 | Apex 战绩 · ALGS 赛事 · 战争雷霆交易所行情（会员）· GitHub 日报（会员）· 天气 · IP 归属地 |
 | 生活学习 | 赛博菜谱（AI 流式生成）· 家庭相册 · 课程表 · 点名 · 微信步数 · 会员卡密 |
-| 首页 | three.js 实时星象（月球特写 / 地球特写 / 太阳系全景 三档视角） |
+| 首页 | three.js 实时星象，月球特写 / 地球特写 / 太阳系全景三档视角 |
 | 管理后台 | 文件 · 用户 · 大模型配置 · 视频解析出口 · GitHub 日报 · 网站监测 · 会员配置 · 卡密 · 问题反馈 |
-
-规模：前端 **41 条路由 / 44 个视图文件**，后端 **19 个路由文件 / 36 张 SQLite 表**，管理后台 9 个 Tab。
-
----
 
 ## 技术栈
 
-### 前端
+前端是 Vue 3.5 + Vite 5.4，纯 JavaScript，组件全用 `<script setup>`。路由走 vue-router 4.6，除首页外都懒加载。UI 用 Element Plus 2.14。没上 Pinia/Vuex，组件内 `ref/reactive` 配 `provide/inject` 就够了。3D 是 three.js，图片超分靠 tfjs + upscaler 跑 ESRGAN，PDF 读取用 pdfjs-dist（走 Web Worker），写入用 pdf-lib，另外还有 axios、jszip、echarts。
 
-| 领域 | 选型 |
-| --- | --- |
-| 框架 | Vue 3.5（全部 `<script setup>`）+ Vite 5.4，纯 JavaScript |
-| 路由 | vue-router 4.6，除首页外全部懒加载 |
-| UI | Element Plus 2.14 + icons-vue（全局注册） |
-| 状态 | 无 Pinia / Vuex —— 组件内 `ref/reactive` + `provide/inject` |
-| 3D | three.js 0.185.1 |
-| 图像 AI | @tensorflow/tfjs 4.11 + upscaler + ESRGAN（纯前端超分） |
-| PDF | pdf-lib 1.17（写入）+ pdfjs-dist 5.4（读取/渲染，走 Web Worker） |
-| 其他 | axios、jszip、echarts |
+后端 Express 4.21，ESM，跑在 Node 20/22 上。数据库是 SQLite（WAL 模式），没用 ORM，自己包了层 Promise。图片处理用 sharp，鉴权 jsonwebtoken + bcrypt，安全相关有 helmet 和 express-rate-limit，上传用 multer，出口代理走 undici 的 ProxyAgent。网页截图用 playwright-core，服务端图片转 PDF 用 pdfkit。视频解析下载依赖 yt-dlp + ffmpeg，PDF 转 Word 依赖 pdf2docx。敏感配置（大模型 Key、用户 Cookie、代理链接）统一存数据库并 AES-256-CBC 加密，环境变量只做开关和注入。
 
-### 后端
+## 架构
 
-| 领域 | 选型 |
-| --- | --- |
-| 框架 | Express 4.21，ESM，Node 20 / 22 |
-| 数据库 | SQLite3 5.1.7（WAL 模式），无 ORM，原生驱动的 Promise 包装 |
-| 图片处理 | sharp 0.33 |
-| 安全 | helmet、express-rate-limit、jsonwebtoken + bcrypt |
-| 上传 / 代理 | multer、undici（ProxyAgent 出口代理） |
-| 截图 / 文档 | playwright-core（网页截图）、pdfkit（服务端图片转 PDF） |
-| 外部二进制 | yt-dlp + ffmpeg（视频解析下载）、pdf2docx（PDF 转 Word） |
-| 配置 | 敏感配置存数据库、AES-256-CBC 加密；环境变量只做开关与注入 |
-
----
-
-## 系统架构
-
-### 请求链路
+请求链路：
 
 ```
 浏览器 ──https──> Nginx (OpenResty) ──反代 /api──> Express :3000
@@ -77,36 +43,33 @@
                                                      └── SQLite (WAL) + 本地文件
 ```
 
-前端构建产物由后端同进程托管，一个 Node 进程同时提供 API 与静态资源。
+前端构建产物由后端同进程托管，一个 Node 进程同时提供 API 和静态资源。
 
-### 分层与约定
+几个约定：
 
-- **前端**：无独立 API 层，各页面直接 `import axios` 调 `/api/...`；无全局 store。
-- **后端**：无 controllers / services / models 分层，业务逻辑直接写在 `routes/*`；数据库用 `CREATE TABLE IF NOT EXISTS` 幂等建表，无迁移框架。
-- **鉴权**：JWT（有效期 7 天）+ 角色中间件（`requireAuth` / `requireAdmin` / `requirePremiumOrAdmin` / `requireGalleryAccess`）。
-- **限流**：内存 store（单实例，无 Redis）—— 全局 300/min/IP；登录 10 次/15min（只计失败）；图片、解析等重接口 20/min。
-- **配置**：无 `.env` 依赖，敏感值（大模型 Key、用户 Cookie、代理链接）统一存 `system_config` 表并 AES 加密。
+- 前端没有独立的 API 层，页面直接 `import axios` 调 `/api/...`，也没有全局 store。
+- 后端没分 controllers / services / models，业务逻辑直接写在 `routes/*`。建表用 `CREATE TABLE IF NOT EXISTS` 幂等处理，没上迁移框架。
+- 鉴权用 JWT（7 天有效期）加角色中间件（`requireAuth` / `requireAdmin` / `requirePremiumOrAdmin` / `requireGalleryAccess`）。
+- 限流用内存 store（单实例，无 Redis）：全局 300/min/IP，登录 10 次/15min（只计失败），图片、解析等重接口 20/min。
 
-### 目录结构
+目录结构：
 
 ```
 lcyksp-workspace/
 ├── lcyksp-front/                 前端 Vue 3 + Vite
-│   ├── src/views/                视图（41 条路由）
+│   ├── src/views/                视图
 │   ├── src/components/           复用组件
 │   ├── src/utils/                星象历算 / 缩放引擎 / PDF 压缩 / 各类纯函数
-│   ├── src/workers/              PDF 压缩 Web Worker（全站唯一）
+│   ├── src/workers/              PDF 压缩 Web Worker
 │   └── vite.config.js            分包 / 预压缩 / GLSL 剥注释
 ├── lcyksp-backend/               后端 Express + SQLite
 │   ├── src/app.js                入口 + 中间件链
-│   ├── src/routes/               19 个业务路由文件
+│   ├── src/routes/               业务路由
 │   ├── src/middleware/           鉴权 / 会员 / 限流
 │   └── src/utils/                加解密 / LLM 端点 / 配额 / 出口代理等
 ├── deploy.ps1 / deploy.sh        发布脚本
 └── start-dev.bat                 Windows 一键起双端
 ```
-
----
 
 ## 本地开发
 
@@ -121,26 +84,18 @@ cd lcyksp-front && npm install && npm run dev
 npm run dev
 ```
 
-- 前端产物验证别只跑 dev server：`cd lcyksp-front && npx vite build && npx vite preview`
-- 后端测试：`cd lcyksp-backend && npm test`
-- 本地调试视频解析需自备 `yt-dlp` / `ffmpeg`；PDF 转 Word 需 `pdf2docx`
+前端产物别只跑 dev server 验证，用 `npx vite build && npx vite preview`。后端测试 `npm test`。本地调视频解析要自备 yt-dlp / ffmpeg，PDF 转 Word 要 pdf2docx。
 
----
+## 版本号
 
-## 版本号约定
+用 `主.次.修订` 三段式（比如 `4.2.0`），前后端 `package.json` 同版本：
 
-版本号采用 `主.次.修订` 三段式（如 `4.2.0`），前后端 `package.json` 保持同版本：
+- 主位：架构调整、技术栈更换、重大重构。
+- 次位：加功能或下架功能。
+- 修订位：修 bug、微调已有功能。
 
-| 段位 | 何时 +1 | 例子 |
-| --- | --- | --- |
-| **主**（第一位） | 大的改动：架构调整、技术栈更换、重大重构 | `4.x.x` → `5.0.0` |
-| **次**（中间位） | 增加或下架功能 | `4.1.6` → `4.2.0` |
-| **修订**（最后位） | 修 bug、微调已有功能 | `4.2.0` → `4.2.1` |
-
-规则：**改动主或次时，其后的段位一律重置为 0。** 例如次位 +1 时修订位归零（`4.1.6` → `4.2.0`），主位 +1 时次位与修订位都归零（`4.9.3` → `5.0.0`）。
-
----
+改主位或次位时，后面的段位都归零。比如次位 +1 时修订归零（`4.1.6` → `4.2.0`），主位 +1 时次位和修订都归零（`4.9.3` → `5.0.0`）。
 
 ## 说明
 
-个人自用与学习性质的项目。涉及第三方平台解析的功能，仅作技术实践。
+个人自用和学习性质的项目。涉及第三方平台解析的功能只作技术实践。
