@@ -2,7 +2,7 @@ import { getSiteMonitorDb } from '../config/db.js'
 import { decrypt, encrypt } from './crypto.js'
 import { fetchMonitorResponse } from './siteMonitorFetch.js'
 import { queueSiteMonitorAlertDelivery, queueSiteMonitorDelivery } from './siteMonitorMailer.js'
-import { createEventKey, extractAnnouncementAttachment, extractAnnouncementBody, parseHzuAnnouncements, parseJustWokerModels } from './siteMonitorParsers.js'
+import { createEventKey, extractAnnouncementAttachment, extractAnnouncementBody, extractHzuPageLinks, parseHzuAnnouncements, parseJustWokerModels } from './siteMonitorParsers.js'
 import { enqueueSiteMonitorDbWork } from './siteMonitorQueue.js'
 
 const inFlightMonitors = new Map()
@@ -15,6 +15,9 @@ const CREDENTIAL_FAILURE_CODES = new Set(['AUTH_REJECTED', 'AUTH_MISSING', 'AUTH
 // One request per new announcement, capped so an unexpected flood cannot turn into a crawl of the
 // upstream site. Bodies past the cap still notify, just without the excerpt.
 const MAX_ANNOUNCEMENT_CONTENT_FETCHES = 10
+// Cap the combined multi-page list body. Each hzu page is tens of KB, so this only guards against a
+// pathological set of pages; it stays under the parser's own 5 MB input limit either way.
+const MAX_LIST_SNAPSHOT_BYTES = 4 * 1024 * 1024
 
 function dbGet(sql, params = []) {
   return new Promise((resolve, reject) => getSiteMonitorDb().get(sql, params, (error, row) => (error ? reject(error) : resolve(row))))
@@ -377,6 +380,40 @@ async function collectAnnouncementBodies(monitor, items, { fetchImpl, hostnameVa
   return bodies
 }
 
+/**
+ * Fetch a full list snapshot. For hzu the announcement list is paginated across CMS pages (list.htm,
+ * list2.htm …). Page 1 is the freshness gate — a newly published article always lands at the top and
+ * shifts page 1, so a 304 there means nothing is new and no deeper page can hide a new article — but
+ * the snapshot itself must span every page. Without the deeper pages an article the site re-sorts from
+ * page 2 back onto page 1 has no matching baseline row and is mis-reported as new (the observed false
+ * positive). Deeper pages reuse the same security envelope and carry no conditional headers, so they
+ * always return a full body to concatenate; the parser dedups by article id, so overlap is harmless.
+ */
+async function fetchListSnapshot(requestMonitor, { fetchImpl, hostnameValidator, onCredentialRefresh } = {}) {
+  const primary = await fetchMonitorResponse(requestMonitor, { fetchImpl, hostnameValidator, onCredentialRefresh })
+  if (requestMonitor.source !== 'hzu_postgraduate' || primary.notModified || !primary.body) return primary
+
+  const pageLinks = extractHzuPageLinks(primary.body, primary.finalUrl || requestMonitor.target_url || undefined)
+  if (pageLinks.length === 0) return primary
+
+  let body = primary.body
+  for (const href of pageLinks) {
+    if (body.length >= MAX_LIST_SNAPSHOT_BYTES) break
+    try {
+      const page = await fetchMonitorResponse(
+        { source: requestMonitor.source, target_url: href, auth_type: 'none' },
+        { fetchImpl, hostnameValidator },
+      )
+      if (!page.notModified && page.body) body += '\n' + page.body
+    } catch {
+      // A single unreachable deeper page must not fail the whole run: page 1 alone still parses into a
+      // valid snapshot, and a new article can only surface by first shifting page 1. Missing a deeper
+      // page only risks re-reporting one rotated old article, which the next successful run corrects.
+    }
+  }
+  return { ...primary, body }
+}
+
 async function executeMonitor(source, { triggerType = 'manual', diagnose = false, rebuildBaseline = false, fetchImpl, hostnameValidator, nowMs } = {}) {
   if (!VALID_TRIGGERS.has(triggerType)) throw new Error('Invalid monitor trigger type')
   const monitor = await loadMonitor(source)
@@ -394,7 +431,7 @@ async function executeMonitor(source, { triggerType = 'manual', diagnose = false
   try {
     // Diagnostics must fetch a full body instead of reusing validators and receiving an unparseable 304.
     const requestMonitor = (diagnose || rebuildBaseline) ? { ...monitor, etag: null, last_modified: null } : monitor
-    const response = await fetchMonitorResponse(requestMonitor, {
+    const response = await fetchListSnapshot(requestMonitor, {
       fetchImpl,
       hostnameValidator,
       onCredentialRefresh: async (newSecret) => {

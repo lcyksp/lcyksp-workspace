@@ -383,3 +383,79 @@ test('announcement bodies are never fetched for a fresh or rebuilt baseline', as
   })
   assert.equal(requested.length, 1)
 })
+
+test('a paginated list captures deeper pages so a rotated older article does not re-alert', async () => {
+  const monitorId = await resetMonitor('hzu_postgraduate')
+  const nextLink = '<a href="/yjszs/list2.htm">下一页</a>'
+  const a101 = '<a href="/2026/0901/c11241a101/page.htm">公告一</a>'
+  const a102 = '<a href="/2026/0902/c11241a102/page.htm">公告二</a>'
+  const requested = []
+  const paged = async (url) => {
+    const u = String(url)
+    requested.push(u)
+    if (u.endsWith('/yjszs/list.htm')) return htmlResponse(a101 + nextLink) // page 1: only 101 + link to page 2
+    if (u.endsWith('/yjszs/list2.htm')) return htmlResponse(a102)           // page 2 carries the older 102
+    return htmlResponse('') // article bodies are not expected here
+  }
+
+  // Baseline must ingest BOTH pages, not just page 1.
+  const baseline = await runSiteMonitor('hzu_postgraduate', { hostnameValidator: noDnsBlock, fetchImpl: paged })
+  assert.equal(baseline.status, 'baseline')
+  assert.ok(requested.some((u) => u.endsWith('/yjszs/list2.htm')), 'deeper list page must be fetched')
+  const items = await dbAll('SELECT item_key FROM site_monitor_items WHERE monitor_id = ? ORDER BY item_key', [monitorId])
+  assert.deepEqual(items.map((r) => r.item_key), ['article:101', 'article:102'])
+
+  await dbRun('DELETE FROM site_monitor_deliveries')
+  // The site re-sorts 102 onto page 1. The record set is unchanged, so nothing is new.
+  const rotated = await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => {
+      const u = String(url)
+      if (u.endsWith('/yjszs/list.htm')) return htmlResponse(a102 + a101 + nextLink) // 102 rotated to the top of page 1
+      if (u.endsWith('/yjszs/list2.htm')) return htmlResponse(a101)                  // 101 now on page 2
+      return htmlResponse('')
+    },
+  })
+  assert.equal(rotated.status, 'success')
+  assert.equal(rotated.added.length, 0, 'a rotated older article must not be reported as new')
+  const deliveries = await dbGet('SELECT COUNT(*) count FROM site_monitor_deliveries WHERE monitor_id = ?', [monitorId])
+  assert.equal(deliveries.count, 0)
+})
+
+test('a page-1 304 short-circuits before any deeper list page is fetched', async () => {
+  await resetMonitor('hzu_postgraduate')
+  const a101 = '<a href="/2026/0901/c11241a101/page.htm">公告一</a>'
+  const nextLink = '<a href="/yjszs/list2.htm">下一页</a>'
+  await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => (String(url).endsWith('/yjszs/list.htm') ? htmlResponse(a101 + nextLink) : htmlResponse('')),
+  })
+
+  const requested = []
+  const result = await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => { requested.push(String(url)); return new Response(null, { status: 304 }) },
+  })
+  assert.equal(result.status, 'not_modified')
+  assert.equal(requested.length, 1, 'a 304 on page 1 means nothing is new; deeper pages must not be fetched')
+})
+
+test('a failing deeper list page never fails the run; page 1 alone still parses', async () => {
+  const monitorId = await resetMonitor('hzu_postgraduate')
+  const a101 = '<a href="/2026/0901/c11241a101/page.htm">公告一</a>'
+  const nextLink = '<a href="/yjszs/list2.htm">下一页</a>'
+  const result = await runSiteMonitor('hzu_postgraduate', {
+    hostnameValidator: noDnsBlock,
+    fetchImpl: async (url) => {
+      const u = String(url)
+      if (u.endsWith('/yjszs/list.htm')) return htmlResponse(a101 + nextLink)
+      if (u.endsWith('/yjszs/list2.htm')) throw new Error('deeper page down')
+      return htmlResponse('')
+    },
+  })
+  assert.equal(result.status, 'baseline')
+  const monitor = await dbGet('SELECT last_status, consecutive_failures FROM site_monitors WHERE id = ?', [monitorId])
+  assert.deepEqual(monitor, { last_status: 'success', consecutive_failures: 0 })
+  const items = await dbAll('SELECT item_key FROM site_monitor_items WHERE monitor_id = ?', [monitorId])
+  assert.deepEqual(items.map((r) => r.item_key), ['article:101'])
+})
