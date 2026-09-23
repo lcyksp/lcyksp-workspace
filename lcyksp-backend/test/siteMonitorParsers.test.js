@@ -7,6 +7,7 @@ import {
   diffItems,
   extractAnnouncementAttachment,
   extractAnnouncementBody,
+  extractHzuPageLinks,
   parseHzuAnnouncements,
   parseJustWokerModels,
 } from '../src/utils/siteMonitorParsers.js'
@@ -204,4 +205,44 @@ test('parser enforces input size and field length limits', () => {
 
 test('event fingerprint encoding is unambiguous when fields contain separators', () => {
   assert.notEqual(createEventKey('a', 'b', 'c\0d'), createEventKey('a\0b', 'c', 'd'))
+})
+
+test('page-link extractor collects deeper 万户 list pages, deduped and ordered', () => {
+  const html = [
+    '<div class="wp_paging">',
+    '<a href="/yjszs/list2.htm">下一页</a>',
+    '<a href="/yjszs/list3.htm">3</a>',
+    '<a href="/yjszs/list2.htm">2</a>',      // duplicate page number
+    '<a href="/yjszs/list.htm">首页</a>',     // page 1 itself is excluded
+    '<a href="/yjszs/list3.htm?x=1#top">尾页</a>', // query/hash stripped, still page 3
+    '</div>',
+  ].join('')
+  assert.deepEqual(extractHzuPageLinks(html), [
+    'https://www.hzu.edu.cn/yjszs/list2.htm',
+    'https://www.hzu.edu.cn/yjszs/list3.htm',
+  ])
+})
+
+test('page-link extractor ignores off-origin, off-directory and non-list links', () => {
+  const html = [
+    '<a href="https://evil.example.com/yjszs/list2.htm">2</a>',      // off-origin
+    '<a href="/other/list2.htm">2</a>',                             // off-directory
+    '<a href="/yjszs/2026/0901/c11241a101/page.htm">article</a>',   // article, not a list page
+    '<a href="/yjszs/list.htm">1</a>',                              // page 1
+  ].join('')
+  assert.deepEqual(extractHzuPageLinks(html), [])
+})
+
+test('page-link extractor returns [] for empty input or an unrecognized base URL', () => {
+  assert.deepEqual(extractHzuPageLinks(''), [])
+  assert.deepEqual(extractHzuPageLinks('<a href="/yjszs/list2.htm">2</a>', 'not a url'), [])
+  assert.deepEqual(extractHzuPageLinks('<a href="/yjszs/list2.htm">2</a>', 'https://www.hzu.edu.cn/yjszs/index.htm'), [])
+})
+
+test('page-link extractor caps the number of deeper pages it will follow', () => {
+  const html = Array.from({ length: 30 }, (_, i) => `<a href="/yjszs/list${i + 2}.htm">${i + 2}</a>`).join('')
+  const links = extractHzuPageLinks(html)
+  assert.equal(links.length, 11) // MAX_LIST_PAGES(12) - 1
+  assert.equal(links[0], 'https://www.hzu.edu.cn/yjszs/list2.htm')
+  assert.equal(links[10], 'https://www.hzu.edu.cn/yjszs/list12.htm')
 })

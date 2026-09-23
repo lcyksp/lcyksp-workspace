@@ -273,6 +273,59 @@ function extractNearbyDate(fragment, fallback) {
   return dateFromPath(match[1], monthDay) ?? fallback
 }
 
+// A 万户 CMS list is paginated (list.htm, list2.htm, list3.htm …). Following the page links printed on
+// page 1 lets a single run capture the full record set, so an old article that the site re-sorts back
+// onto page 1 is recognised as already-known instead of being mis-reported as a new announcement. The
+// cap bounds how many upstream requests one run can trigger even if the pagination markup is malformed.
+const MAX_LIST_PAGES = 12
+
+/**
+ * Collect the deeper list-page URLs (page 2..N) linked from a 万户 list page. Page 1 is `list.htm`;
+ * deeper pages are `listN.htm` in the same directory. Returns absolute URLs, deduped and ordered by
+ * page number, excluding page 1. Anything off-origin, off-directory or unparseable is ignored, and the
+ * result never exceeds MAX_LIST_PAGES - 1 entries.
+ */
+export function extractHzuPageLinks(input, baseUrl = 'https://www.hzu.edu.cn/yjszs/list.htm') {
+  if (typeof input !== 'string' || !input.trim()) return []
+  let base
+  try {
+    base = new URL(baseUrl)
+  } catch {
+    return []
+  }
+  const dirMatch = base.pathname.match(/^(.*\/)list\.htm$/i)
+  if (!dirMatch) return []
+  const pagePattern = new RegExp(`^${dirMatch[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}list(\\d+)\\.htm$`, 'i')
+
+  const pages = new Map()
+  const anchorPattern = /<a\b([^>]*)>[\s\S]*?<\/a\s*>/gi
+  let anchor
+  while ((anchor = anchorPattern.exec(input)) !== null) {
+    const href = decodeHtmlEntities(extractAttribute(anchor[1], 'href')).trim()
+    if (!href) continue
+    let url
+    try {
+      url = new URL(href, base)
+    } catch {
+      continue
+    }
+    if (url.origin !== base.origin) continue
+    const match = url.pathname.match(pagePattern)
+    if (!match) continue
+    const pageNumber = Number(match[1])
+    // Page 1 is `list.htm` (no number) and is already in hand; only deeper pages need a second request.
+    if (!Number.isInteger(pageNumber) || pageNumber < 2) continue
+    url.search = ''
+    url.hash = ''
+    if (!pages.has(pageNumber)) pages.set(pageNumber, url.href)
+  }
+
+  return [...pages.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .slice(0, MAX_LIST_PAGES - 1)
+    .map(([, href]) => href)
+}
+
 /** Parse HZU article anchors only; navigation and off-site links are ignored. */
 export function parseHzuAnnouncements(input, baseUrl = 'https://www.hzu.edu.cn/yjszs/list.htm') {
   if (typeof input !== 'string' || !input.trim()) throw new TypeError('Announcement response is empty')
