@@ -385,7 +385,9 @@ onUnmounted(() => {
 }
 
 .tip-box {
+  background: var(--bg-ctrl); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-gold) 6%, var(--bg-ctrl));
+  border: 1px solid var(--border-subtle); /* 旧浏览器回退：无 color-mix */
   border: 1px solid color-mix(in srgb, var(--accent-gold) 20%, var(--border-subtle));
   border-radius: 12px;
   padding: 16px;

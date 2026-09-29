@@ -5,6 +5,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { createCosmos } from '../utils/cosmosEngine.js'
 import { loadLandRings } from '../utils/geoTexture.js'
 import { resolveViewerLocation } from '../utils/timezoneGeo.js'
+import { getRenderTier } from '../utils/renderTier.js'
 
 const emit = defineEmits(['ready', 'failed', 'pick'])
 
@@ -13,8 +14,12 @@ let engine = null
 let observer = null
 let gone = false
 
-// 小屏一律降档；桌面只看逻辑核心数，双核机器多半也没有独显
+// 小屏一律降档；桌面看逻辑核心数，双核机器多半也没独显
 function detectQuality() {
+  // 软件渲染 / 拿不到 WebGL2 一律 low：正常这类已被 HomeCosmosView 分流到 CSS 星空，
+  // 这里是组件被单独复用时的多一层保险，也修掉"多核无独显桌面被误判 high"
+  const tier = getRenderTier()
+  if (!tier.hasWebGL2 || tier.isSoftware) return 'low'
   if (window.innerWidth < 820) return 'low'
   return (navigator.hardwareConcurrency || 8) <= 2 ? 'low' : 'high'
 }

@@ -95,6 +95,30 @@ app.use('/api/steps', heavyLimiter, stepsRouter);
 // 战争雷霆交易所价格监控：查询走本地库；配置/刷新打上游 Gaijin，按重接口限流
 app.use('/api/wt-market', heavyLimiter, wtMarketRouter);
 
+// ---------- IP 归属地查询：进程内缓存 + 上游超时 ----------
+// 前端每次进页面都会自动查一次本机 IP，且该接口无鉴权，容易被扫描器当"慢速资源放大器"反复打。
+// 加带 TTL 和条数上限的内存缓存：命中就不出网，省 2 核小机的 CPU/句柄，也躲开 ip-api 免费版 45 次/分钟限速。
+// 上限用于防随机 IP 刷爆内存：超限就按插入顺序淘汰最老的一条（Map 保序，近似 LRU，够用）。
+const IP_CACHE_TTL_MS = 6 * 60 * 60 * 1000;   // 归属地很稳定，缓存 6 小时
+const IP_CACHE_MAX = 5000;                     // 最多 5000 条，满载约 1-2 MB
+const IP_LOOKUP_TIMEOUT_MS = 3500;             // 上游 3.5s 不回就放弃，别让请求和 socket 句柄无限期挂住
+const ipLookupCache = new Map();
+
+function getCachedIpInfo(ip) {
+  const hit = ipLookupCache.get(ip);
+  if (!hit) return null;
+  if (Date.now() > hit.expireAt) { ipLookupCache.delete(ip); return null; }
+  return hit.data;
+}
+
+function setCachedIpInfo(ip, data) {
+  if (ipLookupCache.size >= IP_CACHE_MAX) {
+    const oldest = ipLookupCache.keys().next().value;
+    if (oldest !== undefined) ipLookupCache.delete(oldest);
+  }
+  ipLookupCache.set(ip, { data, expireAt: Date.now() + IP_CACHE_TTL_MS });
+}
+
 // IP归属地查询接口
 app.get('/api/ip-lookup', async (req, res) => {
   try {
@@ -123,15 +147,38 @@ app.get('/api/ip-lookup', async (req, res) => {
         asnOrg: '-',
         latitude: 0,
         longitude: 0,
-        isProxy: false
+        isProxy: null
       });
     }
 
-    const response = await fetch(`http://ip-api.com/json/${queryIp}?lang=zh-CN`);
-    const data = await response.json();
+    // 命中缓存直接返回：绝大多数请求（尤其反复查本机 IP）不再出网
+    const cached = getCachedIpInfo(queryIp);
+    if (cached) return res.json(cached);
+
+    let data;
+    try {
+      const response = await fetch(`http://ip-api.com/json/${queryIp}?lang=zh-CN`, {
+        signal: AbortSignal.timeout(IP_LOOKUP_TIMEOUT_MS),
+      });
+      data = await response.json();
+    } catch (e) {
+      // 上游超时/网络错误：回"未知"占位，别抛 500 打崩前端；不缓存，下次再试
+      return res.json({
+        ipAddress: queryIp,
+        ipVersion: queryIp.includes(':') ? 6 : 4,
+        countryName: e.name === 'TimeoutError' ? '查询超时，请稍后重试' : '未知物理位置',
+        regionName: '-',
+        cityName: '-',
+        zipCode: '-',
+        asnOrg: '-',
+        latitude: 0,
+        longitude: 0,
+        isProxy: null
+      });
+    }
 
     if (data.status === 'fail') {
-      return res.json({
+      const failResult = {
         ipAddress: queryIp,
         ipVersion: queryIp.includes(':') ? 6 : 4,
         countryName: '未知物理位置',
@@ -141,11 +188,14 @@ app.get('/api/ip-lookup', async (req, res) => {
         asnOrg: '-',
         latitude: 0,
         longitude: 0,
-        isProxy: false
-      });
+        isProxy: null
+      };
+      // 无效/保留地址是稳定结果，缓存掉，免得扫描器拿它反复打上游
+      setCachedIpInfo(queryIp, failResult);
+      return res.json(failResult);
     }
 
-    res.json({
+    const result = {
       ipAddress: data.query,
       ipVersion: data.query.includes(':') ? 6 : 4,
       countryName: data.country || '-',
@@ -155,8 +205,10 @@ app.get('/api/ip-lookup', async (req, res) => {
       asnOrg: data.isp || data.org || '-',
       latitude: data.lat || 0,
       longitude: data.lon || 0,
-      isProxy: false
-    });
+      isProxy: null   // ip-api 免费版无代理字段，之前写死 false 是假数据，改 null=未检测
+    };
+    setCachedIpInfo(queryIp, result);
+    res.json(result);
   } catch (err) {
     console.error('IP lookup error:', err);
     res.status(500).json({ error: 'IP归属地查询失败' });

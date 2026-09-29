@@ -737,7 +737,9 @@ function downloadResult() {
 .sample-notice {
   display: flex;
   gap: 8px;
+  background: var(--bg-ctrl); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-blue) 8%, var(--bg-ctrl));
+  border: 1px solid var(--border-subtle); /* 旧浏览器回退：无 color-mix */
   border: 1px solid color-mix(in srgb, var(--accent-blue) 18%, var(--border-subtle));
   border-radius: 10px;
   padding: 10px 12px;

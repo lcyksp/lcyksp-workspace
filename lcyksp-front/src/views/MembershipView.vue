@@ -325,7 +325,9 @@ onUnmounted(() => {
   gap: 6px;
   padding: 14px;
   border-radius: 14px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 88%, transparent);
+  border: 1px solid var(--border-color); /* 旧浏览器回退：无 color-mix */
   border: 1px solid color-mix(in srgb, var(--accent-blue) 18%, var(--border-color));
 }
 
@@ -370,6 +372,7 @@ onUnmounted(() => {
   border: 1px dashed var(--border-color);
   border-radius: 14px;
   color: var(--text-secondary);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 72%, transparent);
 }
 
@@ -382,6 +385,7 @@ onUnmounted(() => {
   padding: 14px;
   border-radius: 14px;
   border: 1px solid var(--border-color);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 86%, transparent);
 }
 

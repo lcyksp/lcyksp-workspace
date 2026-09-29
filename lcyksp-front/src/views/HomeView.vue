@@ -234,6 +234,7 @@ onUnmounted(() => {
 .support-link {
   border: none;
   background: transparent;
+  color: var(--text-secondary); /* 旧浏览器回退：无 color-mix */
   color: color-mix(in srgb, var(--text-secondary) 88%, transparent);
   font-size: 0.82rem;
   cursor: pointer;
@@ -352,6 +353,7 @@ onUnmounted(() => {
 .support-tab.active {
   background: color-mix(in srgb, var(--accent-blue) 22%, transparent);
   color: var(--text-primary);
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-blue) 56%, transparent);
 }
 

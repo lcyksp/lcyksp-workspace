@@ -950,6 +950,7 @@ onUnmounted(() => {
 }
 
 .album-thumb.picked {
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-input));
 }
 

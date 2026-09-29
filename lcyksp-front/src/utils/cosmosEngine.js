@@ -448,6 +448,14 @@ export function createCosmos(options = {}) {
   // 按 1 渲染等于让浏览器把画面放大三倍，糊的是整个画面而不只是贴图
   let pixelRatio = Math.min(window.devicePixelRatio || 1, low ? 1.5 : 1.75)
   let frameMin = low ? 33 : 0
+  // 运行时 FPS 自适应：只在 high 档监测，连续 FPS_LOW_SECONDS 秒低于 FPS_DOWNGRADE 就
+  // 单向降到 low（降 pixelRatio + 帧率封顶，不重建几何体），之后停止监测、绝不回升，避免来回抖动
+  let qualityLow = low
+  const FPS_DOWNGRADE = 45
+  const FPS_LOW_SECONDS = 2
+  let fpsWindowStart = 0
+  let fpsFrames = 0
+  let fpsLowSeconds = 0
 
   // 真实贴图后台下载，到位再淡入替换矢量地球：首屏不等它，它失败了也只是留在矢量版
   const loadedMaps = []
@@ -703,6 +711,26 @@ export function createCosmos(options = {}) {
     const dt = lastFrame ? Math.min((ms - lastFrame) / 1000, 0.25) : 0.016
     lastFrame = ms
 
+    // FPS 自适应：仅 high 档监测，每 ~1s 结算一次；连续掉档就单向降到 low 后停止监测
+    if (!qualityLow) {
+      if (!fpsWindowStart) {
+        fpsWindowStart = ms
+        fpsFrames = 0
+      } else {
+        fpsFrames++
+        const span = ms - fpsWindowStart
+        if (span >= 1000) {
+          const fps = (fpsFrames * 1000) / span
+          fpsFrames = 0
+          fpsWindowStart = ms
+          if (fps < FPS_DOWNGRADE) {
+            if (++fpsLowSeconds >= FPS_LOW_SECONDS) setQuality('low')
+          } else {
+            fpsLowSeconds = 0
+          }
+        }
+      }
+    }
     if (zoomDur > 0) {
       const p = MathUtils.clamp((ms - zoomStart) / zoomDur, 0, 1)
       zoomT = zoomFrom + (zoomTo - zoomFrom) * ease(p)
@@ -755,6 +783,10 @@ export function createCosmos(options = {}) {
   function start() {
     if (!raf) {
       lastFrame = 0
+      // 重置 FPS 窗口：标签页切回来时别把中断那段算成掉帧
+      fpsWindowStart = 0
+      fpsFrames = 0
+      fpsLowSeconds = 0
       raf = requestAnimationFrame(frame)
     }
   }
@@ -906,6 +938,7 @@ export function createCosmos(options = {}) {
   // 只动 pixelRatio 和帧间隔，不重建任何 GPU 资源，切档位时不会卡一下
   function setQuality(value) {
     const isLow = value === 'low'
+    qualityLow = isLow
     frameMin = isLow ? 33 : 0
     pixelRatio = Math.min(window.devicePixelRatio || 1, isLow ? 1.5 : 1.75)
     resize()

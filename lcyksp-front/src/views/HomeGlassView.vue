@@ -204,6 +204,7 @@ function openSupportDialog() {
 .support-tab.active {
   background: color-mix(in srgb, var(--accent-blue) 22%, transparent);
   color: var(--text-primary);
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-blue) 56%, transparent);
 }
 

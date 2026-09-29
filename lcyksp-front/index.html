@@ -11,6 +11,33 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- 太老浏览器（缺 ES6 Proxy，如真 IE11）：Vue 3 无法运行且 Proxy 无法 polyfill，
+         直接提示升级，避免白屏。纯 ES5 内联脚本，保证最老浏览器也能解析执行。 -->
+    <script>
+      (function () {
+        if (typeof window.Proxy === 'function') return;
+        var box = document.createElement('div');
+        box.setAttribute(
+          'style',
+          'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;' +
+            'background:#0b0f1a;color:#e8eaed;display:flex;align-items:center;' +
+            'justify-content:center;padding:24px;text-align:center;' +
+            'font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;'
+        );
+        box.innerHTML =
+          '<div style="max-width:520px">' +
+          '<div style="font-size:42px;margin-bottom:16px">&#127760;</div>' +
+          '<div style="font-size:20px;font-weight:700;margin-bottom:12px">您的浏览器版本过低</div>' +
+          '<div style="font-size:15px;line-height:1.8;opacity:.85">无法正常使用本站。请升级浏览器，' +
+          '或更换最新版 <b>Chrome / Edge / Firefox</b> 后重试。</div>' +
+          '</div>';
+        var mount = function () {
+          if (document.body) document.body.appendChild(box);
+          else setTimeout(mount, 30);
+        };
+        mount();
+      })();
+    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

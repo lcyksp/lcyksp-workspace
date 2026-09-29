@@ -1,11 +1,10 @@
 <script setup>
 import { ref, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import * as pdfjsLib from 'pdfjs-dist'
 import { PDFDocument, degrees } from 'pdf-lib'
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
 import { Document, Loading, Picture, UploadFilled } from '@element-plus/icons-vue'
-pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker()
+import pdfjsLib from '../utils/pdfjs.js'
+import { clampRenderScale, yieldToUI, releaseCanvas, canvasToBlob } from '../utils/pdfRender.js'
 
 const mode = ref('none')
 const rawFile = ref(null); const fileName = ref(''); const fileSize = ref(''); const totalPages = ref(0)
@@ -19,19 +18,26 @@ async function handleFileChange(uploadFile) {
     const buf = await file.arrayBuffer(); const pdf = await pdfjsLib.getDocument({ data: buf, useSystemFonts: true }).promise
     totalPages.value = pdf.numPages
     for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i); const vp = page.getViewport({ scale: 0.5 })
-      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height
+      const page = await pdf.getPage(i)
+      const { scale } = clampRenderScale(page, 0.5)
+      const vp = page.getViewport({ scale })
+      const c = document.createElement('canvas'); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height)
       await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise
-      pageCards.value.push({ id: Date.now()+Math.random(), pageIndex: i-1, targetRotation: 0, imgUrl: c.toDataURL('image/jpeg',0.8) })
+      // toBlob + objectURL 而不是 toDataURL：base64 比二进制大 1/3 且无法 revoke，
+      // 整册攒在 pageCards 里是弱机上比画布更大的内存头
+      const blob = await canvasToBlob(c, 'image/jpeg', 0.8)
+      releaseCanvas(c)
+      pageCards.value.push({ id: Date.now()+Math.random(), pageIndex: i-1, targetRotation: 0, imgUrl: URL.createObjectURL(blob) })
+      await yieldToUI()
     }
     ElMessage.success(`已载入 ${pdf.numPages} 页`)
   } catch { ElMessage.error('PDF 解析失败') }
   finally { processing.value = false }
 }
 function rotatePageCard(i) { pageCards.value[i].targetRotation = (pageCards.value[i].targetRotation+90)%360 }
-function deletePageCard(i) { pageCards.value.splice(i,1) }
+function deletePageCard(i) { URL.revokeObjectURL(pageCards.value[i].imgUrl); pageCards.value.splice(i,1) }
 function movePageCard(i,d) { const t=i+d; if(t<0||t>=pageCards.value.length) return; [pageCards.value[i],pageCards.value[t]]=[pageCards.value[t],pageCards.value[i]] }
-function clearPageCards() { pageCards.value = []; totalPages.value = 0 }
+function clearPageCards() { pageCards.value.forEach(c => URL.revokeObjectURL(c.imgUrl)); pageCards.value = []; totalPages.value = 0 }
 async function handleExportEditedPDF() {
   if (!pageCards.value.length) { ElMessage.warning('编辑区无页面'); return }
   processing.value = true

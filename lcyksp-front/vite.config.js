@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import legacy from '@vitejs/plugin-legacy'
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { brotliCompressSync, gzipSync, constants as zlib } from 'node:zlib'
@@ -108,8 +109,37 @@ function manualChunks(id) {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [vue(), stripGlsl(), precompress()],
+  // 浏览器兼容策略（2026-09 依生产 nginx 日志约 17k 请求的 UA 分布定）：
+  // - 真人流量最低落在 Chrome 120 / Edge 90 / Firefox 121 / Safari 16.1，全部支持 ES module；
+  //   日志里唯一的"老浏览器"（Chrome/59、Firefox/48/71、IE9-10，合计约 370 次）UA 串逐字节一致，
+  //   是爬虫/扫描器，不是人。
+  // - 因此不再生成 nomodule legacy 包（renderLegacyChunks: false）：那 6.7MB 产物没有真实受众，
+  //   还明显拖慢构建；nomodule 浏览器由 index.html 的 Proxy 检测脚本提示升级。
+  // - 兼容主力收敛到现代路径：build.target 钉语法底线（见下），modernPolyfills 枚举 API 缺口，
+  //   覆盖"支持 module 但缺新 API"的 Win7/8 机器（Chrome 109-118、Firefox 115 ESR）。
+  plugins: [
+    vue(),
+    stripGlsl(),
+    legacy({
+      renderLegacyChunks: false,
+      // 用枚举而不用 true：true 会把全量 core-js（brotli 后约 45KB）注入每个现代访客的关键路径。
+      // 这里只补 dist 实扫出的真实缺口——vendor-vue 用到 toSorted 家族（Chrome 110+ 才有）、
+      // pdfjs 用到 withResolvers 的主线程部分（Chrome 119+ 才有；worker 部分由 pdfjs legacy
+      // 构建自带 polyfill，见 utils/pdfjs.js）。
+      modernPolyfills: [
+        'es.promise.with-resolvers',
+        'es.array.to-sorted',
+        'es.array.to-reversed',
+        'es.array.to-spliced',
+        'es.array.with',
+      ],
+    }),
+    precompress(),
+  ],
   build: {
+    // 显式钉死语法底线（等价 Vite 5 的 'modules' 预设）：不写死的话 Vite 升级会悄悄抬高
+    // 底线（Vite 6 默认已改为 baseline-widely-available），兼容承诺会跟着漂移。
+    target: ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'],
     rollupOptions: {
       output: { manualChunks },
     },

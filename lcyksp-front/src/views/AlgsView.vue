@@ -1837,6 +1837,7 @@ onBeforeUnmount(() => {
 
 .algs-panel {
   min-width: 0;
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-card) 96%, transparent);
   border: 1px solid var(--border-color);
   border-radius: 16px;
@@ -1905,6 +1906,7 @@ onBeforeUnmount(() => {
   font-weight: 700;
   font-size: 0.78rem;
   color: var(--text-secondary);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 88%, transparent);
 }
 
@@ -1953,6 +1955,7 @@ onBeforeUnmount(() => {
   padding: 14px;
   border-radius: 12px;
   border: 1px solid var(--border-color);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 86%, transparent);
   text-align: center;
 }
@@ -2029,6 +2032,7 @@ onBeforeUnmount(() => {
   padding: 8px 10px;
   border: 1px solid var(--border-color);
   border-radius: 10px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 70%, transparent);
 }
 
@@ -2075,11 +2079,13 @@ onBeforeUnmount(() => {
   padding: 9px 12px;
   border: 1px solid var(--border-color);
   border-radius: 10px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 70%, transparent);
   min-width: 0;
 }
 
 .gd-result-row.gd-winner {
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-gold) 55%, transparent);
   background: color-mix(in srgb, var(--accent-gold) 8%, transparent);
 }
@@ -2134,6 +2140,7 @@ onBeforeUnmount(() => {
 .gd-poi-group {
   padding: 6px 10px;
   border-radius: 8px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 70%, transparent);
   font-size: 0.88rem;
   min-width: 0;
@@ -2170,6 +2177,7 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   font-size: 0.72rem;
   color: var(--text-primary);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 88%, transparent);
   border: 1px solid var(--border-color);
   cursor: default;

@@ -2578,6 +2578,7 @@ onMounted(() => {
   padding: 14px;
   border: 1px solid var(--border-color);
   border-radius: 16px;
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-card) 92%, transparent);
 }
 
@@ -2614,6 +2615,7 @@ onMounted(() => {
 .mobile-admin-meta div {
   padding: 10px 12px;
   border-radius: 12px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 86%, transparent);
   border: 1px solid var(--border-color);
 }
@@ -2834,6 +2836,7 @@ onMounted(() => {
 
 .single-panel {
   max-width: 920px;
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-card) 96%, transparent);
   border: 1px solid var(--border-color);
   border-radius: 18px;
@@ -2883,6 +2886,7 @@ onMounted(() => {
   padding: 12px;
   border-radius: 14px;
   border: 1px solid var(--border-color);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 86%, transparent);
 }
 
@@ -2921,6 +2925,7 @@ onMounted(() => {
   padding: 12px;
   border-radius: 14px;
   border: 1px dashed var(--border-color);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 70%, transparent);
 }
 
@@ -2958,6 +2963,7 @@ onMounted(() => {
   padding: 8px 12px;
   border-radius: 999px;
   border: 1px solid var(--border-color);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 88%, transparent);
   color: var(--text-secondary);
   font-size: 0.82rem;
@@ -2969,6 +2975,7 @@ onMounted(() => {
 }
 .membership-stat-chip.active {
   border-color: var(--accent-blue) !important;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-blue) 15%, var(--bg-input));
   color: var(--accent-blue);
   font-weight: 600;
@@ -3007,14 +3014,17 @@ onMounted(() => {
 .card-detail-list dd { flex: 1; color: var(--text-primary); font-size: 0.82rem; margin: 0; }
 
 .membership-stat-chip.warning {
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, #e6a23c 30%, var(--border-color));
 }
 
 .membership-stat-chip.success {
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, #67c23a 30%, var(--border-color));
 }
 
 .membership-stat-chip.danger {
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, #f56c6c 30%, var(--border-color));
 }
 
@@ -3022,6 +3032,7 @@ onMounted(() => {
   border: 1px solid var(--border-color);
   border-radius: 16px;
   padding: 14px;
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-card) 92%, transparent);
 }
 
@@ -3054,6 +3065,7 @@ onMounted(() => {
   align-items: center;
   padding: 6px 10px;
   border-radius: 10px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 92%, transparent);
   border: 1px solid var(--border-color);
   font-family: Consolas, 'Courier New', monospace;
@@ -3078,6 +3090,7 @@ onMounted(() => {
   border: 1px dashed var(--border-color);
   border-radius: 16px;
   color: var(--text-secondary);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 72%, transparent);
 }
 
@@ -3085,6 +3098,7 @@ onMounted(() => {
   border: 1px solid var(--border-color);
   border-radius: 16px;
   padding: 14px;
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-card) 92%, transparent);
 }
 
@@ -3117,6 +3131,7 @@ onMounted(() => {
 .feedback-meta div {
   padding: 10px 12px;
   border-radius: 12px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 86%, transparent);
   border: 1px solid var(--border-color);
 }
@@ -3211,6 +3226,7 @@ onMounted(() => {
 }
 
 :deep(.el-tabs--border-card > .el-tabs__header) {
+  background: var(--bg-deep); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-deep) 94%, transparent);
   border-bottom: 1px solid #262b45;
 }
@@ -3267,6 +3283,7 @@ onMounted(() => {
 
 :deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
   /* 斑马纹同样混到卡片色上（不要混 transparent，否则固定列又会透出下层内容） */
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 72%, var(--bg-card));
 }
 
@@ -3298,6 +3315,7 @@ onMounted(() => {
 }
 
 :deep(.el-autocomplete-suggestion li.highlighted) {
+  background: var(--bg-hover); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-hover));
   color: var(--text-primary);
 }
@@ -3488,6 +3506,7 @@ onMounted(() => {
   padding: 8px 4px;
   border-radius: 12px;
   border: 1px solid var(--border-color);
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 86%, transparent);
 }
 

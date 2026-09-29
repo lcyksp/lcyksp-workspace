@@ -3,6 +3,7 @@ import { ref, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { PDFDocument } from 'pdf-lib'
 import { Loading, Picture, UploadFilled } from '@element-plus/icons-vue'
+import { makeCanvas, canvasToBlob, releaseCanvas } from '../utils/pdfRender.js'
 
 const mode = ref('none')
 const fileList = ref([])
@@ -44,10 +45,11 @@ async function handleGeneratePDF(download = false) {
       else if (item.rawFile.type.includes('png')) img = await pdf.embedPng(bytes)
       else {
         const img2 = await createImageBitmap(item.rawFile)
-        const c = new OffscreenCanvas(img2.width, img2.height)
-        const ctx = c.getContext('2d')
-        ctx.drawImage(img2, 0, 0)
-        const blob = await c.convertToBlob({ type: 'image/jpeg', quality: 0.9 })
+        const c = makeCanvas(img2.width, img2.height)
+        c.getContext('2d').drawImage(img2, 0, 0)
+        const blob = await canvasToBlob(c, 'image/jpeg', 0.9)
+        releaseCanvas(c)
+        img2.close()
         img = await pdf.embedJpg(await blob.arrayBuffer())
       }
       const { width, height } = img.scale(1)

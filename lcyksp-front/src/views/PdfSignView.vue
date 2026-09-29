@@ -1,11 +1,9 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import * as pdfjsLib from 'pdfjs-dist'
 import { PDFDocument, degrees } from 'pdf-lib'
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
 import { Document, UploadFilled } from '@element-plus/icons-vue'
-pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker()
+import pdfjsLib from '../utils/pdfjs.js'
 
 const mode = ref('none')
 const rawFile = ref(null); const fileName = ref(''); const totalPages = ref(0); const currentPage = ref(1)

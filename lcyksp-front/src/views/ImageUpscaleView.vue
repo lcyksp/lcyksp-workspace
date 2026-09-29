@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { isWeakDevice } from '../utils/renderTier.js'
 import { 
   Picture, 
   UploadFilled, 
@@ -16,7 +17,8 @@ import esrganSlim2x from '@upscalerjs/esrgan-slim/2x'
 import esrganSlim4x from '@upscalerjs/esrgan-slim/4x'
 
 // UI state
-const activeMode = ref('ai') // 'ai' or 'classic'
+const weak = isWeakDevice()
+const activeMode = ref(weak ? 'classic' : 'ai') // 弱端(无独显)默认经典，AI 超分在本机会很慢
 const scaleFactor = ref(2)   // 2 or 4
 const rawFile = ref(null)
 const originalUrl = ref('')
@@ -89,9 +91,36 @@ async function handleUpscale() {
     return
   }
 
+  // AI 模式弱端护栏：无独显极慢、大图易 OOM，跑之前先让用户知情确认
+  if (activeMode.value === 'ai') {
+    if (weak) {
+      try {
+        await ElMessageBox.confirm(
+          '检测到当前设备可能没有独立显卡，AI 超分会非常慢、甚至卡住页面。建议改用「经典插值加速」。仍要继续 AI 吗？',
+          '性能提示',
+          { confirmButtonText: '仍用 AI', cancelButtonText: '改用经典', type: 'warning' },
+        )
+      } catch {
+        activeMode.value = 'classic'
+      }
+    }
+    const estOut = imageWidth.value * imageHeight.value * scaleFactor.value * scaleFactor.value
+    if (activeMode.value === 'ai' && estOut > 16_000_000) {
+      try {
+        await ElMessageBox.confirm(
+          `放大后约 ${(estOut / 1e6).toFixed(0)} 百万像素，可能耗尽内存导致页面崩溃。建议降低倍率或改用经典模式。仍要继续吗？`,
+          '大图提示',
+          { confirmButtonText: '继续', cancelButtonText: '取消', type: 'warning' },
+        )
+      } catch {
+        return
+      }
+    }
+  }
+
   processing.value = true
   progress.value = 0
-  
+
   try {
     if (activeMode.value === 'ai') {
       await runAIUpscaling()
@@ -329,6 +358,7 @@ function handleDownload() {
                   : '经典插值加速模式：硬件加速的双三次插值配合锐化算法，在毫秒级内完成处理，适合大图、老旧设备或希望瞬间导出的用户。' 
                 }}
               </div>
+              <div v-if="weak" class="mode-desc" style="color:#e6a23c">检测到设备可能无独立显卡，已默认「经典」；AI 模式在本机会很慢。</div>
             </div>
 
             <!-- Processing progress -->

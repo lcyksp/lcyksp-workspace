@@ -1230,6 +1230,7 @@ onUnmounted(() => {
 
 .sub-submenu {
   padding-left: 12px;
+  background: var(--bg-sidebar); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-sidebar) 90%, transparent);
   border-left: 2px solid var(--border-subtle);
   margin-left: 44px;
@@ -1305,6 +1306,7 @@ onUnmounted(() => {
   justify-content: space-between;
   height: 56px;
   padding: 0 20px;
+  background: var(--bg-deep); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-deep) 86%, transparent);
   backdrop-filter: blur(10px);
   flex-shrink: 0;
@@ -1430,7 +1432,9 @@ onUnmounted(() => {
 .support-manual-tip {
   padding: 12px 14px;
   border-radius: 14px;
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 84%, transparent);
+  border: 1px solid var(--border-color); /* 旧浏览器回退：无 color-mix */
   border: 1px solid color-mix(in srgb, var(--accent-blue) 14%, var(--border-color));
 }
 
@@ -1455,6 +1459,7 @@ onUnmounted(() => {
 .support-tab.active {
   background: color-mix(in srgb, var(--accent-blue) 22%, transparent);
   color: var(--text-primary);
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-blue) 56%, transparent);
 }
 
@@ -1486,7 +1491,9 @@ onUnmounted(() => {
   gap: 6px;
   padding: 12px;
   border-radius: 14px;
+  border: 1px solid var(--border-color); /* 旧浏览器回退：无 color-mix */
   border: 1px solid color-mix(in srgb, var(--accent-blue) 20%, var(--border-color));
+  background: var(--bg-input); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-input) 90%, transparent);
   text-align: center;
 }

@@ -2,6 +2,8 @@
 // 首页星象化：HUD 是静态渲染的，three 那部分异步挂载，
 // 所以慢网络下先看到时间和底部信息，星球随后补上
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import CssStarfield from '../components/CssStarfield.vue'
+import { getRenderTier, prefersReducedMotion } from '../utils/renderTier.js'
 
 const CosmosCanvas = defineAsyncComponent(() => import('../components/CosmosCanvas.vue'))
 
@@ -16,6 +18,25 @@ const supportDialogVisible = ref(false)
 const supportChannel = ref('wechat')
 const engine = shallowRef(null)
 let clockTimer = null
+
+// 弱端分流：无 WebGL2（three r163+ 硬性要求）/ 软件渲染(无独显) / 用户要求减少动效 → 不加载 three，改用轻量 CSS 星空。
+// cosmosFailed 兜住 3D 运行期初始化失败（拿不到上下文等）时的回退。
+const tier = getRenderTier()
+const cosmosFailed = ref(false)
+const reducedMotion = ref(prefersReducedMotion())
+// 用户中途开/关系统"减少动效"时跟随变化
+let motionQuery = null
+const onMotionChange = (e) => { reducedMotion.value = e.matches }
+try {
+  motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  motionQuery.addEventListener('change', onMotionChange)
+} catch { /* 老浏览器无 addEventListener 或 matchMedia，保持初始值即可 */ }
+const useCosmos = computed(
+  () => tier.hasWebGL2 && !tier.isSoftware && !reducedMotion.value && !cosmosFailed.value,
+)
+function onCosmosFailed() {
+  cosmosFailed.value = true
+}
 
 const timeStr = computed(() =>
   now.value.toLocaleTimeString('zh-CN', {
@@ -36,7 +57,10 @@ onMounted(() => {
   }, 1000)
 })
 
-onUnmounted(() => clearInterval(clockTimer))
+onUnmounted(() => {
+  clearInterval(clockTimer)
+  if (motionQuery) motionQuery.removeEventListener('change', onMotionChange)
+})
 
 function onReady(api) {
   engine.value = api
@@ -64,7 +88,8 @@ function openSupportDialog() {
 <template>
   <div class="cosmos-view">
     <div class="cosmos-stage">
-      <CosmosCanvas @ready="onReady" @pick="onPick" />
+      <CosmosCanvas v-if="useCosmos" @ready="onReady" @pick="onPick" @failed="onCosmosFailed" />
+      <CssStarfield v-else />
     </div>
 
     <div class="cosmos-hud">

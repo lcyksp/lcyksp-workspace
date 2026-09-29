@@ -68,34 +68,21 @@
               v-for="(ep, index) in videoInfo.episodes"
               :key="index"
               class="episode-card"
-              :class="{ 'is-downloading': downloadingMap[index] }"
             >
               <span class="episode-index">{{ String(index + 1).padStart(2, '0') }}</span>
               <span class="episode-name">{{ ep.name }}</span>
-              
-              <!-- Download Button -->
+
+              <!-- 换票 → 浏览器原生下载；进度交给浏览器下载列表，这里只在换票期间转圈 -->
               <el-button
-                v-if="!downloadingMap[index]"
                 type="primary"
                 size="small"
                 class="download-btn"
+                :loading="preparingMap[index]"
                 @click="downloadEpisode(ep, index)"
               >
-                <el-icon><Download /></el-icon>
-                <span>下载</span>
+                <el-icon v-if="!preparingMap[index]"><Download /></el-icon>
+                <span>{{ preparingMap[index] ? '准备中...' : '下载' }}</span>
               </el-button>
-
-              <!-- Progress bar & state display when downloading -->
-              <div v-else class="download-progress-block">
-                <div class="progress-bar-container">
-                  <div class="progress-bar-fill" :style="{ width: getPercentStr(progressMap[index]) }"></div>
-                </div>
-                <div class="progress-meta">
-                  <span class="pct-num">{{ getPercentStr(progressMap[index]) }}</span>
-                  <span class="speed-num">{{ getSpeedStr(progressMap[index]) }}</span>
-                </div>
-                <div class="progress-size">{{ getSizeStr(progressMap[index]) }}</div>
-              </div>
             </div>
           </div>
         </div>
@@ -120,28 +107,14 @@ var analyzing = ref(false)
 var videoInfo = ref(null)
 var error = ref('')
 
-const downloadingMap = computed(() => {
+const preparingMap = computed(() => {
   const map = {}
   if (!videoInfo.value) return map
   const title = videoInfo.value.title || '电视剧'
   videoInfo.value.episodes.forEach((ep, index) => {
     const key = title + '_' + ep.name
-    if (tvDownloadManager.activeTasks[key]) {
+    if (tvDownloadManager.preparing[key]) {
       map[index] = true
-    }
-  })
-  return map
-})
-
-const progressMap = computed(() => {
-  const map = {}
-  if (!videoInfo.value) return map
-  const title = videoInfo.value.title || '电视剧'
-  videoInfo.value.episodes.forEach((ep, index) => {
-    const key = title + '_' + ep.name
-    const task = tvDownloadManager.activeTasks[key]
-    if (task) {
-      map[index] = task.progress
     }
   })
   return map
@@ -149,27 +122,6 @@ const progressMap = computed(() => {
 
 var currentSourceIndex = ref(0)
 var allSources = ref([])
-
-function getPercentStr(prog) {
-  if (!prog) return '0%'
-  var size = prog.size || ''
-  var match = size.match(/^(\d+(\.\d+)?%)/)
-  if (match) return match[1]
-  return '0%'
-}
-
-function getSpeedStr(prog) {
-  if (!prog) return '连接中...'
-  return prog.speed || '0x'
-}
-
-function getSizeStr(prog) {
-  if (!prog) return ''
-  var size = prog.size || ''
-  var match = size.match(/\(\s*([^)]+)\s*\)/)
-  if (match) return match[1]
-  return size
-}
 
 async function analyze() {
   var url = inputUrl.value.trim()
@@ -198,6 +150,17 @@ async function analyze() {
 async function switchSource(index) {
   if (!videoInfo.value || !allSources.value[index]) return
 
+  const target = allSources.value[index]
+  // 多源/搜索结果的 sources 已内嵌 episodes → 本地切换，不再打后端
+  if (Array.isArray(target.episodes)) {
+    videoInfo.value.episodes = target.episodes
+    videoInfo.value.sourceName = target.name
+    currentSourceIndex.value = index
+    ElMessage.success('已切换到: ' + target.name)
+    return
+  }
+
+  // 兜底（如 jianpian URL 模式，sources 无内嵌 episodes）：仍走后端带 sourceIndex
   analyzing.value = true
   try {
     var res = await axios.post('/api/tv/analyze', {
@@ -382,6 +345,7 @@ function onCoverError(e) {
 }
 
 .episode-card:hover {
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--border-color));
   box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
@@ -460,86 +424,5 @@ function onCoverError(e) {
 .dark .download-btn:hover {
   background: #4338ca !important;
   color: #ffffff !important;
-}
-
-/* Game Loading Bar Style */
-.episode-card.is-downloading {
-  border-color: #3b82f6;
-  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
-}
-.dark .episode-card.is-downloading {
-  border-color: #4f46e5;
-  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.25);
-}
-
-.download-progress-block {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-  margin-top: auto;
-}
-
-.progress-bar-container {
-  width: 100%;
-  height: 10px;
-  background: rgba(0, 0, 0, 0.08);
-  border-radius: 10px;
-  overflow: hidden;
-  position: relative;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
-}
-
-.dark .progress-bar-container {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.15);
-  box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
-}
-
-.progress-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #3b82f6, #00f2fe);
-  border-radius: 10px;
-  transition: width 0.3s ease;
-  position: relative;
-}
-
-.progress-bar-fill::after {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.4) 50%,
-    rgba(255, 255, 255, 0) 100%
-  );
-  animation: progress-glow 2s infinite linear;
-  background-size: 200% 100%;
-}
-
-@keyframes progress-glow {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-
-.progress-meta {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: #1e3a8a;
-}
-
-.dark .progress-meta {
-  color: #00f2fe;
-}
-
-.progress-size {
-  font-size: 0.72rem;
-  color: var(--text-secondary);
-  text-align: center;
-  font-weight: 600;
 }
 </style>

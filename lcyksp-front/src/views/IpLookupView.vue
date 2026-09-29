@@ -214,8 +214,9 @@ function getFlagEmoji(countryCode) {
               <div class="info-item">
                 <span class="info-label">风控评级 (代理/VPN)</span>
                 <span class="info-value">
-                  <el-tag :type="ipInfo.isProxy || ipInfo.is_proxy ? 'danger' : 'success'">
-                    {{ ipInfo.isProxy || ipInfo.is_proxy ? '高风险代理/VPN' : '住宅/普通专线' }}
+                  <el-tag v-if="(ipInfo.isProxy ?? ipInfo.is_proxy) == null" type="info">未检测</el-tag>
+                  <el-tag v-else :type="(ipInfo.isProxy || ipInfo.is_proxy) ? 'danger' : 'success'">
+                    {{ (ipInfo.isProxy || ipInfo.is_proxy) ? '高风险代理/VPN' : '住宅/普通专线' }}
                   </el-tag>
                 </span>
               </div>

@@ -327,6 +327,7 @@ async function compressAndDownload(targetSize) {
   font-size: 1rem;
   border: 2px solid var(--tier-color);
   color: var(--tier-color);
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--bg-card) 92%, transparent);
   border-radius: 10px;
   transition: all 0.25s;

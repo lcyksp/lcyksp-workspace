@@ -390,9 +390,11 @@ let pdfjsPromise = null
 async function loadPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
-      const pdfjs = await import('pdfjs-dist')
+      // 与主线程同走 legacy 构建：本模块跑在压缩 worker 里，pdfjs 在 worker 线程
+      // 拿不到主线程注入的 core-js，必须靠 legacy 构建自带的 polyfill 兜住旧环境
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
       if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-        const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+        const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url')
         pdfjs.GlobalWorkerOptions.workerSrc = worker.default
       }
       return pdfjs

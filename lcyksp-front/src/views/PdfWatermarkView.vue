@@ -1,11 +1,10 @@
 <script setup>
 import { ref, reactive, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import * as pdfjsLib from 'pdfjs-dist'
 import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib'
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
 import { Document, Picture, UploadFilled } from '@element-plus/icons-vue'
-pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker()
+import pdfjsLib from '../utils/pdfjs.js'
+import { clampRenderScale, yieldToUI, releaseCanvas } from '../utils/pdfRender.js'
 
 const mode = ref('none')
 const rawFile = ref(null); const fileName = ref(''); const fileSize = ref(''); const totalPages = ref(0)
@@ -39,11 +38,15 @@ async function handleGenerateWatermark(download = false) {
     else {
       const pdf = await pdfjsLib.getDocument({data:bytes,useSystemFonts:true}).promise
       for (let n = 1; n <= pdf.numPages; n++) {
-        const page = await pdf.getPage(n); const vp = page.getViewport({scale:1.5})
-        const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height
+        const page = await pdf.getPage(n)
+        const { scale } = clampRenderScale(page, 1.5)
+        const vp = page.getViewport({ scale })
+        const c = document.createElement('canvas'); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height)
         await page.render({canvasContext:c.getContext('2d'),viewport:vp}).promise
         const b = await new Promise(r=>c.toBlob(b=>r(b),'image/jpeg',0.92))
+        releaseCanvas(c)
         if (b) previewImages.value.push(URL.createObjectURL(b))
+        await yieldToUI()
       }
       isPreviewActive.value = true; ElMessage.success('水印预览已生成！')
     }

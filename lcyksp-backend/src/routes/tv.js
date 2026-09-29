@@ -1,10 +1,11 @@
 import { Router } from 'express'
 import { createHash, randomBytes } from 'crypto'
-import { spawn, execSync, execFileSync } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import dns from 'dns/promises'
+import net from 'net'
 import { authMiddleware, requireAuth } from '../middleware/auth.js'
 import { heavyLimiter } from '../middleware/rateLimit.js'
 import { ACTION_ANALYZE, ACTION_DOWNLOAD, buildQuotaExceededMessage, consumeQuota } from '../utils/quota.js'
@@ -41,30 +42,19 @@ async function enforceTvQuota(req, action) {
 
 const BASE_URL = 'https://h5.jianpianips1.com'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const TMP_ROOT = path.resolve(__dirname, '../../data/tv-downloads')
 
-// 每次服务启动/更新重启时，自动彻底清理上一次运行残留的临时分片和未下载完的缓存文件
+// 旧链路曾把整集 m3u8 抓下来合成 mp4 落盘到这里，再 res.download 转发；
+// 新链路改为 ffmpeg 流式转发、全程不落盘。启动时一次性清掉历史遗留的落盘残片，
+// 之后这个目录不再写入。
+const LEGACY_TMP_ROOT = path.resolve(__dirname, '../../data/tv-downloads')
 try {
-  if (fs.existsSync(TMP_ROOT)) {
-    fs.rmSync(TMP_ROOT, { recursive: true, force: true })
-    console.log('[TV] 成功清空历史遗留的临时下载分片与缓存目录')
+  if (fs.existsSync(LEGACY_TMP_ROOT)) {
+    fs.rmSync(LEGACY_TMP_ROOT, { recursive: true, force: true })
+    console.log('[TV] 已清理旧版落盘下载的历史缓存目录')
   }
 } catch (e) {
-  console.error('[TV] 初始化清空缓存失败:', e.message)
+  console.error('[TV] 清理旧缓存目录失败:', e.message)
 }
-
-var downloadTasks = new Map()
-
-// 每 10 分钟自动清理一次超过 1 小时的历史临时任务目录及缓存，防止磁盘/内存泄漏
-setInterval(function () {
-  var now = Date.now()
-  for (var [taskId, task] of downloadTasks.entries()) {
-    if (now - task.createdAt > 3600000) { // 1 小时
-      cleanupDir(task.workDir)
-      downloadTasks.delete(taskId)
-    }
-  }
-}, 600000)
 
 var _hasFfmpeg = null
 function hasFfmpeg() {
@@ -77,65 +67,6 @@ function hasFfmpeg() {
     console.log('[TV] ffmpeg 未安装')
   }
   return _hasFfmpeg
-}
-
-var _hasFfprobe = null
-function hasFfprobe() {
-  if (_hasFfprobe !== null) return _hasFfprobe
-  try {
-    execSync('ffprobe -version', { stdio: 'ignore' })
-    _hasFfprobe = true
-  } catch {
-    _hasFfprobe = false
-    console.log('[TV] ffprobe 未安装')
-  }
-  return _hasFfprobe
-}
-
-var _hasYtDlp = null
-var _ytDlpPath = null
-function hasYtDlp() {
-  if (_hasYtDlp !== null) return _hasYtDlp
-  try {
-    execSync('which yt-dlp', { stdio: 'ignore' })
-    _ytDlpPath = 'yt-dlp'
-    _hasYtDlp = true
-  } catch {
-    try {
-      execSync('/usr/local/bin/yt-dlp --version', { stdio: 'ignore' })
-      _ytDlpPath = '/usr/local/bin/yt-dlp'
-      _hasYtDlp = true
-    } catch {
-      _hasYtDlp = false
-      _ytDlpPath = ''
-    }
-  }
-  return _hasYtDlp
-}
-
-async function downloadEpisodeWithYtDlp(inputPath, outputPath, concurrentFragments, speedLimit, onProgress) {
-  var ytDlpBin = _ytDlpPath || 'yt-dlp'
-  var args = [
-    '--concurrent-fragments', String(concurrentFragments || 5),
-    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    '--add-header', 'Referer: ' + BASE_URL,
-    '--add-header', 'Origin: ' + BASE_URL,
-    '--no-mtime',
-    '--remux-video', 'mp4',
-    '-f', 'best',
-    '-o', outputPath
-  ]
-  if (speedLimit) {
-    args.push('--limit-rate', speedLimit)
-  }
-  args.push(inputPath)
-
-  console.log('[TV] yt-dlp download:', ytDlpBin, args.join(' '))
-  await runProcess(ytDlpBin, args, { stdio: ['ignore', 'pipe', 'pipe'] }, onProgress)
-}
-
-function ensureTmpRoot() {
-  fs.mkdirSync(TMP_ROOT, { recursive: true })
 }
 
 function extractIdFromUrl(url) {
@@ -179,7 +110,7 @@ function padNumber(n) {
 
 function sanitizeFileName(name) {
   // 只做文件名安全：Windows 非法字符 + 控制字符 + 限长。
-  // shell 注入已在调用侧根除（execFileSync / spawn 都不经 shell），所以这里不过滤括号等字符，
+  // shell 注入已在调用侧根除（spawn 不经 shell），所以这里不过滤括号等字符，
   // 否则中文剧集名里的括号会被打成一串下划线。
   return (name || 'episode')
     .replace(/[\\/:*?"<>|]/g, '_')
@@ -190,321 +121,56 @@ function sanitizeFileName(name) {
     .trim() || 'episode'
 }
 
-function createWorkPaths(title) {
-  ensureTmpRoot()
-  var uniq = Date.now() + '-' + Math.random().toString(16).slice(2, 8)
-  var dir = path.join(TMP_ROOT, uniq)
-  fs.mkdirSync(dir, { recursive: true })
+// ---- 多源聚合搜索（maccms provide/vod）----
+// 非凡之外再并联几个同类公开采集源：扩大命中面，也在某源挂/被墙时有备选线路。
+// SSRF 护栏只拦内网 IP，这些公网源的 m3u8 CDN 天然放行。
+const SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+const MACCMS_SOURCES = [
+  { name: '非凡', api: 'http://cj.ffzyapi.com/api.php/provide/vod/' },
+  { name: '量子', api: 'https://cj.lziapi.com/api.php/provide/vod/' },
+  { name: '暴风', api: 'https://bfzyapi.com/api.php/provide/vod/' },
+  { name: '极速', api: 'https://jszyapi.com/api.php/provide/vod/' },
+  { name: '红牛', api: 'https://www.hongniuzy2.com/api.php/provide/vod/' },
+]
+const SEARCH_TIMEOUT_MS = 6000
+const MAX_LINES_PER_SOURCE = 2
+const MAX_TOTAL_LINES = 12
 
-  var safeName = sanitizeFileName(title)
-  return {
-    dir: dir,
-    outputPath: path.join(dir, safeName + '.mp4'),
-    safeName: safeName
-  }
-}
-
-function cleanupDir(dir) {
-  if (!dir) return
-  fs.rm(dir, { recursive: true, force: true }, function () {})
-}
-
-async function fetchText(url) {
-  var response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Referer': BASE_URL + '/',
-      'Origin': BASE_URL
-    }
-  })
-  if (!response.ok) {
-    throw new Error('拉取播放清单失败: HTTP ' + response.status)
-  }
-  return await response.text()
-}
-
-function absolutizeM3u8Line(baseUrl, line) {
-  if (!line) return line
-  if (line.startsWith('#')) {
-    if (line.includes('URI=')) {
-      return line.replace(/URI="([^"]+)"/g, function (_all, uri) {
-        return 'URI="' + resolveUrl(baseUrl, uri) + '"'
-      })
-    }
-    return line
-  }
-  return resolveUrl(baseUrl, line)
-}
-
-async function materializePlaylist(m3u8Url, workDir) {
-  var playlistText = await fetchText(m3u8Url)
-  var normalized = playlistText
-    .split(/\r?\n/)
-    .map(function (line) { return absolutizeM3u8Line(m3u8Url, line.trim()) })
-    .join('\n')
-
-  var playlistPath = path.join(workDir, 'playlist.m3u8')
-  fs.writeFileSync(playlistPath, normalized, 'utf8')
-  return playlistPath
-}
-
-function runProcess(command, args, options, onProgress) {
-  return new Promise(function (resolve, reject) {
-    var child = spawn(command, args, options)
-    var stderr = ''
-
-    if (child.stdout) {
-      child.stdout.on('data', function (chunk) {
-        var str = chunk.toString()
-        if (onProgress) {
-          onProgress(str)
-        }
-      })
-    }
-
-    if (child.stderr) {
-      child.stderr.on('data', function (chunk) {
-        var str = chunk.toString()
-        stderr += str
-        if (onProgress) {
-          onProgress(str)
-        }
-      })
-    }
-
-    child.on('error', reject)
-    child.on('close', function (code) {
-      if (code === 0) resolve(stderr)
-      else reject(new Error(stderr || command + ' exited with code ' + code))
-    })
-  })
-}
-
-async function probeMedia(outputPath) {
-  if (!hasFfprobe()) return { ok: true, hasAudio: true, fallback: true }
-
-  var args = [
-    '-v', 'error',
-    '-show_streams',
-    '-show_format',
-    '-of', 'json',
-    outputPath
-  ]
-  var stdout = execFileSync('ffprobe', args, { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 })
-  var parsed = JSON.parse(stdout)
-  var streams = parsed.streams || []
-  return {
-    ok: true,
-    hasVideo: streams.some(function (s) { return s.codec_type === 'video' }),
-    hasAudio: streams.some(function (s) { return s.codec_type === 'audio' }),
-    streams: streams
-  }
-}
-
-async function downloadEpisodeToFile(inputPath, outputPath, onProgress) {
-  var isRemoteInput = /^https?:\/\//i.test(inputPath)
-  var ffmpegArgs = [
-    '-y',
-    '-hide_banner',
-    '-stats',
-    '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-    '-allowed_extensions', 'ALL'
-  ]
-
-  if (isRemoteInput) {
-    ffmpegArgs.push(
-      '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      '-headers', 'Referer: ' + BASE_URL + '\r\nOrigin: ' + BASE_URL + '\r\n',
-      '-http_persistent', '1',
-      '-multiple_requests', '1',
-      '-reconnect', '1',
-      '-reconnect_streamed', '1',
-      '-reconnect_delay_max', '5',
-      '-timeout', '15000000',      // 15 秒连接超时限制（微秒）
-      '-rw_timeout', '15000000'    // 15 秒读写超时限制（微秒）
-    )
-  }
-
-  ffmpegArgs.push(
-    '-i', inputPath,
-    '-map', '0:v:0',
-    '-map', '0:a?',
-    '-c:v', 'copy',
-    '-c:a', 'aac',
-    '-b:a', '192k',
-    '-ac', '2',
-    '-ar', '48000',
-    '-movflags', '+faststart',
-    '-max_muxing_queue_size', '4096',
-    '-f', 'mp4',
-    outputPath
-  )
-
-  console.log('[TV] ffmpeg download:', ffmpegArgs.join(' '))
-  await runProcess('ffmpeg', ffmpegArgs, { stdio: ['ignore', 'ignore', 'pipe'] }, onProgress)
-}
-
-async function fallbackToFfmpeg(m3u8Url, task) {
-  if (!hasFfmpeg()) {
-    throw new Error('服务器未安装 ffmpeg')
-  }
-
-  await downloadEpisodeToFile(m3u8Url, task.outputPath, function (progressText) {
-    var now = Date.now()
-    if (now - (task.lastLogTime || 0) > 15000) {
-      console.log('[TV ffmpeg]', progressText.trim())
-      task.lastLogTime = now
-    }
-    
-    var sizeMatch = progressText.match(/size=\s*(\d+\s*[a-zA-Z]+|N\/A)/i)
-    var timeMatch = progressText.match(/time=\s*(\d{2}:\d{2}:\d{2}(?:\.\d+)?)/i)
-    var speedMatch = progressText.match(/speed=\s*(\d+(?:\.\d+)?x)/i)
-    if (sizeMatch || timeMatch || speedMatch) {
-      var sizeRaw = sizeMatch ? sizeMatch[1] : (task.progress?.size || '0kB')
-      if (sizeRaw.endsWith('kB') || sizeRaw.endsWith('KB')) {
-        var kb = parseInt(sizeRaw)
-        if (!isNaN(kb)) {
-          sizeRaw = (kb / 1024).toFixed(1) + 'MB'
-        }
-      }
-      
-      task.progress = {
-        size: sizeRaw,
-        time: timeMatch ? timeMatch[1] : (task.progress?.time || '00:00:00'),
-        speed: speedMatch ? speedMatch[1] : (task.progress?.speed || '0x')
-      }
-    }
-  })
-}
-
-var activeDownloadsCount = 0
-const CONCURRENCY_LIMIT = 2
-
-function processQueue() {
-  if (activeDownloadsCount >= CONCURRENCY_LIMIT) {
-    return
-  }
-
-  var queuedTasks = []
-  for (var [taskId, task] of downloadTasks.entries()) {
-    if (task.status === 'queued') {
-      queuedTasks.push(task)
-    }
-  }
-
-  if (queuedTasks.length === 0) {
-    return
-  }
-
-  queuedTasks.sort(function (a, b) {
-    if (b.priority !== a.priority) {
-      return b.priority - a.priority
-    }
-    return a.createdAt - b.createdAt
-  })
-
-  var taskToStart = queuedTasks[0]
-  taskToStart.status = 'downloading'
-  activeDownloadsCount++
-  
-  updateQueuePositions()
-  runDownloadTask(taskToStart)
-}
-
-function updateQueuePositions() {
-  var queuedTasks = []
-  for (var [taskId, task] of downloadTasks.entries()) {
-    if (task.status === 'queued') {
-      queuedTasks.push(task)
-    }
-  }
-
-  queuedTasks.sort(function (a, b) {
-    if (b.priority !== a.priority) {
-      return b.priority - a.priority
-    }
-    return a.createdAt - b.createdAt
-  })
-
-  queuedTasks.forEach(function (task, index) {
-    task.progress = {
-      size: '排队中...',
-      speed: '等待中',
-      time: '排在第 ' + (index + 1) + ' 位'
-    }
-  })
-}
-
-async function runDownloadTask(task) {
-  var m3u8Url = task.m3u8Url
-  var taskId = task.id
-
+// 从一个 maccms 源搜关键词，返回 { title, cover, lines:[{name:'源名·线路',episodes:[{name,m3u8Url}],count}] }
+async function searchOneSource(src, keyword) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(function () { ctrl.abort() }, SEARCH_TIMEOUT_MS)
   try {
-    if (hasYtDlp()) {
-      try {
-        console.log('[TV Task] 使用 yt-dlp 并发下载:', task.safeName, 'priority:', task.priority, 'fragments:', task.concurrentFragments)
-        await downloadEpisodeWithYtDlp(
-          m3u8Url,
-          task.outputPath,
-          task.concurrentFragments,
-          task.speedLimit,
-          function (progressText) {
-            var now = Date.now()
-            if (now - (task.lastLogTime || 0) > 15000) {
-              console.log('[TV yt-dlp]', progressText.trim())
-              task.lastLogTime = now
-            }
-            
-            var percentMatch = progressText.match(/\[download\]\s+(\d+(\.\d+)?)%/)
-            var sizeMatch = progressText.match(/of\s+(?:~\s*)?(\d+(?:\.\d+)?[KMG]?i?B)/i)
-            var speedMatch = progressText.match(/at\s+(\d+(?:\.\d+)?[KMG]?i?B\/s)/i)
-            var etaMatch = progressText.match(/ETA\s+(\d{2}:\d{2}(?::\d{2})?)/i)
-            
-            if (percentMatch || sizeMatch || speedMatch || etaMatch) {
-              var pct = percentMatch ? percentMatch[1] + '%' : ''
-              var sz = sizeMatch ? sizeMatch[1] : ''
-              var sp = speedMatch ? speedMatch[1] : ''
-              var eta = etaMatch ? etaMatch[1] : ''
-              
-              task.progress = {
-                size: pct && sz ? `${pct} (${sz})` : (sz || '0MB'),
-                speed: sp || '0x',
-                time: eta ? `ETA ${eta}` : '00:00:00'
-              }
-            }
-          }
-        )
-      } catch (ytDlpErr) {
-        console.warn('[TV Task] yt-dlp 下载失败，尝试回退到 ffmpeg:', ytDlpErr.message)
-        if (fs.existsSync(task.outputPath)) {
-          fs.rmSync(task.outputPath, { force: true })
-        }
-        await fallbackToFfmpeg(m3u8Url, task)
+    const url = src.api + '?ac=detail&wd=' + encodeURIComponent(keyword)
+    const res = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': SEARCH_UA } })
+    if (!res.ok) return { title: '', cover: '', lines: [] }
+    // 有的源返回 JSON 却把 Content-Type 标成 text/html，不能按 header 判；直接 parse，失败即视作挂了
+    const text = await res.text()
+    let json
+    try { json = JSON.parse(text) } catch { return { title: '', cover: '', lines: [] } }
+    const list = (json && json.list) || []
+    if (!list.length) return { title: '', cover: '', lines: [] }
+    const item =
+      list.find(function (v) { return v.vod_name === keyword }) ||
+      list.find(function (v) { return (v.vod_name || '').includes(keyword) }) ||
+      list[0]
+    const froms = (item.vod_play_from || '').split('$$$')
+    const urls = (item.vod_play_url || '').split('$$$')
+    const lines = []
+    for (let i = 0; i < froms.length && lines.length < MAX_LINES_PER_SOURCE; i++) {
+      const episodes = (urls[i] || '').split('#').map(function (epStr) {
+        const parts = epStr.split('$')
+        return { name: parts[0] || '第一集', m3u8Url: parts[1] || '' }
+      }).filter(function (ep) { return /\.m3u8/i.test(ep.m3u8Url) })
+      if (episodes.length) {
+        lines.push({ name: src.name + '·' + (froms[i] || '线路'), episodes: episodes, count: episodes.length })
       }
-    } else {
-      await fallbackToFfmpeg(m3u8Url, task)
     }
-
-    var stat = fs.statSync(task.outputPath)
-    if (!stat.size) {
-      throw new Error('输出文件为空，下载未成功完成')
-    }
-
-    var mediaInfo = await probeMedia(task.outputPath)
-    if (!mediaInfo.hasVideo) {
-      throw new Error('输出文件缺少视频流')
-    }
-
-    console.log('[TV Task] 下载完成:', task.safeName, 'size=', stat.size, 'audio=', mediaInfo.hasAudio)
-    task.status = 'completed'
-  } catch (err) {
-    console.error('[TV Task] 下载失败:', err.message)
-    task.status = 'failed'
-    task.error = err.message
-    cleanupDir(task.workDir)
+    return { title: item.vod_name || '', cover: item.vod_pic || '', lines: lines }
+  } catch {
+    return { title: '', cover: '', lines: [] }
   } finally {
-    activeDownloadsCount--
-    processQueue()
+    clearTimeout(timer)
   }
 }
 
@@ -527,50 +193,33 @@ router.post('/analyze', heavyLimiter, async function (req, res, next) {
     var isDirectM3u8 = (url.startsWith('http://') || url.startsWith('https://')) && url.includes('.m3u8')
 
     if (isSearch) {
-      // 1. 关键词搜索模式 (对接苹果CMS量子资源/非凡资源公共API)
-      console.log('[TV] 搜索剧集关键词:', url)
-      var searchUrl = `http://cj.ffzyapi.com/api.php/provide/vod/?ac=detail&wd=${encodeURIComponent(url)}`
-      var searchRes = await fetch(searchUrl)
-      var searchJson = await searchRes.json()
-      var list = searchJson.list || []
-      
-      if (list.length === 0) {
-        return res.status(404).json({ error: `未搜索到与 "${url}" 相关的剧集资源` })
-      }
-
-      var item = list.find(function (v) { return v.vod_name === url }) || list[0]
-      var title = item.vod_name
-      var cover = item.vod_pic || ''
-
-      var playUrls = item.vod_play_url || ''
-      var playFroms = item.vod_play_from || ''
-      
-      var playFromList = playFroms.split('$$$')
-      var playUrlList = playUrls.split('$$$')
-      
-      var sourceIdx = playFromList.findIndex(function (f) { return f.toLowerCase().includes('m3u8') })
-      if (sourceIdx === -1) sourceIdx = 0
-      
-      var episodesRaw = playUrlList[sourceIdx] || ''
-      var episodes = episodesRaw.split('#').map(function (epStr) {
-        var parts = epStr.split('$')
-        return {
-          name: parts[0] || '第一集',
-          m3u8Url: parts[1] || ''
+      // 1. 关键词搜索：并联多个 maccms 采集源，合并所有可用 m3u8 线路
+      console.log('[TV] 多源搜索剧集关键词:', url)
+      const settled = await Promise.allSettled(
+        MACCMS_SOURCES.map(function (src) { return searchOneSource(src, url) }),
+      )
+      var title = ''
+      var cover = ''
+      var sources = []
+      for (const r of settled) {
+        if (r.status !== 'fulfilled') continue
+        if (!title && r.value.title) { title = r.value.title; cover = r.value.cover }
+        for (const line of r.value.lines) {
+          if (sources.length >= MAX_TOTAL_LINES) break
+          sources.push(line)
         }
-      }).filter(function (ep) { return ep.m3u8Url })
-
-      console.log('[TV] 搜索解析成功:', title, '-', episodes.length, '集')
-
+      }
+      if (sources.length === 0) {
+        return res.status(404).json({ error: `未搜索到与 "${url}" 相关的可下载资源` })
+      }
+      console.log('[TV] 多源搜索成功:', title, '- 线路数', sources.length)
       return res.json({
-        title: title,
+        title: title || url,
         cover: cover,
-        sourceName: playFromList[sourceIdx] || '量子/非凡源',
-        sourceCount: playFromList.length,
-        sources: playFromList.map(function (name, i) {
-          return { name: name, count: (playUrlList[i] || '').split('#').length }
-        }),
-        episodes: episodes
+        sourceName: sources[0].name,
+        sourceCount: sources.length,
+        sources: sources,
+        episodes: sources[0].episodes,
       })
     }
 
@@ -645,10 +294,148 @@ router.post('/analyze', heavyLimiter, async function (req, res, next) {
   }
 })
 
-router.post('/download-episode', heavyLimiter, async function (req, res, next) {
+// ============================================================================
+// 服务器流式代理（不落盘）
+// ----------------------------------------------------------------------------
+// 旧链路：服务器把整集 m3u8 抓完、合成 mp4 落盘、再 res.download 转发，在 2C2G 上
+// 既吃 CPU（AAC 重编码）又吃磁盘。新链路：ffmpeg 直接读远程 m3u8，stdout 以分片 mp4
+// 流式 pipe 给 HTTP 响应，全程不落盘、-c copy 不重编码。pipe 不可 seek → 只能用
+// frag_keyframe+empty_moov 的分片 mp4，代价是无法断点续传（无 Range）。
+// ============================================================================
+
+const STREAM_CONCURRENCY_LIMIT = 2 // 2C2G 保守上限；-c copy 后 CPU 不再是瓶颈，压的是带宽
+var activeStreams = 0
+
+// 浏览器原生下载（<a download>）发不了 Authorization 头，auth.js 也禁止 ?token= 走鉴权。
+// 这里用一次性短期票据：登录态 POST 换票，GET 用 ticket 开流。
+// 票据泄露的后果收敛为「这一集的一次下载」。
+const STREAM_TICKET_TTL_MS = 5 * 60 * 1000
+const streamTickets = new Map() // ticket -> { m3u8Url, safeName, title, userId, username, ip, expiresAt }
+
+function issueStreamTicket(payload) {
+  const now = Date.now()
+  for (const [key, value] of streamTickets) {
+    if (value.expiresAt <= now) streamTickets.delete(key)
+  }
+  const ticket = randomBytes(32).toString('hex')
+  streamTickets.set(ticket, { ...payload, expiresAt: now + STREAM_TICKET_TTL_MS })
+  return ticket
+}
+
+// 只查看不删除：并发满时要保留票据让用户重试，避免重复扣配额；
+// 真正开流时再由 GET /stream 显式 delete（单次有效、防重放）。
+function peekStreamTicket(ticket) {
+  if (!ticket) return null
+  const record = streamTickets.get(ticket)
+  if (!record) return null
+  if (record.expiresAt <= Date.now()) {
+    streamTickets.delete(ticket)
+    return null
+  }
+  return record
+}
+
+function normalizeM3u8Url(m3u8Url) {
+  if (!m3u8Url) return ''
+  if (m3u8Url.startsWith('http://') || m3u8Url.startsWith('https://')) return m3u8Url
+  return BASE_URL + (m3u8Url.startsWith('/') ? '' : '/') + m3u8Url
+}
+
+// SSRF 防护：服务器只去公网视频源取流，拒绝任何指向内网 / 环回 / 云元数据
+// （169.254.169.254）等内部地址的请求。视频源换公网域名不受影响、无需维护名单。
+function isBlockedIp(ip) {
+  var mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)
+  if (mapped) ip = mapped[1]
+  if (net.isIPv4(ip)) {
+    var p = ip.split('.').map(Number)
+    var a = p[0], b = p[1]
+    if (a === 0 || a === 10 || a === 127) return true          // 0/8、10/8 私网、环回
+    if (a === 169 && b === 254) return true                    // 链路本地（含云元数据）
+    if (a === 172 && b >= 16 && b <= 31) return true           // 172.16/12 私网
+    if (a === 192 && b === 168) return true                    // 192.168/16 私网
+    if (a === 100 && b >= 64 && b <= 127) return true          // 100.64/10 CGNAT
+    if (a === 192 && b === 0 && p[2] === 0) return true        // 192.0.0/24
+    if (a === 198 && (b === 18 || b === 19)) return true       // 198.18/15 基准测试
+    if (a >= 224) return true                                  // 组播 / 保留
+    return false
+  }
+  if (net.isIPv6(ip)) {
+    var low = ip.toLowerCase()
+    if (low === '::1' || low === '::') return true             // 环回 / 未指定
+    if (/^fe[89ab]/.test(low)) return true                     // fe80::/10 链路本地
+    if (low.startsWith('fc') || low.startsWith('fd')) return true // fc00::/7 唯一本地
+    if (low.startsWith('ff')) return true                      // ff00::/8 组播
+    return false
+  }
+  return true // 无法识别的地址一律拦截
+}
+
+async function assertPublicUrl(rawUrl) {
+  var parsed
+  try { parsed = new URL(rawUrl) } catch { throw new Error('视频地址格式不合法') }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('只支持 http/https 视频地址')
+  }
+  var addrs
+  try { addrs = await dns.lookup(parsed.hostname, { all: true }) } catch { throw new Error('无法解析该视频地址') }
+  if (!addrs.length) throw new Error('无法解析该视频地址')
+  for (var i = 0; i < addrs.length; i++) {
+    if (isBlockedIp(addrs[i].address)) throw new Error('该地址指向内部网络，已拒绝')
+  }
+}
+
+function buildFfmpegStreamArgs(m3u8Url) {
+  return [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-protocol_whitelist', 'http,https,tcp,tls,crypto', // 去掉 file：流式代理只喂远程 URL，不需本地文件协议；crypto = 透明解 AES-128
+    '-allowed_extensions', 'ALL',
+    // 远程源防盗链头（与旧落盘链路保持一致）
+    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    '-headers', 'Referer: ' + BASE_URL + '\r\nOrigin: ' + BASE_URL + '\r\n',
+    '-http_persistent', '1',
+    '-multiple_requests', '1',
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    '-rw_timeout', '15000000', // 15 秒读写超时（微秒）
+    '-i', m3u8Url,
+    '-map', '0:v:0',
+    '-map', '0:a?',
+    '-c', 'copy', // 关键：不重编码，省 CPU（旧链路 -c:a aac 是 2C2G 主要负担）
+    // HLS 的 AAC 是 ADTS 封装，-c copy 进 mp4 必须转 ASC，否则 muxer 报 Malformed AAC、
+    // 只吐约 66KB 头部就退出（2026-09-28 实测踩到）。这是比特流过滤，仍不重编码、不吃 CPU。
+    '-bsf:a', 'aac_adtstoasc',
+    // pipe 不可 seek，必须用分片 mp4；+faststart 用不了
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-max_muxing_queue_size', '4096',
+    '-f', 'mp4',
+    'pipe:1'
+  ]
+}
+
+// 换票：登录态下先并发预检（不扣配额）→ 再扣下载配额 → 签发一次性票据
+router.post('/stream-ticket', heavyLimiter, requireAuth, async function (req, res, next) {
   try {
     var { m3u8Url, title } = req.body
     if (!m3u8Url) return res.status(400).json({ error: '缺少 m3u8Url' })
+
+    if (!hasFfmpeg()) {
+      return res.status(503).json({ error: '服务器未安装 ffmpeg，暂时无法提供下载' })
+    }
+
+    // 并发预检放在扣配额之前：服务器忙时直接挡回，不白扣用户配额
+    if (activeStreams >= STREAM_CONCURRENCY_LIMIT) {
+      return res.status(429).json({ error: '当前下载通道繁忙，请稍后再试' })
+    }
+
+    // SSRF 防护，且放在扣配额之前：拒绝内网/云元数据地址，坏地址不扣配额
+    var normalized = normalizeM3u8Url(m3u8Url)
+    try {
+      await assertPublicUrl(normalized)
+    } catch (e) {
+      return res.status(400).json({ error: e.message })
+    }
 
     const quotaCheck = await enforceTvQuota(req, ACTION_DOWNLOAD)
     if (!quotaCheck.allowed) {
@@ -658,144 +445,112 @@ router.post('/download-episode', heavyLimiter, async function (req, res, next) {
       })
     }
 
-    if (!m3u8Url.startsWith('http')) {
-      m3u8Url = BASE_URL + (m3u8Url.startsWith('/') ? '' : '/') + m3u8Url
-    }
-
-    var taskId = Date.now() + '-' + Math.random().toString(16).slice(2, 8)
-    var work = createWorkPaths(title)
-
-    var role = req.user?.role || 'guest'
-    var isPremium = req.user?.quotaPlan === 'premium'
-    
-    var priority = 1 // guest
-    var concurrentFragments = 2
-    var speedLimit = '1.5M'
-
-    if (role === 'admin' || role === 'pro') {
-      priority = 4
-      concurrentFragments = 16
-      speedLimit = null // unlimited
-    } else if (role === 'premium' || isPremium) {
-      priority = 3
-      concurrentFragments = 8
-      speedLimit = '12M'
-    } else if (req.user?.userId) {
-      priority = 2
-      concurrentFragments = 4
-      speedLimit = '4M'
-    }
-
-    downloadTasks.set(taskId, {
-      id: taskId,
-      status: 'queued',
-      title: title,
-      m3u8Url: m3u8Url,
-      outputPath: work.outputPath,
-      workDir: work.dir,
-      safeName: work.safeName,
-      createdAt: Date.now(),
-      lastLogTime: 0,
-      priority: priority,
-      concurrentFragments: concurrentFragments,
-      speedLimit: speedLimit,
-      progress: {
-        size: '排队中...',
-        speed: '等待中',
-        time: '正在加入队列'
-      }
+    var safeName = sanitizeFileName(title)
+    var ticket = issueStreamTicket({
+      m3u8Url: normalized,
+      safeName: safeName,
+      title: title || safeName,
+      userId: req.user?.userId || null,
+      username: req.user?.username || 'guest',
+      ip: getClientIp(req),
     })
 
-    updateQueuePositions()
-    processQueue()
-
-    res.json({ taskId: taskId, status: 'queued' })
+    res.json({ ticket: ticket, expiresInSeconds: STREAM_TICKET_TTL_MS / 1000 })
   } catch (err) {
     next(err)
   }
 })
 
-router.get('/download-status/:taskId', function (req, res) {
-  var taskId = req.params.taskId
-  var task = downloadTasks.get(taskId)
-  if (!task) return res.status(404).json({ error: '任务不存在' })
-
-  res.json({
-    status: task.status,
-    error: task.error,
-    progress: task.progress
-  })
-})
-
-// ---- 一次性下载票据 ----
-// JWT 不能进 URL（Nginx 日志 / 浏览器历史都会留痕）：改由前端带 Authorization 头
-// 换一张单次有效、5 分钟过期的随机票据，再用 ?ticket= 触发 <a href> 直链下载。
-// 票据泄露的后果收敛为「这一个文件的一次下载」，且原 download-file 此前根本没校验
-// req.user（authMiddleware 只解析不强制），票据同时把真鉴权补上。
-const DOWNLOAD_TICKET_TTL_MS = 5 * 60 * 1000
-const downloadTickets = new Map() // ticket -> { taskId, expiresAt }
-
-function issueDownloadTicket(taskId) {
-  const now = Date.now()
-  for (const [key, value] of downloadTickets) {
-    if (value.expiresAt <= now) downloadTickets.delete(key)
-  }
-  const ticket = randomBytes(32).toString('hex')
-  downloadTickets.set(ticket, { taskId, expiresAt: now + DOWNLOAD_TICKET_TTL_MS })
-  return ticket
-}
-
-function consumeDownloadTicket(ticket, taskId) {
-  if (!ticket) return false
-  const record = downloadTickets.get(ticket)
-  if (!record) return false
-  downloadTickets.delete(ticket) // 单次有效：取出即删，重放失败
-  return record.taskId === taskId && record.expiresAt > Date.now()
-}
-
-router.post('/download-file/:taskId/ticket', requireAuth, function (req, res) {
-  var taskId = req.params.taskId
-  var task = downloadTasks.get(taskId)
-  if (!task) return res.status(404).json({ error: '任务不存在' })
-  if (task.status !== 'completed') return res.status(400).json({ error: '任务尚未完成' })
-
-  res.json({ ticket: issueDownloadTicket(taskId), expiresInSeconds: DOWNLOAD_TICKET_TTL_MS / 1000 })
-})
-
-router.get('/download-file/:taskId', function (req, res, next) {
-  var taskId = req.params.taskId
-  var task = downloadTasks.get(taskId)
-  if (!task) return res.status(404).json({ error: '任务不存在' })
-
-  if (task.status !== 'completed') {
-    return res.status(400).json({ error: '任务尚未完成' })
-  }
-
-  if (!consumeDownloadTicket(String(req.query.ticket || ''), taskId)) {
+// 开流：ticket 换出任务 → ffmpeg 流式 pipe 给响应，全程不落盘
+router.get('/stream', function (req, res) {
+  var ticket = String(req.query.ticket || '')
+  var record = peekStreamTicket(ticket)
+  if (!record) {
     return res.status(401).json({ error: '下载凭据无效或已过期，请重新发起下载' })
   }
 
-  var fileSize = 0
-  try {
-    fileSize = fs.statSync(task.outputPath).size
-  } catch {}
+  if (!hasFfmpeg()) {
+    return res.status(503).json({ error: '服务器未安装 ffmpeg，暂时无法提供下载' })
+  }
 
-  res.download(task.outputPath, task.safeName + '.mp4', function (err) {
-    if (!err) {
+  // 二次并发检查：换票到开流之间可能又被别的流占满名额（防竞态）。
+  // 并发满时不消费票据，用户可拿同一张票稍后重试，不会被重复扣下载配额。
+  if (activeStreams >= STREAM_CONCURRENCY_LIMIT) {
+    return res.status(503).json({ error: '当前下载通道繁忙，请稍后再试' })
+  }
+
+  streamTickets.delete(ticket) // 真正开流才作废票据（单次有效、防重放）
+
+  activeStreams++
+  var released = false
+  function releaseSlot() {
+    if (released) return
+    released = true
+    activeStreams--
+  }
+
+  var child = spawn('ffmpeg', buildFfmpegStreamArgs(record.m3u8Url), { stdio: ['ignore', 'pipe', 'pipe'] })
+  function killChild() {
+    if (child.exitCode === null && !child.killed) child.kill('SIGKILL')
+  }
+
+  // 客户端断开后向已关闭 socket 写会在响应流上抛 EPIPE/ECONNRESET；单进程若无
+  // 'error' 监听会冒泡成 uncaughtException 打挂整站，这里必须兜住。
+  res.on('error', function () { killChild(); releaseSlot() })
+  child.stdout.on('error', function () { /* pipe 目标已断开，交给 close/res.close 收尾 */ })
+
+  // stderr 留尾 4KB，出错时打日志用
+  var stderrTail = ''
+  child.stderr.on('data', function (chunk) {
+    stderrTail = (stderrTail + chunk.toString()).slice(-4096)
+  })
+
+  var bytesSent = 0
+  child.stdout.on('data', function (chunk) { bytesSent += chunk.length })
+
+  child.on('error', function (err) {
+    console.error('[TV stream] ffmpeg 启动失败:', err.message)
+    releaseSlot()
+    if (!res.headersSent) res.status(500).json({ error: '转码进程启动失败' })
+    else if (!res.destroyed) res.destroy()
+  })
+
+  // 中文文件名：手动 pipe 得自设 Content-Disposition，RFC5987 filename* + ASCII 回退
+  var asciiName = record.safeName.replace(/[^\x20-\x7e]/g, '_') || 'video'
+  res.setHeader('Content-Type', 'video/mp4')
+  res.setHeader('Content-Disposition',
+    'attachment; filename="' + asciiName + '.mp4"; ' +
+    "filename*=UTF-8''" + encodeURIComponent(record.safeName + '.mp4'))
+  res.setHeader('Cache-Control', 'no-store')
+
+  // pipe 用 {end:false}：正常结束时由 close 分支手动 res.end()，避免二次 end
+  child.stdout.pipe(res, { end: false })
+
+  child.on('close', function (code) {
+    releaseSlot()
+    if (code === 0) {
       logDownload({
-        userId: req.user?.userId || null,
-        username: req.user?.username || 'guest',
-        ipAddress: getClientIp(req),
+        userId: record.userId,
+        username: record.username,
+        ipAddress: record.ip,
         downloadType: 'tv',
-        resourceTitle: task.title || task.safeName || '未知电视剧',
+        resourceTitle: record.title || record.safeName || '未知电视剧',
         resourceUrl: '',
-        fileSize: fileSize
+        fileSize: bytesSent
       })
+      if (!res.writableEnded && !res.destroyed) res.end()
+    } else {
+      console.error('[TV stream] ffmpeg 退出码', code, stderrTail.trim())
+      // 已在往响应里 pipe 数据，无法回退成 JSON，只能断开让客户端感知失败
+      if (!res.headersSent) res.status(500).json({ error: '视频流转发失败' })
+      else if (!res.destroyed) res.destroy()
     }
-    cleanupDir(task.workDir)
-    downloadTasks.delete(taskId)
-    if (err && !res.headersSent) next(err)
-    else if (err) console.error('[TV Task] 发送文件失败:', err.message)
+  })
+
+  // 客户端断开（关页面/取消下载）→ 杀掉 ffmpeg，别留僵尸进程空耗 CPU/带宽
+  res.on('close', function () {
+    killChild()
+    releaseSlot()
   })
 })
 

@@ -634,6 +634,7 @@ function getDownloadsStr(item) {
 }
 
 .history-item:hover {
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-blue) 30%, var(--border-color));
 }
 

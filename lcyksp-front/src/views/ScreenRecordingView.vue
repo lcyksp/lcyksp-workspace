@@ -1,13 +1,28 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { VideoPlay, VideoPause, Download, Refresh, InfoFilled } from '@element-plus/icons-vue'
+import { VideoPlay, VideoPause, Download, Refresh, InfoFilled, Monitor, VideoCamera, Odometer } from '@element-plus/icons-vue'
 
 const recordStatus = ref(0) // 0: Idle, 1: Requesting permission, 2: Recording, 3: Finished
 const mediaRecorder = ref(null)
 const recordedChunks = ref([])
 const videoUrl = ref('')
 const isSupported = ref(true)
+
+// 录制参数（仅在准备阶段可调，开始后锁定）。这些约束只喂给浏览器本地采集/编码，
+// 无任何服务器开销。分辨率/帧率写进 getDisplayMedia 约束，码流写进 MediaRecorder。
+const resolution = ref('source') // source | 1080 | 720 | 480
+const frameRate = ref(30)
+const videoBitrate = ref(4_000_000) // bps，0 表示交给浏览器默认
+const finalSize = ref(0) // 录制完成后的真实字节数
+
+// 分辨率约束表：source 不限制（用源画质），其余按 16:9 目标下采样（浏览器保持宽高比取近似）
+const RESOLUTION_MAP = {
+  '1440': { width: 2560, height: 1440 },
+  '1080': { width: 1920, height: 1080 },
+  '720': { width: 1280, height: 720 },
+  '480': { width: 854, height: 480 }
+}
 
 // 捕获丢帧监控：窗口被完全遮挡时 Chromium 会把捕获钳到 ~1fps 且不做任何提示，
 // 用户只会看到录出来的视频"卡在一帧"。这里实时监测交付帧率，低于阈值就明确警告。
@@ -39,6 +54,30 @@ const statusText = computed(() => {
     default: return '未知状态'
   }
 })
+
+function formatBytes(bytes) {
+  if (!bytes || bytes < 1024) return (bytes || 0) + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+
+// 大小显示：录制中按 码流×已录时长 估算，完成后用真实字节数。码流为 0（浏览器默认）时不估算。
+const sizeDisplay = computed(() => {
+  if (recordStatus.value === 3 && finalSize.value) {
+    return `文件大小: ${formatBytes(finalSize.value)}`
+  }
+  if (recordStatus.value === 2 && videoBitrate.value) {
+    const est = (videoBitrate.value / 8) * timer.value
+    return `约 ${formatBytes(est)}（估算）`
+  }
+  return ''
+})
+
+// 每分钟大致大小（用于码流下拉说明）：bps / 8 * 60
+function perMinuteSize(bps) {
+  return formatBytes((bps / 8) * 60)
+}
 
 onMounted(() => {
   // Check browser support
@@ -140,10 +179,20 @@ async function startRecord() {
   recordedChunks.value = []
   
   try {
+    // 构建视频约束：帧率始终限制；分辨率非 source 时按目标下采样（用 ideal，浏览器取近似并保持宽高比）
+    const videoConstraints = {
+      frameRate: { ideal: frameRate.value }
+    }
+    const res = RESOLUTION_MAP[resolution.value]
+    if (res) {
+      videoConstraints.width = { ideal: res.width }
+      videoConstraints.height = { ideal: res.height }
+    }
+
     // Request screen capture
     // Include audio: true so user can check "Share system audio"
     const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
+      video: videoConstraints,
       audio: true
     })
 
@@ -160,7 +209,12 @@ async function startRecord() {
     }
     mimeType.value = selectedMime
 
-    const recorder = new MediaRecorder(stream, { mimeType: selectedMime })
+    // 码流为 0 时不传 videoBitsPerSecond，交给浏览器按分辨率自适应
+    const recorderOptions = { mimeType: selectedMime }
+    if (videoBitrate.value) {
+      recorderOptions.videoBitsPerSecond = videoBitrate.value
+    }
+    const recorder = new MediaRecorder(stream, recorderOptions)
     mediaRecorder.value = recorder
 
     recorder.ondataavailable = (e) => {
@@ -174,6 +228,7 @@ async function startRecord() {
       stopFrameWatch()
       // Generate WebM blob
       const blob = new Blob(recordedChunks.value, { type: recorder.mimeType || 'video/webm' })
+      finalSize.value = blob.size
       if (videoUrl.value) {
         URL.revokeObjectURL(videoUrl.value)
       }
@@ -244,6 +299,7 @@ function resetRecord() {
   recordedChunks.value = []
   recordStatus.value = 0
   timer.value = 0
+  finalSize.value = 0
 }
 </script>
 
@@ -277,6 +333,65 @@ function resetRecord() {
                 <span class="status-badge" :class="'badge-' + recordStatus">{{ statusText }}</span>
               </div>
               <div class="timer-display">{{ formattedTime }}</div>
+            </div>
+
+            <!-- 录制参数（仅准备阶段可调） -->
+            <div class="settings-panel" v-if="recordStatus === 0">
+              <div class="setting-row">
+                <label class="setting-label"><el-icon><Monitor /></el-icon>分辨率</label>
+                <el-select v-model="resolution" size="default" class="setting-select">
+                  <el-option label="原始画质" value="source" />
+                  <el-option label="2560×1440" value="1440" />
+                  <el-option label="1920×1080" value="1080" />
+                  <el-option label="1280×720" value="720" />
+                  <el-option label="854×480" value="480" />
+                </el-select>
+              </div>
+
+              <div class="setting-row">
+                <label class="setting-label"><el-icon><VideoCamera /></el-icon>帧率</label>
+                <el-select v-model="frameRate" size="default" class="setting-select">
+                  <el-option label="60 fps" :value="60" />
+                  <el-option label="48 fps" :value="48" />
+                  <el-option label="30 fps" :value="30" />
+                  <el-option label="24 fps" :value="24" />
+                  <el-option label="15 fps" :value="15" />
+                </el-select>
+              </div>
+
+              <div class="setting-row">
+                <label class="setting-label">
+                  <el-icon><Odometer /></el-icon>码流
+                  <el-tooltip placement="top" effect="dark" popper-class="bitrate-tip">
+                    <template #content>
+                      <div class="tip-body">
+                        <div class="tip-head">码流越高越清晰，文件也越大。下方为每分钟大致体积：</div>
+                        <div class="tip-line"><span>16 Mbps 蓝光级</span><b>≈ {{ perMinuteSize(16_000_000) }}/分</b></div>
+                        <div class="tip-line"><span>12 Mbps 超清+</span><b>≈ {{ perMinuteSize(12_000_000) }}/分</b></div>
+                        <div class="tip-line"><span>8 Mbps 超清</span><b>≈ {{ perMinuteSize(8_000_000) }}/分</b></div>
+                        <div class="tip-line"><span>6 Mbps 高清+</span><b>≈ {{ perMinuteSize(6_000_000) }}/分</b></div>
+                        <div class="tip-line"><span>4 Mbps 高清</span><b>≈ {{ perMinuteSize(4_000_000) }}/分</b></div>
+                        <div class="tip-line"><span>2.5 Mbps 标准</span><b>≈ {{ perMinuteSize(2_500_000) }}/分</b></div>
+                        <div class="tip-line"><span>1.5 Mbps 流畅</span><b>≈ {{ perMinuteSize(1_500_000) }}/分</b></div>
+                        <div class="tip-line"><span>1 Mbps 省空间</span><b>≈ {{ perMinuteSize(1_000_000) }}/分</b></div>
+                        <div class="tip-foot">自动：由浏览器按分辨率自适应，通常介于高清与超清之间。</div>
+                      </div>
+                    </template>
+                    <el-icon class="tip-icon"><InfoFilled /></el-icon>
+                  </el-tooltip>
+                </label>
+                <el-select v-model="videoBitrate" size="default" class="setting-select">
+                  <el-option label="蓝光级 16 Mbps" :value="16_000_000" />
+                  <el-option label="超清+ 12 Mbps" :value="12_000_000" />
+                  <el-option label="超清 8 Mbps" :value="8_000_000" />
+                  <el-option label="高清+ 6 Mbps" :value="6_000_000" />
+                  <el-option label="高清 4 Mbps" :value="4_000_000" />
+                  <el-option label="标准 2.5 Mbps" :value="2_500_000" />
+                  <el-option label="流畅 1.5 Mbps" :value="1_500_000" />
+                  <el-option label="省空间 1 Mbps" :value="1_000_000" />
+                  <el-option label="自动（浏览器自适应）" :value="0" />
+                </el-select>
+              </div>
             </div>
 
             <div class="stall-warning" v-if="captureStalled && recordStatus === 2">
@@ -341,6 +456,8 @@ function resetRecord() {
             <div class="mime-info" v-if="recordStatus >= 2">
               <el-icon><InfoFilled /></el-icon>
               <span>输出格式: {{ mimeType }}</span>
+              <span v-if="sizeDisplay" class="size-sep">·</span>
+              <span v-if="sizeDisplay">{{ sizeDisplay }}</span>
             </div>
           </div>
         </div>
@@ -532,17 +649,23 @@ function resetRecord() {
 
 /* 状态色块微妙发光 */
 .status-2 {
+  background: var(--bg-ctrl); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-red) 6%, var(--bg-ctrl));
+  border-color: var(--border-subtle); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-red) 25%, var(--border-subtle));
 }
 .status-3 {
+  background: var(--bg-ctrl); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-green) 6%, var(--bg-ctrl));
+  border-color: var(--border-subtle); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-green) 25%, var(--border-subtle));
 }
 
 /* 丢帧警告横幅 */
 .stall-warning {
+  border: 1px solid var(--border-color); /* 旧浏览器回退：无 color-mix */
   border: 1px solid color-mix(in srgb, var(--accent-red) 45%, transparent);
+  background: var(--bg-ctrl); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, var(--accent-red) 10%, var(--bg-ctrl));
   border-radius: 10px;
   padding: 12px 14px;
@@ -565,6 +688,77 @@ function resetRecord() {
 
 .stall-text strong {
   color: var(--accent-red);
+}
+
+/* 录制参数面板 */
+.settings-panel {
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.setting-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 82px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.setting-label .el-icon {
+  color: var(--text-muted);
+}
+
+.setting-select {
+  flex: 1;
+}
+
+.tip-icon {
+  cursor: help;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.tip-icon:hover {
+  color: var(--accent-blue);
+}
+
+.tip-body {
+  min-width: 220px;
+  line-height: 1.7;
+}
+
+.tip-head {
+  margin-bottom: 6px;
+}
+
+.tip-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.tip-line b {
+  font-weight: 600;
+}
+
+.tip-foot {
+  margin-top: 6px;
+  opacity: 0.8;
+  font-size: 0.92em;
+}
+
+.size-sep {
+  opacity: 0.5;
 }
 
 /* 按钮操作 */
@@ -754,6 +948,7 @@ function resetRecord() {
     box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.4);
   }
   50% {
+    border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
     border-color: color-mix(in srgb, var(--accent-red) 50%, transparent);
     box-shadow: 0 0 8px 2px rgba(231, 76, 60, 0.2);
   }

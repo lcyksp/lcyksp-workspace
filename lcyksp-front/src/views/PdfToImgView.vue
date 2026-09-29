@@ -1,11 +1,12 @@
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import * as pdfjsLib from 'pdfjs-dist'
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
 import { Document, Download, Loading, Picture, UploadFilled } from '@element-plus/icons-vue'
+import pdfjsLib from '../utils/pdfjs.js'
+import { clampRenderScale, yieldToUI, releaseCanvas } from '../utils/pdfRender.js'
+import { isWeakDevice } from '../utils/renderTier.js'
 
-pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker()
+const weak = isWeakDevice()
 
 const mode = ref('none')
 const rawFile = ref(null)
@@ -16,7 +17,8 @@ const converting = ref(false)
 const previewUrl = ref('')
 const previewIndex = ref(-1)
 const isPreviewActive = ref(false)
-const qualityMode = ref('hd')
+const qualityMode = ref(weak ? 'normal' : 'hd')
+const convertProgress = ref('')
 const imageFormat = ref('png')
 
 const scaleMap = { normal: 1, hd: 2, ultra: 3 }
@@ -49,21 +51,30 @@ async function handleConvertPdfToImages() {
   try {
     const buf = await rawFile.value.arrayBuffer()
     const pdf = await pdfjsLib.getDocument({ data: buf, useSystemFonts: true }).promise
+    let clampedAny = false
     for (let n = 1; n <= pdf.numPages; n++) {
+      convertProgress.value = `正在转换 第 ${n} / ${pdf.numPages} 页`
       const page = await pdf.getPage(n)
-      const vp = page.getViewport({ scale: currentScale.value })
+      // 超大页 × 高倍率会爆内存/超画布上限：夹到设备可承受的最长边
+      const { scale, clamped } = clampRenderScale(page, currentScale.value)
+      if (clamped) clampedAny = true
+      const vp = page.getViewport({ scale })
       const c = document.createElement('canvas')
       c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height)
       const ctx = c.getContext('2d', { alpha: imageFormat.value === 'png' })
       if (imageFormat.value === 'jpg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height) }
       await page.render({ canvasContext: ctx, viewport: vp }).promise
       const blob = await new Promise(r => c.toBlob(b => r(b), currentFormat.value.mime, imageFormat.value === 'jpg' ? 0.95 : undefined))
+      releaseCanvas(c) // 大画布用完立刻释放，别整册攒着爆内存
       if (blob) imageResults.value.push({ page: n, url: URL.createObjectURL(blob) })
+      await yieldToUI() // 让出主线程，弱端不假死
     }
-    if (imageResults.value.length > 0) ElMessage.success(`成功转换 ${imageResults.value.length} 页`)
-    else ElMessage.error('所有页面转换失败')
+    if (imageResults.value.length > 0) {
+      ElMessage.success(`成功转换 ${imageResults.value.length} 页`)
+      if (clampedAny) ElMessage.info('部分超大页面已按设备上限自动降低渲染倍率，以防内存溢出')
+    } else ElMessage.error('所有页面转换失败')
   } catch (err) { console.error(err); ElMessage.error('转换失败') }
-  finally { converting.value = false }
+  finally { converting.value = false; convertProgress.value = '' }
 }
 
 function downloadSingleImage(url, page) {
@@ -95,7 +106,7 @@ onUnmounted(() => { imageResults.value.forEach(i => URL.revokeObjectURL(i.url)) 
             <div class="info-row"><span class="info-label">总页数</span><span class="info-value highlight">{{ totalPages }} 页</span></div>
             <div class="option-block"><div class="option-title">清晰度</div>
               <el-radio-group v-model="qualityMode" class="option-group">
-                <el-radio value="normal">普通 1x</el-radio><el-radio value="hd">高清 2x</el-radio><el-radio value="ultra">超清 3x</el-radio>
+                <el-radio value="normal">普通 1x</el-radio><el-radio value="hd">高清 2x</el-radio><el-radio value="ultra" :disabled="weak">超清 3x</el-radio>
               </el-radio-group>
             </div>
             <div class="option-block"><div class="option-title">格式</div>
@@ -106,7 +117,7 @@ onUnmounted(() => { imageResults.value.forEach(i => URL.revokeObjectURL(i.url)) 
             <el-button type="primary" size="large" :loading="converting" :disabled="!rawFile" class="action-btn" @click="handleConvertPdfToImages">{{ converting ? '转换中…' : '转换并生成图片' }}</el-button>
             <el-button v-if="imageResults.length > 0" size="small" text type="warning" style="margin-top:4px" @click="clearResults">清空结果</el-button>
           </div>
-          <div v-if="converting" class="progress-bar"><el-icon class="is-loading"><Loading /></el-icon><span>正在逐页渲染…</span></div>
+          <div v-if="converting" class="progress-bar"><el-icon class="is-loading"><Loading /></el-icon><span>{{ convertProgress || '正在逐页渲染…' }}</span></div>
           <div v-if="imageResults.length > 0" class="result-info"><span>已生成 {{ imageResults.length }} 张 {{ currentFormat.ext.toUpperCase() }}</span></div>
         </div>
       </el-col>

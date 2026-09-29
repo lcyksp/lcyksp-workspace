@@ -1,7 +1,7 @@
 {
   "name": "lcyksp-front",
   "private": true,
-  "version": "4.2.1",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -24,7 +24,9 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@vitejs/plugin-legacy": "5.4.3",
     "@vitejs/plugin-vue": "^5.1.4",
+    "terser": "5.51.2",
     "vite": "^5.4.10"
   }
 }

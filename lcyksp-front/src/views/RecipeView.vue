@@ -436,6 +436,7 @@ async function submitAdd() {
   transition: border-color 0.2s;
 }
 .recipe-card:hover {
+  border-color: var(--border-color); /* 旧浏览器回退：无 color-mix */
   border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border-color));
 }
 
@@ -598,6 +599,7 @@ async function submitAdd() {
   color: #e74c3c;
   font-size: 0.88rem;
   padding: 12px 16px;
+  background: var(--bg-card); /* 旧浏览器回退：无 color-mix */
   background: color-mix(in srgb, #e74c3c 12%, var(--bg-card));
   border-radius: 8px;
   margin-top: 8px;
