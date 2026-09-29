@@ -4,7 +4,7 @@
 
 站点：https://lcyksp.xyz
 
-把平时零散的需求收在一处：处理图片和 PDF、解析下载视频、看看赛事数据、记课程表、查天气和 IP 归属地。首页放了一块 three.js 的实时 3D 星象。
+把平时零散的需求收在一处：处理图片和 PDF、解析下载视频、看看赛事数据、记课程表、查天气和 IP 归属地。首页放了一块 three.js 的实时 3D 星象，无 WebGL2 / 软件渲染的弱端会自动降级为纯 CSS 星空，three 一个字节都不下载。
 
 ## 关于这个项目
 
@@ -27,7 +27,7 @@
 
 ## 技术栈
 
-前端是 Vue 3.5 + Vite 5.4，纯 JavaScript，组件全用 `<script setup>`。路由走 vue-router 4.6，除首页外都懒加载。UI 用 Element Plus 2.14。没上 Pinia/Vuex，组件内 `ref/reactive` 配 `provide/inject` 就够了。3D 是 three.js，图片超分靠 tfjs + upscaler 跑 ESRGAN，PDF 读取用 pdfjs-dist（走 Web Worker），写入用 pdf-lib，另外还有 axios、jszip、echarts。
+前端是 Vue 3.5 + Vite 5.4，纯 JavaScript，组件全用 `<script setup>`。路由走 vue-router 4.6，除首页外都懒加载。UI 用 Element Plus 2.14。没上 Pinia/Vuex，组件内 `ref/reactive` 配 `provide/inject` 就够了。3D 是 three.js，图片超分靠 tfjs + upscaler 跑 ESRGAN，PDF 读取用 pdfjs-dist（legacy 构建 + 全站单例 Web Worker），写入用 pdf-lib，另外还有 axios、jszip、echarts。浏览器兼容只保现代路径：不生成旧版 nomodule 包，语法底线用 build.target 钉死，个别新 API 按需枚举补齐。
 
 后端 Express 4.21，ESM，跑在 Node 20/22 上。数据库是 SQLite（WAL 模式），没用 ORM，自己包了层 Promise。图片处理用 sharp，鉴权 jsonwebtoken + bcrypt，安全相关有 helmet 和 express-rate-limit，上传用 multer，出口代理走 undici 的 ProxyAgent。网页截图用 playwright-core，服务端图片转 PDF 用 pdfkit。视频解析下载依赖 yt-dlp + ffmpeg，PDF 转 Word 依赖 pdf2docx。敏感配置（大模型 Key、用户 Cookie、代理链接）统一存数据库并 AES-256-CBC 加密，环境变量只做开关和注入。
 
@@ -61,7 +61,7 @@ lcyksp-workspace/
 │   ├── src/components/           复用组件
 │   ├── src/utils/                星象历算 / 缩放引擎 / PDF 压缩 / 各类纯函数
 │   ├── src/workers/              PDF 压缩 Web Worker
-│   └── vite.config.js            分包 / 预压缩 / GLSL 剥注释
+│   └── vite.config.js            分包 / 预压缩 / GLSL 剥注释 / 兼容底线钉死
 ├── lcyksp-backend/               后端 Express + SQLite
 │   ├── src/app.js                入口 + 中间件链
 │   ├── src/routes/               业务路由
