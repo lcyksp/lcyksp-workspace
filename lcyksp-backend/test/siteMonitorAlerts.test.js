@@ -63,7 +63,7 @@ test('a rejected credential alerts once per outage episode and the mail never ca
   const summary = await processSiteMonitorDeliveries({ sendImpl: async (to, subject, html) => { sent.push({ to, subject, html }) } })
   assert.equal(summary.sent, 1)
   assert.equal(sent.length, 1)
-  assert.equal(sent[0].to, '1296757861@qq.com')
+  assert.equal(sent[0].to, 'admin@example.com')
   assert.match(sent[0].html, /重新粘贴 JustWoker 的登录会话 Cookie/)
 })
 

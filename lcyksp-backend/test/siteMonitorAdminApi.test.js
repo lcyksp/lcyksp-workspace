@@ -48,7 +48,7 @@ async function call(method, urlPath, { token, body } = {}) {
 
 async function resetConfig() {
   await dbRun(`UPDATE site_monitors SET enabled = 0, auth_type = 'none', auth_secret = NULL,
-    recipient_email = '1296757861@qq.com', next_run_at = NULL`)
+    recipient_email = 'admin@example.com', next_run_at = NULL`)
 }
 
 test('every endpoint requires a signed-in administrator', async () => {
@@ -100,7 +100,7 @@ test('saving a credential stores it encrypted and answers with a mask only', asy
   const secret = 'sessionid=abcdefghijklmnop9876'
   const response = await call('POST', '/justwoker_models/config', {
     token: adminToken,
-    body: { enabled: true, authType: 'cookie', authSecret: secret, recipientEmail: '1296757861@qq.com' },
+    body: { enabled: true, authType: 'cookie', authSecret: secret, recipientEmail: 'admin@example.com' },
   })
   assert.equal(response.status, 200)
   assert.equal(response.json.monitor.enabled, true)
@@ -186,11 +186,11 @@ test('event history is paginated newest first', async () => {
 
 test('the test mail reports SMTP problems and is protected by a cooldown', async () => {
   await dbRun("DELETE FROM system_config WHERE key IN ('github_smtp_user','github_smtp_password')")
-  const first = await call('POST', '/test-email', { token: adminToken, body: { recipient: '1296757861@qq.com' } })
+  const first = await call('POST', '/test-email', { token: adminToken, body: { recipient: 'admin@example.com' } })
   assert.equal(first.status, 502)
   assert.equal(first.json.error.includes('测试邮件发送失败'), true)
 
-  const second = await call('POST', '/test-email', { token: adminToken, body: { recipient: '1296757861@qq.com' } })
+  const second = await call('POST', '/test-email', { token: adminToken, body: { recipient: 'admin@example.com' } })
   assert.equal(second.status, 429)
 
   const invalid = await call('POST', '/test-email', { token: adminToken, body: { recipient: 'nope' } })

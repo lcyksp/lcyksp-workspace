@@ -700,7 +700,7 @@ onUnmounted(() => {
       </nav>
 
       <div class="sidebar-footer">
-        <span>v4.0 | lcyksp.xyz</span>
+        <span>v2.0.1 | lcyksp.xyz</span>
       </div>
     </aside>
 

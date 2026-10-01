@@ -31,12 +31,21 @@ const BALANCE_CACHE_MS = 10 * 60 * 1000
 const BALANCE_ERROR_CACHE_MS = 2 * 60 * 1000
 const LOW_WARN_COOLDOWN_MS = 12 * 60 * 60 * 1000
 
+// 余量接口的偶发抖动（空响应体 / 非 JSON / 5xx / 超时）不该被当成「余量不足」上报：
+// 先退避重试，仍失败才记为「查询失败」，且只有连续多轮都失败才发提醒邮件。
+const BALANCE_TIMEOUT_MS = 10 * 1000
+const BALANCE_ATTEMPT_DELAYS = [0, 1000, 2500]
+
 const LIST_KEY = 'douyin_pool_list'
 const LEGACY_URL_KEY = 'douyin_pool_extract_url'
 const LEGACY_TTL_KEY = 'douyin_pool_ttl_ms'
 const ACTIVE_KEY = 'douyin_pool_active_id'
 const THRESHOLD_KEY = 'douyin_pool_low_balance'
 const LOW_WARN_KEY = 'douyin_pool_low_warn_at'
+// 查询失败单独计数与提醒：连续 FAIL_ALERT_STREAK 轮（每轮 4 小时）都查不到才发信
+export const BALANCE_FAIL_STREAK_KEY = 'douyin_pool_balance_fail_streak'
+export const BALANCE_FAIL_WARN_KEY = 'douyin_pool_balance_fail_warn_at'
+export const BALANCE_FAIL_ALERT_STREAK = 3
 
 export const LOW_BALANCE_DEFAULT = 200
 export const BALANCE_ENDPOINT = 'http://v2.api.juliangip.com/dynamic/balance'
@@ -377,38 +386,74 @@ export async function deletePool(id) {
 
 // ---------- 余量查询 ----------
 
-export async function getPoolBalance(pool, { fetchImpl = fetch, force = false } = {}) {
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 查询单个池的剩余 IP 数。
+ *
+ * 上游偶发失败（空响应体、非 JSON、HTTP 5xx、连接超时）会按 retryDelays 退避重试，
+ * 只有真正解析出业务数字才算成功；失败一律只返回 error，绝不拿「猜的数字」去报警。
+ * JSON 里带了业务错误码（例如签名失效）时不重试 —— 重试也不会变好。
+ */
+export async function getPoolBalance(pool, { fetchImpl = fetch, force = false, retryDelays = BALANCE_ATTEMPT_DELAYS, sleepImpl = defaultSleep } = {}) {
   if (!pool) return { balance: null, at: '', error: '池不存在' }
   const url = buildBalanceUrl(pool)
   if (!url) return { balance: null, at: '', error: pool.key ? '提取链接缺少 trade_no' : '未配置业务 key' }
   const cachedRow = balanceCache.get(pool.id)
   const ttl = cachedRow?.error ? BALANCE_ERROR_CACHE_MS : BALANCE_CACHE_MS
   if (!force && cachedRow && Date.now() - cachedRow.at < ttl) return cachedRow
-  try {
-    const res = await fetchImpl(url, { signal: AbortSignal.timeout(10000) })
-    const text = (await res.text()).trim()
+
+  const attempts = Math.max(1, retryDelays.length)
+  let lastError = '余量接口请求失败'
+
+  for (let i = 0; i < attempts; i++) {
+    if (retryDelays[i]) await sleepImpl(retryDelays[i])
+
+    let res
+    try {
+      res = await fetchImpl(url, { signal: AbortSignal.timeout(BALANCE_TIMEOUT_MS) })
+    } catch (err) {
+      lastError = `余量接口请求失败：${String(err?.message || err).slice(0, 60)}`
+      continue
+    }
+    if (!res || res.ok === false) {
+      lastError = `余量接口 HTTP ${res?.status ?? '无响应'}`
+      continue
+    }
+
+    let text = ''
+    try {
+      text = (await res.text()).trim()
+    } catch {
+      text = ''
+    }
     let json = null
     try {
       json = JSON.parse(text)
-    } catch { /* 非 JSON，按错误处理 */ }
+    } catch {
+      json = null
+    }
     if (!json) {
-      const row = { balance: null, at: Date.now(), error: `余量接口返回异常：${text.slice(0, 60)}` }
-      balanceCache.set(pool.id, row)
-      return row
+      // 空响应体 / 非 JSON：多是上游限频或网关故障，退避重试后再下结论
+      lastError = text ? `余量接口返回异常：${text.slice(0, 60)}` : '余量接口返回空响应'
+      continue
     }
     if (json.code !== 200 || !json.data || json.data.balance === undefined) {
       const row = { balance: null, at: Date.now(), error: String(json.msg || `code=${json.code}`).slice(0, 60) }
       balanceCache.set(pool.id, row)
       return row
     }
+
     const row = { balance: Number(json.data.balance), at: Date.now(), error: '' }
     balanceCache.set(pool.id, row)
     return row
-  } catch (err) {
-    const row = { balance: null, at: Date.now(), error: `余量接口请求失败：${String(err.message || err).slice(0, 60)}` }
-    balanceCache.set(pool.id, row)
-    return row
   }
+
+  const row = { balance: null, at: Date.now(), error: `${lastError}（已重试 ${attempts - 1} 次）` }
+  balanceCache.set(pool.id, row)
+  return row
 }
 
 async function balanceMap(pools, options) {
@@ -594,78 +639,118 @@ async function notifyAddress() {
   return looksEmail(cfg.from) ? cfg.from : looksEmail(cfg.user) ? cfg.user : ''
 }
 
-async function readLowWarnAt() {
+async function readConfigValue(key) {
   try {
-    const rows = await dbAll('SELECT value FROM system_config WHERE key = ?', [LOW_WARN_KEY])
+    const rows = await dbAll('SELECT value FROM system_config WHERE key = ?', [key])
     return String(rows[0]?.value || '')
   } catch {
     return ''
   }
 }
 
+async function writeConfigValue(key, value) {
+  await dbRun('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [key, value]).catch(() => {})
+}
+
+async function clearConfigValue(key) {
+  await dbRun('DELETE FROM system_config WHERE key = ?', [key]).catch(() => {})
+}
+
+async function readLowWarnAt() {
+  return readConfigValue(LOW_WARN_KEY)
+}
+
+/** 12 小时冷却判断：warnedAtKey 为空或已过期都返回 true。 */
+async function warnCooldownPassed(warnedAtKey) {
+  const warnedAt = Date.parse(await readConfigValue(warnedAtKey))
+  return !Number.isFinite(warnedAt) || Date.now() - warnedAt >= LOW_WARN_COOLDOWN_MS
+}
+
 /**
- * 检查所有池的余量，低于阈值（默认 200）时发一封预警邮件（12 小时内不重复发）。
- * 余量回升后清除记录，下次再跌破会重新预警。
+ * 检查所有池的余量：
+ *  - 真实余量低于阈值（默认 200）→ 发「余量不足」预警邮件（12 小时内不重复发，余量回升后清除记录）；
+ *  - 查询失败（接口抖动）→ 只累计失败轮次，连续 BALANCE_FAIL_ALERT_STREAK 轮才发「余量查询异常」，
+ *    既不冒用「不足」的标题，也不会因为一次网络抖动就打扰站长。
  * 返回值给管理后台/日志用，不抛错。
  */
 export async function checkPoolBalanceAndWarn(options = {}) {
+  const { sendMail = sendSiteMonitorEmail, mailReady = smtpConfigured, ...poolOptions } = options
+
   let cfg
   try {
-    cfg = await loadPoolConfig({ force: options.forceConfig })
+    cfg = await loadPoolConfig({ force: poolOptions.forceConfig })
   } catch (err) {
-    return { checked: 0, low: [], warned: false, error: err.message }
+    return { checked: 0, low: [], failed: [], warned: false, error: err.message }
   }
   const pools = cfg.pools.filter((p) => p.enabled !== false)
-  if (!pools.length) return { checked: 0, low: [], warned: false, error: '未配置动态池' }
+  if (!pools.length) return { checked: 0, low: [], failed: [], warned: false, error: '未配置动态池' }
 
   const threshold = cfg.lowBalanceThreshold
   const low = []
+  const failed = []
   for (const pool of pools) {
-    const row = await getPoolBalance(pool, { ...options, force: true })
-    if (row.error) {
-      low.push({ name: pool.name, balance: null, note: row.error })
-    } else if (Number.isFinite(row.balance) && row.balance <= threshold) {
-      low.push({ name: pool.name, balance: row.balance, note: '' })
-    }
+    const row = await getPoolBalance(pool, { ...poolOptions, force: true })
+    if (row.error) failed.push({ name: pool.name, balance: null, note: row.error })
+    else if (Number.isFinite(row.balance) && row.balance <= threshold) low.push({ name: pool.name, balance: row.balance, note: '' })
   }
 
-  if (!low.length) {
-    const warnedAt = await readLowWarnAt()
-    if (warnedAt) await dbRun('DELETE FROM system_config WHERE key = ?', [LOW_WARN_KEY]).catch(() => {})
-    return { checked: pools.length, low, warned: false }
-  }
-
-  const warnedAt = Date.parse(await readLowWarnAt())
-  if (Number.isFinite(warnedAt) && Date.now() - warnedAt < LOW_WARN_COOLDOWN_MS) {
-    return { checked: pools.length, low, warned: false, skipped: '冷却期内' }
-  }
+  // 余量恢复正常：清掉「余量不足」记录，下次再跌破会重新预警
+  if (!low.length && (await readLowWarnAt())) await clearConfigValue(LOW_WARN_KEY)
 
   let warned = false
-  try {
-    if (await smtpConfigured()) {
-      const to = await notifyAddress()
-      if (!to) {
-        console.error('[DouyinPool] 未找到可用的通知邮箱（smtp from/user 均非邮箱格式），跳过余量预警')
-      } else {
-        const lines = low
-          .map((item) => (item.balance === null ? `· ${item.name}：查询失败（${item.note}）` : `· ${item.name}：剩余 ${item.balance} 个 IP`))
-          .join('\n')
-        const stats = getPoolExtractStats()
-        const burn = stats.today > 0 ? `\n\n今日已提取 ${stats.today} 个 IP（累计 ${stats.total} 个）。` : ''
-        const subject = `⚠️ 抖音解析池余量不足（阈值 ${threshold}）`
-        const body = `动态住宅池余量已低于阈值 ${threshold}：\n\n${lines}${burn}\n\n建议：到管理后台「抖音解析出口」页新增一个池订单（粘贴提取链接 + 业务 key），系统会在当前池耗尽时自动切换。\n\n—— lcyksp.xyz 自动检查`
-        await sendSiteMonitorEmail(to, subject, body)
+  let failureAlerted = false
+
+  if (low.length) {
+    if (await warnCooldownPassed(LOW_WARN_KEY)) {
+      const lines = low.map((item) => `· ${item.name}：剩余 ${item.balance} 个 IP`).join('\n')
+      const failedTail = failed.length ? `\n\n另有 ${failed.length} 个池本次查询失败（不计入余量不足）：\n${failed.map((item) => `· ${item.name}：${item.note}`).join('\n')}` : ''
+      const stats = getPoolExtractStats()
+      const burn = stats.today > 0 ? `\n\n今日已提取 ${stats.today} 个 IP（累计 ${stats.total} 个）。` : ''
+      const subject = `⚠️ 抖音解析池余量不足（阈值 ${threshold}）`
+      const body = `动态住宅池余量已低于阈值 ${threshold}：\n\n${lines}${burn}${failedTail}\n\n建议：到管理后台「抖音解析出口」页新增一个池订单（粘贴提取链接 + 业务 key），系统会在当前池耗尽时自动切换。\n\n—— lcyksp.xyz 自动检查`
+      if (await deliverWarnMail(sendMail, mailReady, subject, body)) {
         warned = true
+        await writeConfigValue(LOW_WARN_KEY, new Date().toISOString())
       }
     }
-  } catch (err) {
-    console.error('[DouyinPool] 余量预警邮件发送失败:', err.message)
   }
 
-  if (warned) {
-    await dbRun('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)', [LOW_WARN_KEY, new Date().toISOString()]).catch(() => {})
+  if (failed.length) {
+    const streak = Number(await readConfigValue(BALANCE_FAIL_STREAK_KEY) || 0) + 1
+    await writeConfigValue(BALANCE_FAIL_STREAK_KEY, String(streak))
+    if (streak >= BALANCE_FAIL_ALERT_STREAK && (await warnCooldownPassed(BALANCE_FAIL_WARN_KEY))) {
+      const lines = failed.map((item) => `· ${item.name}：${item.note}`).join('\n')
+      const subject = `⚠️ 抖音解析池余量查询异常（连续 ${streak} 轮）`
+      const body = `连续 ${streak} 轮（每轮 4 小时）查不到动态池余量，但这不等于余量不足 —— 请先到巨量后台核对订单剩余 IP：\n\n${lines}\n\n解析本身不受影响：提取接口与余量接口是两套调用，池仍可正常提取（系统按顺序轮转、耗尽自动换池）。\n\n—— lcyksp.xyz 自动检查`
+      if (await deliverWarnMail(sendMail, mailReady, subject, body)) {
+        failureAlerted = true
+        await writeConfigValue(BALANCE_FAIL_WARN_KEY, new Date().toISOString())
+      }
+    }
+  } else {
+    // 本轮全部查询成功：失败计数与失败提醒记录都归零
+    if (await readConfigValue(BALANCE_FAIL_STREAK_KEY)) await clearConfigValue(BALANCE_FAIL_STREAK_KEY)
+    if (await readConfigValue(BALANCE_FAIL_WARN_KEY)) await clearConfigValue(BALANCE_FAIL_WARN_KEY)
   }
-  return { checked: pools.length, low, warned }
+
+  return { checked: pools.length, low, failed, warned, failureAlerted }
+}
+
+/** 统一的发信入口：SMTP 未配置、收件人缺失或发送异常都只记日志，不影响检查结果。 */
+async function deliverWarnMail(sendMail, mailReady, subject, body) {
+  try {
+    if (!(await mailReady())) return false
+    const to = await notifyAddress()
+    if (!to) {
+      console.error('[DouyinPool] 未找到可用的通知邮箱（smtp from/user 均非邮箱格式），跳过余量预警')
+      return false
+    }
+    await sendMail(to, subject, body)
+    return true
+  } catch (err) {
+    console.error('[DouyinPool] 余量预警邮件发送失败:', err.message)
+    return false
+  }
 }
 
 export default {

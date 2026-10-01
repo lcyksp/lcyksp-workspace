@@ -28,6 +28,7 @@ const {
   upsertPrimaryPool,
   resetPoolConfigCache,
   invalidatePoolProxy,
+  checkPoolBalanceAndWarn,
 } = await import('../src/utils/douyinPool.js')
 await initDb()
 
@@ -257,6 +258,131 @@ test('低余量阈值：默认 200，可保存并在快照里回显', async () =
   snap = await getPoolSnapshot({ forceConfig: true, fetchImpl: makeFetch() })
   assert.equal(snap.lowBalanceThreshold, 50)
   await assert.rejects(() => writeLowBalanceThreshold(-1), /阈值/)
+})
+
+/** 预警用例的夹具：写入收件邮箱 + 可注入的发信器（不真的连 SMTP）。 */
+async function seedMailRecipient() {
+  await dbRun("INSERT OR REPLACE INTO system_config (key, value) VALUES ('github_smtp_user', '站长@example.com')")
+}
+async function clearMailRecipient() {
+  await dbRun("DELETE FROM system_config WHERE key IN ('github_smtp_user','douyin_pool_balance_fail_streak','douyin_pool_balance_fail_warn_at')")
+}
+function recordingSender(sent) {
+  return async (to, subject, body) => { sent.push({ to, subject, body }) }
+}
+
+test('余量接口返回空响应：算「查询失败」，绝不冒用「余量不足」，也不发信', async () => {
+  await clearConfig()
+  await seedMailRecipient()
+  await addPool({ name: '空响应池', extractUrl: EXTRACT_B, key: 'k2', ttlMs: 60000 })
+
+  const sent = []
+  const res = await checkPoolBalanceAndWarn({
+    forceConfig: true,
+    fetchImpl: async () => ({ ok: true, status: 200, text: async () => '' }),
+    retryDelays: [0],
+    mailReady: async () => true,
+    sendMail: recordingSender(sent),
+  })
+
+  assert.deepEqual(res.low, [], '查不到余量不能被算作余量不足')
+  assert.equal(res.failed.length, 1)
+  assert.match(res.failed[0].note, /空响应/)
+  assert.equal(res.warned, false)
+  assert.equal(sent.length, 0, '单次抖动不该打扰站长')
+  await clearMailRecipient()
+})
+
+test('余量接口第一次空响应、重试成功：直接拿到数字，不记失败', async () => {
+  await clearConfig()
+  await addPool({ name: '抖动池', extractUrl: EXTRACT_B, key: 'k2', ttlMs: 60000 })
+
+  let calls = 0
+  const res = await checkPoolBalanceAndWarn({
+    forceConfig: true,
+    fetchImpl: async () => {
+      calls += 1
+      return calls === 1
+        ? { ok: true, status: 200, text: async () => '' }
+        : { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: '请求成功', data: { balance: 9986 } }) }
+    },
+    retryDelays: [0, 5],
+    mailReady: async () => true,
+    sendMail: async () => { throw new Error('重试成功时不该发任何邮件') },
+  })
+
+  assert.equal(calls, 2, '应重试一次并成功')
+  assert.deepEqual(res.failed, [], '重试成功后不算查询失败')
+  assert.equal(res.warned, false)
+})
+
+test('HTTP 5xx 也按「查询失败」处理，不写成余量不足', async () => {
+  await clearConfig()
+  await addPool({ name: '网关故障池', extractUrl: EXTRACT_B, key: 'k2', ttlMs: 60000 })
+
+  const sent = []
+  const res = await checkPoolBalanceAndWarn({
+    forceConfig: true,
+    fetchImpl: async () => ({ ok: false, status: 502, text: async () => '' }),
+    retryDelays: [0, 5],
+    mailReady: async () => true,
+    sendMail: recordingSender(sent),
+  })
+
+  assert.deepEqual(res.low, [])
+  assert.match(res.failed[0].note, /HTTP 502/)
+  assert.equal(sent.length, 0)
+})
+
+test('真实余量低于阈值才发「余量不足」（含 12 小时冷却）', async () => {
+  await clearConfig()
+  await seedMailRecipient()
+  await addPool({ name: '低余量池', extractUrl: EXTRACT_A, key: 'k1', ttlMs: 60000 }) // 假上游对该池返回 balance 0
+
+  const sent = []
+  const sendMail = recordingSender(sent)
+  const first = await checkPoolBalanceAndWarn({ forceConfig: true, fetchImpl: makeFetch(), mailReady: async () => true, sendMail })
+  assert.equal(first.low.length, 1)
+  assert.equal(first.warned, true)
+  assert.match(sent[0].subject, /余量不足/)
+  assert.match(sent[0].body, /剩余 0 个 IP/)
+
+  const second = await checkPoolBalanceAndWarn({ forceConfig: true, fetchImpl: makeFetch(), mailReady: async () => true, sendMail })
+  assert.equal(second.warned, false, '冷却期内不重复发')
+  assert.equal(sent.length, 1)
+  await clearMailRecipient()
+})
+
+test('连续 3 轮查询失败才发「余量查询异常」，标题不冒用「余量不足」', async () => {
+  await clearConfig()
+  await seedMailRecipient()
+  await addPool({ name: '故障池', extractUrl: EXTRACT_B, key: 'k2', ttlMs: 60000 })
+
+  const sent = []
+  const options = {
+    forceConfig: true,
+    fetchImpl: async () => ({ ok: true, status: 200, text: async () => '' }),
+    retryDelays: [0],
+    mailReady: async () => true,
+    sendMail: recordingSender(sent),
+  }
+
+  await checkPoolBalanceAndWarn(options)
+  await checkPoolBalanceAndWarn(options)
+  assert.equal(sent.length, 0, '前两轮失败不打扰')
+
+  const third = await checkPoolBalanceAndWarn(options)
+  assert.equal(third.failureAlerted, true)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0].subject, /余量查询异常/)
+  assert.doesNotMatch(sent[0].subject, /余量不足/)
+
+  // 恢复成功后失败计数清零，下次再连续失败要重新累计
+  const recovered = await checkPoolBalanceAndWarn({ ...options, fetchImpl: makeFetch() })
+  assert.deepEqual(recovered.failed, [])
+  const key = await new Promise((resolve, reject) => getDb().get("SELECT value FROM system_config WHERE key = 'douyin_pool_balance_fail_streak'", (e, row) => (e ? reject(e) : resolve(row?.value || ''))))
+  assert.equal(key, '')
+  await clearMailRecipient()
 })
 
 test('upsertPrimaryPool：把旧单链接表单写进第一个池', async () => {

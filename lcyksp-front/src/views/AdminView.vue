@@ -2116,7 +2116,7 @@ onMounted(() => {
                 />
               </el-form-item>
               <el-form-item label="爱发电 user_id">
-                <el-input v-model="membershipConfig.afdianUserId" placeholder="例如：860297d8442111f0813352540025c377" clearable />
+                <el-input v-model="membershipConfig.afdianUserId" placeholder="例如：0123456789abcdef0123456789abcdef（在爱发电开发者后台获取）" clearable />
               </el-form-item>
               <el-form-item label="爱发电 token">
                 <el-input v-model="membershipConfig.afdianToken" type="password" show-password placeholder="填写爱发电开发者 token" clearable />

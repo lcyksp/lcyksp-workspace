@@ -653,7 +653,7 @@ export async function initDb() {
     target_url TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
     interval_seconds INTEGER NOT NULL,
-    recipient_email TEXT NOT NULL DEFAULT '1296757861@qq.com',
+    recipient_email TEXT NOT NULL DEFAULT 'admin@example.com',
     auth_type TEXT NOT NULL DEFAULT 'none' CHECK(auth_type IN ('none', 'cookie', 'bearer')),
     auth_secret TEXT DEFAULT NULL,
     etag TEXT DEFAULT NULL,
@@ -744,7 +744,7 @@ export async function initDb() {
       (source, display_name, target_url, enabled, interval_seconds, recipient_email, auth_type, last_status)
      VALUES (?, ?, ?, 0, ?, ?, 'none', 'idle')
      ON CONFLICT(source) DO NOTHING`,
-    ['justwoker_models', 'JustWoker 模型广场', 'https://api.justwoker.icu/v1/models', 1800, '1296757861@qq.com'],
+    ['justwoker_models', 'JustWoker 模型广场', 'https://api.justwoker.icu/v1/models', 1800, 'admin@example.com'],
   )
   // `/pricing` is the SPA document, and `/api/pricing` requires a *login session*, whose refresh
   // token is revoked/rotated by upstream and cannot be kept alive unattended. `/v1/models` is the
@@ -767,7 +767,7 @@ export async function initDb() {
       (source, display_name, target_url, enabled, interval_seconds, recipient_email, auth_type, last_status)
      VALUES (?, ?, ?, 0, ?, ?, 'none', 'idle')
      ON CONFLICT(source) DO NOTHING`,
-    ['hzu_postgraduate', '惠州学院研究生招生', 'https://www.hzu.edu.cn/yjszs/list.htm', 3600, '1296757861@qq.com'],
+    ['hzu_postgraduate', '惠州学院研究生招生', 'https://www.hzu.edu.cn/yjszs/list.htm', 3600, 'admin@example.com'],
   )
 
   await new Promise((resolve, reject) => {

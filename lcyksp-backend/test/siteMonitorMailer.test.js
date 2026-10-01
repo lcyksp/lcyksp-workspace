@@ -50,7 +50,7 @@ async function resetAll(source) {
 async function seedDelivery(monitorId, overrides = {}) {
   const row = {
     dedupe_key: 'seed-key',
-    recipient_email: '1296757861@qq.com',
+    recipient_email: 'admin@example.com',
     subject: '【网站监测】测试',
     body_html: '<p>测试</p>',
     status: 'pending',
@@ -109,7 +109,7 @@ test('a baseline run queues nothing and a later change queues exactly one delive
   const rows = await dbAll('SELECT * FROM site_monitor_deliveries WHERE monitor_id = ?', [monitorId])
   assert.equal(rows.length, 1)
   assert.equal(rows[0].status, 'pending')
-  assert.equal(rows[0].recipient_email, '1296757861@qq.com')
+  assert.equal(rows[0].recipient_email, 'admin@example.com')
   assert.equal(rows[0].subject, '【网站监测】JustWoker 模型广场：新增 1 个模型')
   assert.equal(rows[0].body_html.includes('C'), true)
   assert.equal(JSON.parse(rows[0].event_ids_json).length, 1)
@@ -128,7 +128,7 @@ test('a detected website change flows through event, durable queue, and simulate
   const sender = recordingSender()
   assert.deepEqual(await processSiteMonitorDeliveries({ sendImpl: sender }), { sent: 1, retry: 0, failed: 0, skipped: 0 })
   assert.equal(sender.calls.length, 1)
-  assert.equal(sender.calls[0].to, '1296757861@qq.com')
+  assert.equal(sender.calls[0].to, 'admin@example.com')
   assert.equal(sender.calls[0].html.includes('公告二'), true)
   assert.equal((await dbGet("SELECT COUNT(*) count FROM site_monitor_deliveries WHERE monitor_id = ? AND status = 'sent' AND sent_at IS NOT NULL", [monitorId])).count, 1)
 })
@@ -149,7 +149,7 @@ test('unchanged repeat runs create no second delivery and re-queueing the same b
 
 test('a successful pass sends once, stores sent_at and is not resent', async () => {
   const monitorId = await resetAll('hzu_postgraduate')
-  await dbRun("UPDATE site_monitors SET recipient_email = '1296757861@qq.com' WHERE id = ?", [monitorId])
+  await dbRun("UPDATE site_monitors SET recipient_email = 'admin@example.com' WHERE id = ?", [monitorId])
   await runSiteMonitor('hzu_postgraduate', { hostnameValidator: noDnsBlock, fetchImpl: async () => htmlResponse('<a href="/2026/0901/c11241a101/page.htm">公告一</a>') })
   await runSiteMonitor('hzu_postgraduate', { hostnameValidator: noDnsBlock, fetchImpl: async () => htmlResponse('<a href="/2026/0901/c11241a101/page.htm">公告一</a><a href="/2026/0902/c11241a102/page.htm">公告二</a>') })
 
@@ -157,7 +157,7 @@ test('a successful pass sends once, stores sent_at and is not resent', async () 
   const summary = await processSiteMonitorDeliveries({ sendImpl: sender })
   assert.deepEqual(summary, { sent: 1, retry: 0, failed: 0, skipped: 0 })
   assert.equal(sender.calls.length, 1)
-  assert.equal(sender.calls[0].to, '1296757861@qq.com')
+  assert.equal(sender.calls[0].to, 'admin@example.com')
   assert.equal(sender.calls[0].subject, '【网站监测】惠州学院研究生招生：1 条新公告')
   assert.equal(sender.calls[0].html.includes('公告二'), true)
 
@@ -285,8 +285,8 @@ test('the queue keeps batches when SMTP is unconfigured rather than dropping the
 test('the administrator test mail is sent directly and never enters the queue', async () => {
   await resetAll('justwoker_models')
   const sender = recordingSender()
-  const result = await sendSiteMonitorTestEmail(' 1296757861@qq.com ', { sendImpl: sender })
-  assert.equal(result.recipient, '1296757861@qq.com')
+  const result = await sendSiteMonitorTestEmail(' admin@example.com ', { sendImpl: sender })
+  assert.equal(result.recipient, 'admin@example.com')
   assert.equal(sender.calls.length, 1)
   assert.equal(sender.calls[0].subject.includes('网站监测测试邮件'), true)
   assert.equal((await dbGet('SELECT COUNT(*) count FROM site_monitor_deliveries')).count, 0)
