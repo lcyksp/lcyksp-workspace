@@ -37,6 +37,7 @@ deploy/
 deploy.sh
 deploy.ps1
 DEPLOY.md
+.deploy-site-monitor.sh
 lcyksp-backend/nginx-example.conf
 
 # 域名/站点归属验证文件

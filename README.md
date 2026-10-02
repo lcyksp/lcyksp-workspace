@@ -19,7 +19,7 @@
 | 图片 | 压缩 · 格式转换 · 长图拼接 · 在线水印 · AI 放大 · 像素画/拼豆图纸 · 证件照 · 图片混淆还原 |
 | PDF | 合并 · 拆分 · 压缩 · 转图片 · 转 Word · 签章 · 水印 · 页面编辑 · 提取文本 · 图片转 PDF |
 | 文件 | 闪传（阅后即焚）· ZIP 工具 |
-| 音视频 | 抖音/B站解析下载 · 剧集下载 · 在线屏幕录制 · 横屏歌词 |
+| 音视频 | 抖音/B站/X 解析下载 · 剧集下载 · 在线屏幕录制 · 横屏歌词 |
 | 数据资讯 | Apex 战绩 · ALGS 赛事 · 战争雷霆交易所行情（会员）· GitHub 日报（会员）· 天气 · IP 归属地 |
 | 生活学习 | 赛博菜谱（AI 流式生成）· 家庭相册 · 课程表 · 点名 · 微信步数 · 会员卡密 |
 | 首页 | three.js 实时星象，月球特写 / 地球特写 / 太阳系全景三档视角 |
@@ -29,7 +29,7 @@
 
 前端是 Vue 3.5 + Vite 5.4，纯 JavaScript，组件全用 `<script setup>`。路由走 vue-router 4.6，除首页外都懒加载。UI 用 Element Plus 2.14。没上 Pinia/Vuex，组件内 `ref/reactive` 配 `provide/inject` 就够了。3D 是 three.js，图片超分靠 tfjs + upscaler 跑 ESRGAN，PDF 读取用 pdfjs-dist（legacy 构建 + 全站单例 Web Worker），写入用 pdf-lib，另外还有 axios、jszip、echarts。浏览器兼容只保现代路径：不生成旧版 nomodule 包，语法底线用 build.target 钉死，个别新 API 按需枚举补齐。
 
-后端 Express 4.21，ESM，跑在 Node 20/22 上。数据库是 SQLite（WAL 模式），没用 ORM，自己包了层 Promise。图片处理用 sharp，鉴权 jsonwebtoken + bcrypt，安全相关有 helmet 和 express-rate-limit，上传用 multer，出口代理走 undici 的 ProxyAgent。网页截图用 playwright-core，服务端图片转 PDF 用 pdfkit。视频解析下载依赖 yt-dlp + ffmpeg，PDF 转 Word 依赖 pdf2docx。敏感配置（大模型 Key、用户 Cookie、代理链接）统一存数据库并 AES-256-CBC 加密，环境变量只做开关和注入。
+后端 Express 4.21，ESM，跑在 Node 20/22 上。数据库是 SQLite（WAL 模式），没用 ORM，自己包了层 Promise。图片处理用 sharp，鉴权 jsonwebtoken + bcrypt，安全相关有 helmet 和 express-rate-limit，上传用 multer，出口代理走 undici 的 ProxyAgent。网页截图用 playwright-core，服务端图片转 PDF 用 pdfkit。视频解析下载依赖 yt-dlp + ffmpeg（X 这类境外平台经服务器本机的 mihomo 出口，出口地址由 `OVERSEAS_YTDLP_PROXY` 注入，默认 `http://127.0.0.1:7890`），PDF 转 Word 依赖 pdf2docx。敏感配置（大模型 Key、用户 Cookie、代理链接）统一存数据库并 AES-256-CBC 加密，环境变量只做开关和注入。
 
 ## 架构
 
@@ -84,11 +84,11 @@ cd lcyksp-front && npm install && npm run dev
 npm run dev
 ```
 
-前端产物别只跑 dev server 验证，用 `npx vite build && npx vite preview`。后端测试 `npm test`。本地调视频解析要自备 yt-dlp / ffmpeg，PDF 转 Word 要 pdf2docx。
+前端产物别只跑 dev server 验证，用 `npx vite build && npx vite preview`。后端测试 `npm test`。本地调视频解析要自备 yt-dlp / ffmpeg（调 X 解析还需要一个能出境的代理，见 `OVERSEAS_YTDLP_PROXY`），PDF 转 Word 要 pdf2docx。
 
 ## 版本号
 
-用 `主.次.修订` 三段式（比如 `2.0.1`），前后端 `package.json` 同版本，网站左侧呼出栏下方的版本号与之一致，当前版本线 **2.0.1**（2026-09-29 重置为 2.0.0）：
+用 `主.次.修订` 三段式（比如 `2.0.1`），前后端 `package.json` 同版本，网站左侧呼出栏下方的版本号与之一致，当前版本线 **2.0.2**（2026-09-29 重置为 2.0.0）：
 
 - 主位：架构调整、技术栈更换、重大重构。
 - 次位：加功能或下架功能。

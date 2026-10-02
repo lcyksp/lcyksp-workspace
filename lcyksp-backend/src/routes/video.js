@@ -33,6 +33,8 @@ import { claimDirectBudget, decideTaskExit, directBudgetState, resetDirectBudget
 import { buildZipStore } from '../utils/zipStore.js'
 import { getDb } from '../config/db.js'
 import { assertPublicUrl } from '../utils/ssrf.js'
+import { detectPlatform, isAllowedPlatformUrl } from '../utils/platformDomains.js'
+import { normalizeAnalyzeFormats } from '../utils/videoFormats.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = express.Router()
@@ -140,21 +142,19 @@ function pickUrlFromText(input) {
   return match ? match[0].replace(/[).,;!?]+$/g, '') : ''
 }
 
-function detectPlatform(url) {
-  const value = String(url || '').toLowerCase()
-  if (value.includes('bilibili.com') || value.includes('b23.tv')) return 'bilibili'
-  if (value.includes('douyin.com') || value.includes('iesdouyin.com') || value.includes('v.douyin.com')) return 'douyin'
-  if (value.includes('youtube.com') || value.includes('youtu.be')) return 'youtube'
-  return 'generic'
-}
+// detectPlatform / isAllowedPlatformUrl 已抽到 utils/platformDomains.js（纯函数、可单测）。
+// 抽出的同时修掉一个安全缺陷：旧实现用 String.includes 做子串匹配，
+// 往白名单里加 'x.com' 会连带放行 'fox.com' / 'vortex.com' 这类无关域名；
+// 现在一律按主机名精确 / 后缀匹配（回归用例见 test/platformDomains.test.js）。
 
-// 平台白名单：仅允许抖音 / B站 域名，拒绝 generic 任意 URL（防 SSRF）
-const ALLOWED_PLATFORM_DOMAINS = ['douyin.com', 'bilibili.com', 'b23.tv']
+// 外网平台（X）从深圳机房直连不可达（2026-10-02 实测：直连 x.com / youtube.com / tiktok.com 全部 HTTP 000），
+// 必须经服务器本机的 mihomo 出口；抖音 / B站保持直连不变。
+const OVERSEAS_YTDLP_PLATFORMS = new Set(['twitter'])
+const OVERSEAS_YTDLP_PROXY = String(process.env.OVERSEAS_YTDLP_PROXY || 'http://127.0.0.1:7890').trim()
 
-function isAllowedPlatformUrl(url) {
-  const lower = String(url || '').toLowerCase()
-  return ALLOWED_PLATFORM_DOMAINS.some((domain) => lower.includes(domain))
-}
+// 这些平台的链接本身就是最终地址，不需要（也不能）走短链解析：
+// 它们的短链解析要发直连请求，境外平台在直连下必然失败，8s × 3 次重试会让每次解析白等约 25 秒。
+const SKIP_SHARE_RESOLVE_PLATFORMS = new Set(['twitter'])
 
 function parseCookieLine(line) {
   const rawLine = String(line || '')
@@ -323,6 +323,12 @@ async function resolveShareUrl(url) {
   }
   console.error('[Video] 短链解析失败，返回原始链接:', url, lastErr?.message || '')
   return url
+}
+
+// 境外平台的链接（x.com/<user>/status/<id>）本身就是最终地址，跳过短链解析，避免白等约 25 秒。
+async function resolveShareUrlForPlatform(url, platform) {
+  if (SKIP_SHARE_RESOLVE_PLATFORMS.has(platform)) return url
+  return resolveShareUrl(url)
 }
 
 function buildCookieHeader(cookieMeta) {
@@ -1447,6 +1453,18 @@ async function analyzeViaBrowserAutomation(_url) {
   throw new Error('browser automation fallback is currently disabled on this server')
 }
 
+// 服务器侧 cookies 的适用范围：
+// - 抖音 / B站 / youtube：沿用既有行为（平台专用文件优先，缺失时回落到 data/cookies.txt）
+// - X（twitter）：默认不带 cookies（解析不需要，避免把无关站点的 cookie 发给 X），
+//   只有显式放了 data/cookies.twitter.txt 且可用时才带上（应对将来可能需要登录态的推文）。
+function allowServerCookieFor(platform, cookiesMeta) {
+  if (platform !== 'twitter') return true
+  return Boolean(
+    PLATFORM_COOKIE_FILES[platform] &&
+      cookiesMeta?.candidates?.some((item) => item.label === `${platform}.specific` && item.usable),
+  )
+}
+
 function buildCommonArgs(url, options = {}) {
   const platform = detectPlatform(url)
   const cookiesMeta = getCookiesMeta(platform)
@@ -1483,8 +1501,13 @@ function buildCommonArgs(url, options = {}) {
 
   if (options.customCookiePath) {
     args.push('--cookies', options.customCookiePath)
-  } else if (cookiesMeta.active?.usable) {
+  } else if (cookiesMeta.active?.usable && allowServerCookieFor(platform, cookiesMeta)) {
     args.push('--cookies', cookiesMeta.active.path)
+  }
+
+  // 境外平台必须走本机 mihomo 出口（直连被墙）；抖音 / B站 不受影响
+  if (OVERSEAS_YTDLP_PLATFORMS.has(platform) && OVERSEAS_YTDLP_PROXY) {
+    args.push('--proxy', OVERSEAS_YTDLP_PROXY)
   }
 
   if (platform === 'bilibili') {
@@ -1580,6 +1603,22 @@ function normalizeVideoError(errorMessage, url, cookiesMeta) {
     return `YouTube 当前请求受限，可能需要 cookies、代理或降低频率。${cookieHint}`
   }
 
+  if (platform === 'twitter' && /no video could be found|no media found|there's no video/i.test(message)) {
+    return '这条推文里没有可下载的视频（可能是纯文字，或只有图片）。'
+  }
+
+  if (platform === 'twitter' && /not found|404|no longer exists|unavailable|deleted/i.test(message)) {
+    return '这条推文不存在、已被删除，或对未登录用户不可见。'
+  }
+
+  if (platform === 'twitter' && /login|sign in|age|nsfw|sensitive|protected|private|not authorized|authorization/i.test(message)) {
+    return '这条推文需要登录或年龄确认才能访问，服务器无法下载。'
+  }
+
+  if (platform === 'twitter' && /ssl|eof|timeout|timed out|connection|proxy|tunnel|502|503|temporarily/i.test(message)) {
+    return '访问 X 的出口代理这次没连通（境外平台必须走代理），请隔几秒重试一次。'
+  }
+
   if (/unsupported url/i.test(message)) {
     return '暂不支持这个分享链接，请先确认链接可直接在浏览器打开。'
   }
@@ -1638,37 +1677,6 @@ function runYtDlp(args, options = {}) {
       }
     })
   })
-}
-
-function normalizeAnalyzeFormats(rawFormats) {
-  const videoFormats = (rawFormats || [])
-    .filter((item) => item.vcodec !== 'none')
-    .map((item) => ({
-      formatId: item.format_id,
-      quality: item.format_note || item.resolution || (item.height ? `${item.height}p` : '未知清晰度'),
-      ext: item.ext || 'mp4',
-      filesize: item.filesize ? `${(item.filesize / 1024 / 1024).toFixed(1)} MB` : '大小未知',
-      hasAudio: Boolean(item.acodec && item.acodec !== 'none'),
-      mediaType: 'video',
-      directUrl: '',
-      audioUrl: '',
-    }))
-
-  const audioFormats = (rawFormats || [])
-    .filter((item) => item.vcodec === 'none' && item.acodec && item.acodec !== 'none')
-    .map((item) => ({
-      formatId: `audio-${item.format_id}`,
-      quality: item.format_note || item.format || item.ext || '仅音频',
-      ext: item.ext || 'm4a',
-      filesize: item.filesize ? `${(item.filesize / 1024 / 1024).toFixed(1)} MB` : '大小未知',
-      hasAudio: true,
-      mediaType: 'audio',
-      directUrl: '',
-      audioUrl: '',
-      sourceFormatId: item.format_id,
-    }))
-
-  return [...videoFormats, ...audioFormats]
 }
 
 function createTempDownloadDir() {
@@ -2147,7 +2155,7 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
 
   const requestedPlatform = detectPlatform(url)
   if (requestedPlatform === 'youtube') {
-    return res.json({ success: false, message: '当前暂仅支持抖音和 B站，YouTube 解析入口已暂时关闭。' })
+    return res.json({ success: false, message: '当前暂仅支持抖音、B站 与 X，YouTube 解析入口已暂时关闭。' })
   }
 
   // 防 SSRF：resolveShareUrl 会由服务端发起请求，先校验原始 URL
@@ -2250,7 +2258,7 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
     }
 
     try {
-      const finalUrl = await resolveShareUrl(url)
+      const finalUrl = await resolveShareUrlForPlatform(url, requestedPlatform)
       console.error('[Video] analyze resolved url:', {
         url,
         finalUrl,
@@ -2264,7 +2272,7 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
         return res.json({ success: false, message: err.message || '链接不合法' })
       }
       if (!isAllowedPlatformUrl(finalUrl)) {
-        return res.json({ success: false, message: '当前仅支持解析抖音和 B站链接' })
+        return res.json({ success: false, message: '当前仅支持解析抖音、B站 与 X 链接' })
       }
 
       if (detectPlatform(finalUrl) === 'douyin') {
@@ -2274,7 +2282,10 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
 
       const { args: commonArgs } = buildCommonArgs(finalUrl, options)
       const args = [...commonArgs, '--no-warnings', '--dump-single-json', finalUrl]
-      const analyzeTimeoutMs = detectPlatform(finalUrl) === 'bilibili' ? 20000 : 8000
+      const finalPlatform = detectPlatform(finalUrl)
+      // 境外平台经代理出国，比直连慢，给到与 B站 同档的超时
+      const analyzeTimeoutMs =
+        finalPlatform === 'bilibili' || OVERSEAS_YTDLP_PLATFORMS.has(finalPlatform) ? 20000 : 8000
       console.error('[Video] analyze yt-dlp start:', {
         finalUrl,
         timeoutMs: analyzeTimeoutMs,
@@ -2289,7 +2300,9 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
       })
 
       const rawData = JSON.parse(stdout)
-      const formats = normalizeAnalyzeFormats(rawData.formats)
+      const formats = normalizeAnalyzeFormats(rawData.formats, {
+        dedupeSameQuality: OVERSEAS_YTDLP_PLATFORMS.has(finalPlatform),
+      })
 
       return res.json({
         success: true,
@@ -2305,7 +2318,7 @@ router.post('/analyze', heavyLimiter, async (req, res) => {
         },
       })
     } catch (error) {
-      const finalUrl = await resolveShareUrl(url)
+      const finalUrl = await resolveShareUrlForPlatform(url, requestedPlatform)
       const { cookiesMeta } = buildCommonArgs(finalUrl, options)
       console.error('[Video] analyze catch:', {
         inputUrl: url,
@@ -2367,7 +2380,7 @@ router.post('/download-album', heavyLimiter, async (req, res) => {
 
   const requestedPlatform = detectPlatform(url)
   if (requestedPlatform === 'youtube') {
-    return res.status(400).json({ error: '当前暂仅支持抖音和 B站，YouTube 下载入口已暂时关闭。' })
+    return res.status(400).json({ error: '当前暂仅支持抖音、B站 与 X，YouTube 下载入口已暂时关闭。' })
   }
 
   try {
@@ -2470,7 +2483,7 @@ router.post('/download', heavyLimiter, async (req, res) => {
 
   const requestedPlatform = detectPlatform(url)
   if (requestedPlatform === 'youtube') {
-    return res.status(400).json({ error: '当前暂仅支持抖音和 B站，YouTube 下载入口已暂时关闭。' })
+    return res.status(400).json({ error: '当前暂仅支持抖音、B站 与 X，YouTube 下载入口已暂时关闭。' })
   }
 
   // 防 SSRF：resolveShareUrl 会由服务端发起请求，先校验原始 URL
@@ -2490,16 +2503,16 @@ router.post('/download', heavyLimiter, async (req, res) => {
       })
     }
 
-    const finalUrl = await resolveShareUrl(url)
+    const finalUrl = await resolveShareUrlForPlatform(url, requestedPlatform)
 
-    // 防 SSRF + 平台白名单：跳转后的目标也必须为公网抖音/B站链接
+    // 防 SSRF + 平台白名单：跳转后的目标也必须为公网抖音/B站/X 链接
     try {
       await assertPublicUrl(finalUrl)
     } catch (err) {
       return res.status(400).json({ error: err.message || '链接不合法' })
     }
     if (!isAllowedPlatformUrl(finalUrl)) {
-      return res.status(400).json({ error: '当前仅支持解析抖音和 B站链接' })
+      return res.status(400).json({ error: '当前仅支持解析抖音、B站 与 X 链接' })
     }
 
     // 抖音走不通 yt-dlp，前端没回传直链、或直链来自 yt-dlp 兜底时，由服务端自己签名解析
@@ -2625,7 +2638,7 @@ router.post('/download', heavyLimiter, async (req, res) => {
     stream.pipe(res)
   } catch (error) {
     cleanupTempDir(tempDir)
-    const finalUrl = await resolveShareUrl(url)
+    const finalUrl = await resolveShareUrlForPlatform(url, requestedPlatform)
     const { cookiesMeta } = buildCommonArgs(finalUrl)
     console.error('[Video] download raw error:', error?.stack || error?.message || String(error))
     const finalMessage = normalizeVideoError(error.message, finalUrl, cookiesMeta)
