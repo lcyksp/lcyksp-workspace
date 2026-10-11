@@ -24,6 +24,7 @@ import algsRouter from './routes/algs.js';
 import scheduleRouter from './routes/schedule.js';
 import stepsRouter from './routes/steps.js';
 import wtMarketRouter from './routes/wtMarket.js';
+import kaodianRouter from './routes/kaodian.js';
 import { startCron } from './utils/cron.js';
 
 const app = express();
@@ -94,6 +95,8 @@ app.use('/api/schedule', scheduleRouter);
 app.use('/api/steps', heavyLimiter, stepsRouter);
 // 战争雷霆交易所价格监控：查询走本地库；配置/刷新打上游 Gaijin，按重接口限流
 app.use('/api/wt-market', heavyLimiter, wtMarketRouter);
+// 考研政治考点背诵判分：出题走本地库，判分可能打大模型，按重接口限流
+app.use('/api/kaodian', heavyLimiter, kaodianRouter);
 
 // ---------- IP 归属地查询：进程内缓存 + 上游超时 ----------
 // 前端每次进页面都会自动查一次本机 IP，且该接口无鉴权，容易被扫描器当"慢速资源放大器"反复打。

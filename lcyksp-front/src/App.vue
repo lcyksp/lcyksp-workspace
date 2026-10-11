@@ -224,6 +224,7 @@ const menuItems = reactive([
     name: '学习助手',
     icon: Reading,
     children: [
+      { name: '考点背诵判分', path: '/kaodian' },
       { name: 'GitHub日报', path: '/github-radar' },
     ],
     isOpen: false,
@@ -333,7 +334,7 @@ function canAccessPremiumFeature(path) {
     }
   }
 
-  if (path === '/recipe' || path === '/github-radar' || path === '/step-counter') {
+  if (path === '/recipe' || path === '/github-radar' || path === '/step-counter' || path === '/kaodian') {
     if (['admin', 'premium', 'pro'].includes(currentUser.value.role)) {
       return { allowed: true, message: '' }
     }
@@ -341,6 +342,7 @@ function canAccessPremiumFeature(path) {
       '/github-radar': 'GitHub 技术趋势雷达',
       '/step-counter': '微信步数修改',
       '/recipe': '赛博菜谱',
+      '/kaodian': '考点背诵判分',
     }
     return {
       allowed: false,
@@ -406,7 +408,7 @@ function handleMenuNavigate(path) {
     return
   }
 
-  if (path === '/recipe' || path === '/gallery' || path === '/github-radar' || path === '/step-counter') {
+  if (path === '/recipe' || path === '/gallery' || path === '/github-radar' || path === '/step-counter' || path === '/kaodian') {
     const access = canAccessPremiumFeature(path)
     if (!access.allowed) {
       ElMessage.warning(access.message)
@@ -1603,6 +1605,14 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
+}
+
+/* 手机竖屏（≤480px）：顶栏空间极度有限，问候语（图标+用户名）整个收起，
+   会员徽章和退出按钮保留 —— 否则顶栏会横向溢出（实测 375px 视口溢出 62px）。 */
+@media (max-width: 480px) {
+  .user-greeting {
+    display: none;
+  }
 }
 
 /* Premium Suspended Dialog */

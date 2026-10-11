@@ -5,6 +5,12 @@ dist/
 lcyksp-backend/data/db/
 lcyksp-backend/data/uploads/
 lcyksp-backend/data/debug/
+# 考点知识库由 tools/kaodian 流水线离线生成，内容来自受版权保护的教辅，绝不入公开仓库
+lcyksp-backend/data/*.db
+lcyksp-backend/data/*.db-*
+# OCR 运行时资产（worker + wasm core + 中文语言包，约 21MB 二进制），
+# 由 tools/prep-ocr-assets.mjs 从 node_modules 注入，不入公开仓库
+lcyksp-front/public/ocr/
 lcyksp-backend/data/cookies*.txt
 test_stress.cjs
 **/dist-codex/
@@ -47,3 +53,4 @@ ad034305310504369b8e4428b3224117.txt
 _thirdparty/
 _tmp_douyin_api/
 _video_old_full.js
+task.md

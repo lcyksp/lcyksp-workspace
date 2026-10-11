@@ -133,6 +133,48 @@ const githubAdminSubscriptionsLoading = ref(false)
 const githubAdminSubscriptionForm = reactive({ id: null, userId: '', email: '', categoryIds: [], keywords: '', frequencies: ['daily'], status: 'active' })
 const quickActionLoadingId = ref(null)
 
+// 考点语义复核大模型：独立命名空间，与 GitHub日报互不影响
+const kaodianLlmLoading = ref(false)
+const kaodianLlmSaving = ref(false)
+const kaodianLlm = reactive({
+  mode: 'auto',
+  offpeakUrl: '', offpeakModel: '', offpeakKey: '', offpeakKeyConfigured: false,
+  peakUrl: '', peakModel: '', peakKey: '', peakKeyConfigured: false,
+  proxyUrl: '',
+  dailyLimit: 1500, userDailyLimit: 150, maxTokens: 700, timeoutMs: 40000,
+})
+const kaodianLlmUsage = reactive({ slot: '', effectiveSlot: '', rows: [] })
+
+async function loadKaodianLlm() {
+  kaodianLlmLoading.value = true
+  try {
+    const [cfgRes, usageRes] = await Promise.all([
+      axios.get('/api/kaodian/llm-config'),
+      axios.get('/api/kaodian/llm-usage?days=7').catch(() => ({ data: null })),
+    ])
+    // key 不回显明文，加载后清空输入框（只看“已配置”状态）
+    Object.assign(kaodianLlm, { ...cfgRes.data, offpeakKey: '', peakKey: '' })
+    if (usageRes.data) {
+      kaodianLlmUsage.slot = usageRes.data.slot || ''
+      kaodianLlmUsage.effectiveSlot = usageRes.data.effectiveSlot || ''
+      kaodianLlmUsage.rows = usageRes.data.usage || []
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '加载考点大模型配置失败')
+  } finally { kaodianLlmLoading.value = false }
+}
+
+async function saveKaodianLlm() {
+  kaodianLlmSaving.value = true
+  try {
+    await axios.post('/api/kaodian/llm-config', { ...kaodianLlm })
+    ElMessage.success('考点大模型配置已保存')
+    await loadKaodianLlm()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存考点大模型配置失败')
+  } finally { kaodianLlmSaving.value = false }
+}
+
 // 战争雷霆交易所：凭据配置 + 状态 + 手动快照
 const wtStatus = reactive({ credentialsConfigured: false, loginMasked: '', lastSnapshotAt: '', lastError: '', itemCount: 0 })
 const wtCred = reactive({ login: '', password: '' })
@@ -1397,6 +1439,7 @@ onMounted(() => {
   loadFeedback()
   loadWtStatus()
   loadWtLogs()
+  loadKaodianLlm()
 })
 </script>
 
@@ -2361,6 +2404,83 @@ onMounted(() => {
             </article>
           </div>
         </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="考点大模型">
+        <div class="tab-header">
+          <span class="tab-count">考点背诵的语义复核出口（与 GitHub日报完全独立）·配置加密保存、保存后立即生效</span>
+          <el-button size="small" :loading="kaodianLlmLoading" @click="loadKaodianLlm"><el-icon><Refresh /></el-icon>刷新</el-button>
+        </div>
+        <div v-loading="kaodianLlmLoading" class="membership-admin-grid">
+          <section class="single-panel">
+            <el-form label-position="top" size="large">
+              <el-form-item label="工作模式">
+                <el-select v-model="kaodianLlm.mode" style="width: 100%">
+                  <el-option label="自动（空闲档用空闲模型，高峰档用高峰模型）" value="auto" />
+                  <el-option label="固定走空闲档模型" value="offpeak" />
+                  <el-option label="固定走高峰档模型" value="peak" />
+                  <el-option label="关闭语义复核（只用算法判分）" value="off" />
+                </el-select>
+                <div class="form-hint">
+                  当前北京时间落在：{{ kaodianLlmUsage.slot === 'peak' ? '高峰档' : (kaodianLlmUsage.slot === 'offpeak' ? '空闲档' : '—') }}；
+                  实际生效：{{ kaodianLlmUsage.effectiveSlot || '—' }}
+                </div>
+              </el-form-item>
+
+              <el-divider content-position="left">空闲档模型（默认 DeepSeek）</el-divider>
+              <el-form-item label="API URL"><el-input v-model="kaodianLlm.offpeakUrl" placeholder="OpenAI 兼容接口，例如 https://api.deepseek.com" /></el-form-item>
+              <el-form-item label="模型名称"><el-input v-model="kaodianLlm.offpeakModel" placeholder="例如 deepseek-v4-flash" /></el-form-item>
+              <el-form-item label="API Key">
+                <el-input v-model="kaodianLlm.offpeakKey" type="password" show-password placeholder="留空表示保持现有配置" clearable />
+                <div class="form-hint">状态：{{ kaodianLlm.offpeakKeyConfigured ? '已配置' : '未配置' }}。</div>
+              </el-form-item>
+
+              <el-divider content-position="left">高峰档模型（默认小米 MiMo）</el-divider>
+              <el-form-item label="API URL"><el-input v-model="kaodianLlm.peakUrl" placeholder="OpenAI 兼容接口，例如 https://api.xiaomimimo.com/v1" /></el-form-item>
+              <el-form-item label="模型名称"><el-input v-model="kaodianLlm.peakModel" placeholder="例如 mimo-v2.6-flash" /></el-form-item>
+              <el-form-item label="API Key">
+                <el-input v-model="kaodianLlm.peakKey" type="password" show-password placeholder="留空表示保持现有配置" clearable />
+                <div class="form-hint">状态：{{ kaodianLlm.peakKeyConfigured ? '已配置' : '未配置' }}。</div>
+              </el-form-item>
+
+              <el-divider content-position="left">额度与网络</el-divider>
+              <el-form-item label="全站每日复核上限">
+                <el-input-number v-model="kaodianLlm.dailyLimit" :min="0" :max="100000" :step="100" />
+              </el-form-item>
+              <el-form-item label="单用户每日复核上限">
+                <el-input-number v-model="kaodianLlm.userDailyLimit" :min="0" :max="100000" :step="10" />
+              </el-form-item>
+              <el-form-item label="单次输出 token 上限">
+                <el-input-number v-model="kaodianLlm.maxTokens" :min="100" :max="4000" :step="50" />
+                <div class="form-hint">输出比输入贵，调低可省钱。</div>
+              </el-form-item>
+              <el-form-item label="超时（毫秒）">
+                <el-input-number v-model="kaodianLlm.timeoutMs" :min="5000" :max="120000" :step="1000" />
+              </el-form-item>
+              <el-form-item label="代理 URL（可选）">
+                <el-input v-model="kaodianLlm.proxyUrl" placeholder="留空=直连（两家模型都在国内，默认直连可达）" clearable />
+              </el-form-item>
+
+              <el-button type="primary" :loading="kaodianLlmSaving" @click="saveKaodianLlm">保存考点大模型配置</el-button>
+            </el-form>
+          </section>
+
+          <section class="single-panel">
+            <div class="tab-count" style="margin-bottom: 12px">近 7 天用量</div>
+            <el-empty v-if="!kaodianLlmUsage.rows.length" description="最近没有语义复核调用" :image-size="60" />
+            <el-table v-else :data="kaodianLlmUsage.rows" size="small" style="width: 100%">
+              <el-table-column prop="day" label="日期" width="110" />
+              <el-table-column prop="calls" label="调用" width="70" />
+              <el-table-column prop="ok_calls" label="成功" width="70" />
+              <el-table-column label="缓存命中率" width="100">
+                <template #default="{ row }">{{ row.cacheHitRate != null ? (row.cacheHitRate * 100).toFixed(1) + '%' : '—' }}</template>
+              </el-table-column>
+              <el-table-column label="成本(元)">
+                <template #default="{ row }">{{ row.cost != null ? row.cost : '—' }}</template>
+              </el-table-column>
+            </el-table>
+          </section>
+        </div>
       </el-tab-pane>
     </el-tabs>
 

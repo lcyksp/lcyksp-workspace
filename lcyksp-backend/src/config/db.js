@@ -776,5 +776,92 @@ export async function initDb() {
   await new Promise((resolve, reject) => siteMonitorDb.run('PRAGMA busy_timeout=10000;', (err) => (err ? reject(err) : resolve())))
   await new Promise((resolve, reject) => siteMonitorDb.run('PRAGMA foreign_keys=ON;', (err) => (err ? reject(err) : resolve())))
 
+  // 考研政治考点背诵判分：答题记录（考点知识库在独立的 kaodian.db，与主库解耦）
+  await run(`CREATE TABLE IF NOT EXISTS kaodian_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    point_id INTEGER NOT NULL,
+    answer TEXT NOT NULL DEFAULT '',
+    score REAL NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '[]',
+    llm_used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_attempts_user ON kaodian_attempts(user_id, created_at DESC)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_attempts_point ON kaodian_attempts(point_id)').catch(() => {})
+  // 记录这条答题属于哪个来源（0 = 内置教材，>0 = 用户导入的教材 id）
+  await run('ALTER TABLE kaodian_attempts ADD COLUMN source_id INTEGER NOT NULL DEFAULT 0').catch(() => {})
+
+  // 用户自己导入的教材（PDF/Word/Excel/MD/TXT）。正文与得分点落主库，
+  // 与内置知识库 kaodian.db 解耦 —— 这样重新部署内置库不会碰到用户数据。
+  await run(`CREATE TABLE IF NOT EXISTS kaodian_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    file_name TEXT NOT NULL DEFAULT '',
+    file_type TEXT NOT NULL DEFAULT '',
+    file_size INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ready',
+    error TEXT NOT NULL DEFAULT '',
+    point_count INTEGER NOT NULL DEFAULT 0,
+    kp_count INTEGER NOT NULL DEFAULT 0,
+    stats TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_sources_user ON kaodian_sources(user_id, created_at DESC)').catch(() => {})
+  // 分类（分组）：同一用户的同名分类视为一类，出题时可按分类跨多本教材抽题
+  await run("ALTER TABLE kaodian_sources ADD COLUMN category TEXT NOT NULL DEFAULT ''").catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_sources_cat ON kaodian_sources(user_id, category)').catch(() => {})
+
+  await run(`CREATE TABLE IF NOT EXISTS kaodian_user_points (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL REFERENCES kaodian_sources(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL,
+    ord INTEGER NOT NULL DEFAULT 0,
+    chapter TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    no TEXT NOT NULL DEFAULT '',
+    badge TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    judgements TEXT NOT NULL DEFAULT '[]'
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_upt_source ON kaodian_user_points(source_id, ord)').catch(() => {})
+
+  await run(`CREATE TABLE IF NOT EXISTS kaodian_user_keypoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    point_id INTEGER NOT NULL REFERENCES kaodian_user_points(id) ON DELETE CASCADE,
+    ord INTEGER NOT NULL DEFAULT 0,
+    role TEXT NOT NULL DEFAULT 'must',
+    weight REAL NOT NULL DEFAULT 1.0,
+    text TEXT NOT NULL,
+    norm TEXT NOT NULL DEFAULT '',
+    variants TEXT NOT NULL DEFAULT '[]'
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_ukp_point ON kaodian_user_keypoints(point_id, ord)').catch(() => {})
+
+  // 语义复核（大模型）调用流水：既做用量/配额统计，也做成本估算。
+  // 与 GitHub 日报的 LLM 出口完全分开（配置在 system_config 的 kaodian_llm_* 命名空间）。
+  await run(`CREATE TABLE IF NOT EXISTS kaodian_llm_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    source_id INTEGER NOT NULL DEFAULT 0,
+    slot TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    miss_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    ok INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    cost_cny REAL NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`).catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_llm_calls_day ON kaodian_llm_calls(day)').catch(() => {})
+  await run('CREATE INDEX IF NOT EXISTS idx_kaodian_llm_calls_user ON kaodian_llm_calls(day, user_id)').catch(() => {})
+
   console.log('[DB] Schema ready')
 }

@@ -77,6 +77,12 @@ const routes = [
     meta: { requiresPremium: true, featureName: '战争雷霆交易所' },
   },
   {
+    path: '/kaodian',
+    name: 'kaodian',
+    component: () => import('../views/KaodianView.vue'),
+    meta: { requiresPremium: true, featureName: '考点背诵判分' },
+  },
+  {
     path: '/schedule',
     name: 'schedule',
     component: () => import('../views/ScheduleView.vue'),
